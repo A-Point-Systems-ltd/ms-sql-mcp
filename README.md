@@ -48,7 +48,13 @@ This project is a .NET 8 console application implementing a Model Context Protoc
     - ListSysObjects: List sys.objects with optional type filtering
   - **Server Information**:
     - GetServerInfo: Get comprehensive SQL Server metadata (version, edition, hardware, database statistics)
-- **Logging**: Console logging using Microsoft.Extensions.Logging.
+- **Logging**:
+  - Console logging using Microsoft.Extensions.Logging (stderr)
+  - File-based logging with configurable location:
+    - **Default**: `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/Mac)
+    - **Custom**: Set via `LOG_FILE_PATH` environment variable in MCP configuration
+  - Startup diagnostics and connection validation
+  - Detailed error messages with stack traces
 - **Unit Tests**: xUnit-based unit tests for all major components.
 
 ## Getting Started
@@ -81,10 +87,16 @@ Add a new MCP Server with the following settings:
         "type": "stdio",
         "command": "C:\\src\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
         "env": {
-            "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True"
+            "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True",
+            "LOG_FILE_PATH": "C:\\Logs\\mssql-mcp.log"
             }
 }
 ```
+
+**Note**: `LOG_FILE_PATH` is optional. You can specify:
+- A specific file path: `C:\Logs\mssql-mcp.log`
+- A directory path: `C:\Logs\` (creates timestamped files)
+- Omit it to use the default location
 ---
 
 NOTE: Replace the path "C:\\src\\SQL-AI-samples" with the location of your SQL-AI-samples repo on your machine.
@@ -99,7 +111,8 @@ e.g. your MCP settings should look like this if "MSSQL MCP" is your own MCP Serv
             "type": "stdio",
             "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
                 "env": {
-                "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True"
+                "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True",
+                "LOG_FILE_PATH": "C:\\Logs\\mssql-mcp.log"
             }
     }
 }
@@ -157,6 +170,31 @@ Add a new MCP Server with the following settings:
 Save the file, start a new Chat, you'll see the "Tools" icon, it should list 19 MSSQL MCP tools.
 
 # Troubleshooting
+
+## Quick Diagnosis
+
+**If you get "MCP error -32000: Connection closed" without further details:**
+
+1. Check the log file at:
+   - **Custom location**: If you set `LOG_FILE_PATH` in your MCP config, check that location
+   - **Default Windows**: `%LOCALAPPDATA%\MssqlMcp\Logs\mssql-mcp-*.log`
+   - **Default Linux/Mac**: `~/.local/share/MssqlMcp/Logs/mssql-mcp-*.log`
+
+2. The log file contains:
+   - Process and environment information
+   - Connection string validation
+   - SQL Server connection test results
+   - Detailed error messages and stack traces
+   - Server startup sequence
+
+3. Common issues and solutions:
+   - **Missing CONNECTION_STRING**: Ensure the environment variable is set in your MCP configuration
+   - **SQL Server connection failed**: Verify server name, database exists, authentication works
+   - **Missing .NET Runtime**: Install .NET 8.0 Runtime from https://dotnet.microsoft.com/download/dotnet/8.0
+
+**For complete troubleshooting steps, see: [TROUBLESHOOTING.md](documentation/****)**
+
+## Other Known Issues
 
 1. If you get a "Task canceled" error using "Active Directory Default", try "Active Directory Interactive".
 
