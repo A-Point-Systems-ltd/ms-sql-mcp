@@ -1,3 +1,7 @@
 bin
 obj
+log
 Publish
+publish.bat
+documentation
+.roo/mcp.json

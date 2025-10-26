@@ -1,8 +1,8 @@
-# Mssql SQL MCP Server (.NET 8)
+# Mssql SQL MCP Server (.NET 9)
 
 > This project is forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-AI-samples) and enhanced with additional database introspection tools.
 
-This project is a .NET 8 console application implementing a Model Context Protocol (MCP) server for MSSQL Databases using the official [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk).
+This project is a .NET 9 console application implementing a Model Context Protocol (MCP) server for MSSQL Databases using the official [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk).
 
 ## Requirements
 
@@ -85,7 +85,7 @@ Add a new MCP Server with the following settings:
 ```json
     "MSSQL MCP": {
         "type": "stdio",
-        "command": "C:\\src\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
+        "command": "C:\\src\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
         "env": {
             "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True",
             "LOG_FILE_PATH": "C:\\Logs\\mssql-mcp.log"
@@ -109,7 +109,7 @@ e.g. your MCP settings should look like this if "MSSQL MCP" is your own MCP Serv
     "servers": {
         "MSSQL MCP": {
             "type": "stdio",
-            "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
+            "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
                 "env": {
                 "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True",
                 "LOG_FILE_PATH": "C:\\Logs\\mssql-mcp.log"
@@ -126,7 +126,7 @@ An example of using a connection string for Azure SQL Database:
     "servers": {
         "MSSQL MCP": {
             "type": "stdio",
-            "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
+            "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
                 "env": {
                 "CONNECTION_STRING": "Server=tcp:<servername>.database.windows.net,1433;Initial Catalog=<databasename>;Encrypt=Mandatory;TrustServerCertificate=False;Connection Timeout=30;Authentication=Active Directory Interactive"
             }
@@ -157,7 +157,7 @@ Add a new MCP Server with the following settings:
 {
     "mcpServers": {
         "MSSQL MCP": {
-            "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
+            "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
             "env": {
                     "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True"
                 }
@@ -190,7 +190,7 @@ Save the file, start a new Chat, you'll see the "Tools" icon, it should list 19 
 3. Common issues and solutions:
    - **Missing CONNECTION_STRING**: Ensure the environment variable is set in your MCP configuration
    - **SQL Server connection failed**: Verify server name, database exists, authentication works
-   - **Missing .NET Runtime**: Install .NET 8.0 Runtime from https://dotnet.microsoft.com/download/dotnet/8.0
+   - **Missing .NET Runtime**: Install .NET 9.0 Runtime from https://dotnet.microsoft.com/download/dotnet/9.0
 
 **For complete troubleshooting steps, see: [TROUBLESHOOTING.md](documentation/****)**
 
