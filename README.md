@@ -4,6 +4,19 @@
 
 This project is a .NET 8 console application implementing a Model Context Protocol (MCP) server for MSSQL Databases using the official [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk).
 
+## Requirements
+
+- **Minimum SQL Server Version**: SQL Server 2008 R2 (10.50) or later
+- **Supported Versions**:
+  - SQL Server 2008 R2
+  - SQL Server 2012
+  - SQL Server 2014
+  - SQL Server 2016
+  - SQL Server 2017
+  - SQL Server 2019
+  - SQL Server 2022
+  - Azure SQL Database
+
 ## Features
 
 - Provide connection string via environment variable `CONNECTION_STRING`.

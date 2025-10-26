@@ -6,8 +6,23 @@
       "env": {
         "CONNECTION_STRING": "Server=DC\\DEV14;Database=DevERP;Trusted_Connection=True;TrustServerCertificate=True"
       },
-      "disabled": true,
-      "alwaysAllow": []
+      "disabled": false,
+      "alwaysAllow": [
+        "GetServerInfo",
+        "ListTables",
+        "DescribeTable",
+        "ListTableFunctions",
+        "DescribeView",
+        "GetStoredProc",
+        "ListSysObjects",
+        "GetFunction",
+        "ReadData",
+        "ListStoredProcedures",
+        "GetTrigger",
+        "ListViews",
+        "ListScalarFunctions",
+        "ListTableTriggers"
+      ]
     }
   }
 }

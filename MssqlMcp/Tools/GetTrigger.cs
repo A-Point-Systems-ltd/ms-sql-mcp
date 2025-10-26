@@ -32,7 +32,7 @@ public partial class Tools
         }
 
         // Query for trigger info
-        const string TriggerInfoQuery = @"SELECT 
+        const string TriggerInfoQuery = @"SELECT
             s.name AS [schema],
             OBJECT_NAME(tr.parent_id) AS table_name,
             tr.name,
@@ -41,20 +41,22 @@ public partial class Tools
             tr.is_disabled,
             tr.is_instead_of_trigger,
             ep.value AS description,
-            STRING_AGG(te.type_desc, ', ') AS trigger_events
+            STUFF((
+                SELECT ', ' + te2.type_desc
+                FROM sys.trigger_events te2
+                WHERE tr.object_id = te2.object_id
+                FOR XML PATH(''), TYPE
+            ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS trigger_events
         FROM sys.triggers tr
         INNER JOIN sys.objects o ON tr.parent_id = o.object_id
         INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
-        LEFT JOIN sys.extended_properties ep 
-            ON ep.major_id = tr.object_id 
-            AND ep.minor_id = 0 
+        LEFT JOIN sys.extended_properties ep
+            ON ep.major_id = tr.object_id
+            AND ep.minor_id = 0
             AND ep.name = 'MS_Description'
-        LEFT JOIN sys.trigger_events te ON tr.object_id = te.object_id
-        WHERE tr.name = @ObjectName 
+        WHERE tr.name = @ObjectName
             AND tr.parent_class = 1
-            AND (s.name = @SchemaName OR @SchemaName IS NULL)
-        GROUP BY s.name, tr.parent_id, tr.name, tr.create_date, 
-                 tr.modify_date, tr.is_disabled, tr.is_instead_of_trigger, ep.value";
+            AND (s.name = @SchemaName OR @SchemaName IS NULL)";
 
         // Query for code definition
         const string DefinitionQuery = @"SELECT OBJECT_DEFINITION(tr.object_id) AS definition

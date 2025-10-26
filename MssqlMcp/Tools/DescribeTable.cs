@@ -67,50 +67,60 @@ public partial class Tools
     fk.name AS name,
     SCHEMA_NAME(tp.schema_id) AS [schema],
     tp.name AS table_name,
-    STRING_AGG(cp.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS column_names,
+    STUFF((
+        SELECT ', ' + cp.name
+        FROM sys.foreign_key_columns fkc2
+        INNER JOIN sys.columns cp ON fkc2.parent_object_id = cp.object_id AND fkc2.parent_column_id = cp.column_id
+        WHERE fk.object_id = fkc2.constraint_object_id
+        ORDER BY fkc2.constraint_column_id
+        FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS column_names,
     SCHEMA_NAME(tr.schema_id) AS referenced_schema,
     tr.name AS referenced_table,
-    STRING_AGG(cr.name, ', ') WITHIN GROUP (ORDER BY fkc.constraint_column_id) AS referenced_column_names
+    STUFF((
+        SELECT ', ' + cr.name
+        FROM sys.foreign_key_columns fkc2
+        INNER JOIN sys.columns cr ON fkc2.referenced_object_id = cr.object_id AND fkc2.referenced_column_id = cr.column_id
+        WHERE fk.object_id = fkc2.constraint_object_id
+        ORDER BY fkc2.constraint_column_id
+        FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS referenced_column_names
 FROM
     sys.foreign_keys AS fk
 JOIN
-    sys.foreign_key_columns AS fkc ON fk.object_id = fkc.constraint_object_id
+    sys.tables AS tp ON fk.parent_object_id = tp.object_id
 JOIN
-    sys.tables AS tp ON fkc.parent_object_id = tp.object_id
-JOIN
-    sys.columns AS cp ON fkc.parent_object_id = cp.object_id AND fkc.parent_column_id = cp.column_id
-JOIN
-    sys.tables AS tr ON fkc.referenced_object_id = tr.object_id
-JOIN
-    sys.columns AS cr ON fkc.referenced_object_id = cr.object_id AND fkc.referenced_column_id = cr.column_id
- WHERE
-            ( SCHEMA_NAME(tp.schema_id) = @TableSchema OR @TableSchema IS NULL )
-            AND tp.name = @TableName
+    sys.tables AS tr ON fk.referenced_object_id = tr.object_id
+WHERE
+    (SCHEMA_NAME(tp.schema_id) = @TableSchema OR @TableSchema IS NULL)
+    AND tp.name = @TableName
 GROUP BY
-    fk.name, tp.schema_id, tp.name, tr.schema_id, tr.name;
-";
+    fk.name, fk.object_id, tp.schema_id, tp.name, tr.schema_id, tr.name";
 
         // Query for triggers
         const string TriggersQuery = @"SELECT
     tr.name,
     tr.is_disabled,
     tr.is_instead_of_trigger,
-    STRING_AGG(te.type_desc, ', ') AS trigger_events,
+    STUFF((
+        SELECT ', ' + te2.type_desc
+        FROM sys.trigger_events te2
+        WHERE tr.object_id = te2.object_id
+        FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS trigger_events,
     ep.value AS description
 FROM sys.triggers tr
 LEFT JOIN sys.extended_properties ep
     ON ep.major_id = tr.object_id
     AND ep.minor_id = 0
     AND ep.name = 'MS_Description'
-LEFT JOIN sys.trigger_events te ON tr.object_id = te.object_id
 WHERE tr.parent_id = (
     SELECT t.object_id
     FROM sys.tables t
     INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
     WHERE t.name = @TableName
         AND (s.name = @TableSchema OR @TableSchema IS NULL)
-)
-GROUP BY tr.name, tr.is_disabled, tr.is_instead_of_trigger, ep.value";
+)";
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
