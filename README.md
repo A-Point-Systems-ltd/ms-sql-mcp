@@ -1,6 +1,6 @@
-> ⚠️ **EXPERIMENTAL USE ONLY** - This MCP Server is provided as an example for educational and experimental purposes only. It is NOT intended for production use. Please use appropriate security measures and thoroughly test before considering any kind of deployment.
-
 # Mssql SQL MCP Server (.NET 8)
+
+> This project is forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-AI-samples) and enhanced with additional database introspection tools.
 
 This project is a .NET 8 console application implementing a Model Context Protocol (MCP) server for MSSQL Databases using the official [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk).
 
@@ -8,13 +8,31 @@ This project is a .NET 8 console application implementing a Model Context Protoc
 
 - Provide connection string via environment variable `CONNECTION_STRING`.
 - **MCP Tools Implemented**:
-  - ListTables: List all tables in the database.
-  - DescribeTable: Get schema/details for a table.
-  - CreateTable: Create new tables.
-  - DropTable: Drop existing tables.
-  - InsertData: Insert data into tables.
-  - ReadData: Read/query data from tables.
-  - UpdateData: Update values in tables.
+  - **Table Operations**:
+    - ListTables: List all tables in the database
+    - DescribeTable: Get comprehensive table details (schema, columns, indexes, constraints, foreign keys, triggers)
+    - CreateTable: Create new tables
+    - DropTable: Drop existing tables
+  - **Data Operations**:
+    - InsertData: Insert data into tables
+    - ReadData: Read/query data from tables
+    - UpdateData: Update values in tables
+    - ExecuteSQL: Execute custom SQL commands (DDL, DML, queries)
+  - **Stored Procedures**:
+    - ListStoredProcedures: List all stored procedures with descriptions
+    - GetStoredProc: Get stored procedure details including parameters and code
+  - **Functions**:
+    - ListTableFunctions: List all table-valued functions
+    - ListScalarFunctions: List all scalar functions
+    - GetFunction: Get function details including parameters and code
+  - **Views**:
+    - ListViews: List all views
+    - DescribeView: Get view definition including columns and SQL code
+  - **Triggers**:
+    - ListTableTriggers: List all table triggers
+    - GetTrigger: Get trigger details and SQL code
+  - **System Objects**:
+    - ListSysObjects: List sys.objects with optional type filtering
 - **Logging**: Console logging using Microsoft.Extensions.Logging.
 - **Unit Tests**: xUnit-based unit tests for all major components.
 
@@ -121,7 +139,7 @@ Add a new MCP Server with the following settings:
 ```
 ---
 
-Save the file, start a new Chat, you'll see the "Tools" icon, it should list 7 MSSQL MCP tools.
+Save the file, start a new Chat, you'll see the "Tools" icon, it should list 18 MSSQL MCP tools.
 
 # Troubleshooting
 
