@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "MSSQL TEST MCP": {
+      "type": "stdio",
+      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\bin\\Debug\\net8.0\\MssqlMcp.exe",
+      "env": {
+        "CONNECTION_STRING": "Server=DC\\DEV14;Database=DevERP;Trusted_Connection=True;TrustServerCertificate=True"
+      },
+      "disabled": true,
+      "alwaysAllow": []
+    }
+  }
+}

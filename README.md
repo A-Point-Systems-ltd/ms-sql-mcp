@@ -33,6 +33,8 @@ This project is a .NET 8 console application implementing a Model Context Protoc
     - GetTrigger: Get trigger details and SQL code
   - **System Objects**:
     - ListSysObjects: List sys.objects with optional type filtering
+  - **Server Information**:
+    - GetServerInfo: Get comprehensive SQL Server metadata (version, edition, hardware, database statistics)
 - **Logging**: Console logging using Microsoft.Extensions.Logging.
 - **Unit Tests**: xUnit-based unit tests for all major components.
 
@@ -139,7 +141,7 @@ Add a new MCP Server with the following settings:
 ```
 ---
 
-Save the file, start a new Chat, you'll see the "Tools" icon, it should list 18 MSSQL MCP tools.
+Save the file, start a new Chat, you'll see the "Tools" icon, it should list 19 MSSQL MCP tools.
 
 # Troubleshooting
 
