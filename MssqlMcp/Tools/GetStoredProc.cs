@@ -79,7 +79,7 @@ public partial class Tools
         {
             using (conn)
             {
-                var result = new Dictionary<string, object>();
+                var result = new Dictionary<string, object?>();
 
                 // Procedure Info
                 using (var cmd = new SqlCommand(ProcedureInfoQuery, conn))
@@ -140,6 +140,7 @@ public partial class Tools
                     }
                 }
 
+                await TryAttachInsightAsync(result, "Procedure", schema, name).ConfigureAwait(false);
                 return new DbOperationResult(success: true, data: result);
             }
         }

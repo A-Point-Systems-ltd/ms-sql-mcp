@@ -20,6 +20,7 @@ This project is a .NET 9 console application implementing a Model Context Protoc
 ## Features
 
 - Provide connection string via environment variable `CONNECTION_STRING`.
+- Optional **AI Insights layer** (see [documentation/ai_insights_guide.md](documentation/ai_insights_guide.md)): enable with `USE_INSIGHTS_LAYER=true`, then call **InstallInsightsLayer** once per database. Installs `AIInsights` schema, `dbo.DDL_AuditLog`, and a database-level `DDL_Audit` trigger. Introspection tools attach `insight` / `insightFreshness`; write tools queue DDL/fingerprint reconciliation in the background.
 - **MCP Tools Implemented**:
   - **Table Operations**:
     - ListTables: List all tables in the database
@@ -48,6 +49,14 @@ This project is a .NET 9 console application implementing a Model Context Protoc
     - ListSysObjects: List sys.objects with optional type filtering
   - **Server Information**:
     - GetServerInfo: Get comprehensive SQL Server metadata (version, edition, hardware, database statistics)
+  - **AI Insights (optional, requires `USE_INSIGHTS_LAYER=true`)**:
+    - InsightsCheck: Reports whether AIInsights / DDL audit objects exist and watermark state
+    - InstallInsightsLayer: Idempotent install of AIInsights tables + `DDL_AuditLog` + `DDL_Audit` trigger
+    - GetInsight: Read a cached insight for an object (auto-archives if stale vs live schema)
+    - UpsertInsight: Create or update a cached insight (UPDATE then INSERT; no maintenance stored procedures)
+    - ListInsights: List recent `SchemaInsights` rows
+    - GetInsightHistory: List archived insights from `InsightHistory`
+    - RefreshInsights: Process DDL backlog / fingerprint scan and return recent summaries + top query patterns (computed in C#, no SQL views)
 - **Logging**:
   - Console logging using Microsoft.Extensions.Logging (stderr)
   - File-based logging with configurable location:
@@ -55,7 +64,7 @@ This project is a .NET 9 console application implementing a Model Context Protoc
     - **Custom**: Set via `LOG_FILE_PATH` environment variable in MCP configuration
   - Startup diagnostics and connection validation
   - Detailed error messages with stack traces
-- **Unit Tests**: xUnit-based unit tests for all major components.
+- **Unit Tests**: xUnit-based unit tests for all major components. The test project sets a **LocalDB** fallback for `CONNECTION_STRING` when the variable is unset (see `MssqlMcp.Tests/TestConnectionString.cs`); override with a real server if needed.
 
 ## Getting Started
 
@@ -88,6 +97,7 @@ Add a new MCP Server with the following settings:
         "command": "C:\\src\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
         "env": {
             "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True",
+            "USE_INSIGHTS_LAYER": "true",
             "LOG_FILE_PATH": "C:\\Logs\\mssql-mcp.log"
             }
 }
@@ -159,7 +169,8 @@ Add a new MCP Server with the following settings:
         "MSSQL MCP": {
             "command": "C:\\src\\SQL-AI-samples\\MssqlMcp\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
             "env": {
-                    "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True"
+                    "CONNECTION_STRING": "Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True",
+                    "USE_INSIGHTS_LAYER": "true"
                 }
         }
     }
@@ -167,7 +178,7 @@ Add a new MCP Server with the following settings:
 ```
 ---
 
-Save the file, start a new Chat, you'll see the "Tools" icon, it should list 19 MSSQL MCP tools.
+Save the file, start a new Chat, you'll see the "Tools" icon, it should list 26 MSSQL MCP tools (when `USE_INSIGHTS_LAYER=true`; otherwise 19 without the AI Insights tools).
 
 # Troubleshooting
 
@@ -191,12 +202,3 @@ Save the file, start a new Chat, you'll see the "Tools" icon, it should list 19 
    - **Missing CONNECTION_STRING**: Ensure the environment variable is set in your MCP configuration
    - **SQL Server connection failed**: Verify server name, database exists, authentication works
    - **Missing .NET Runtime**: Install .NET 9.0 Runtime from https://dotnet.microsoft.com/download/dotnet/9.0
-
-**For complete troubleshooting steps, see: [TROUBLESHOOTING.md](documentation/****)**
-
-## Other Known Issues
-
-1. If you get a "Task canceled" error using "Active Directory Default", try "Active Directory Interactive".
-
-
-

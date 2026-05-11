@@ -71,7 +71,7 @@ public partial class Tools
         {
             using (conn)
             {
-                var result = new Dictionary<string, object>();
+                var result = new Dictionary<string, object?>();
 
                 // Trigger Info
                 using (var cmd = new SqlCommand(TriggerInfoQuery, conn))
@@ -112,6 +112,7 @@ public partial class Tools
                     }
                 }
 
+                await TryAttachInsightAsync(result, "Trigger", schema, name).ConfigureAwait(false);
                 return new DbOperationResult(success: true, data: result);
             }
         }

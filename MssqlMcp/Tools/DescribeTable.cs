@@ -126,7 +126,7 @@ WHERE tr.parent_id = (
         {
             using (conn)
             {
-                var result = new Dictionary<string, object>();
+                var result = new Dictionary<string, object?>();
                 // Table info
                 using (var cmd = new SqlCommand(TableInfoQuery, conn))
                 {
@@ -254,6 +254,7 @@ WHERE tr.parent_id = (
                     result["triggers"] = triggers;
                 }
 
+                await TryAttachInsightAsync(result, "Table", schema, name).ConfigureAwait(false);
                 return new DbOperationResult(success: true, data: result);
             }
         }

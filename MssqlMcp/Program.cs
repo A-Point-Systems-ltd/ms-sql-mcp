@@ -4,6 +4,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Mssql.McpServer.InsightsLayer;
 using System.Diagnostics;
 using System.Reflection;
 
@@ -164,6 +165,15 @@ internal class Program
 
         // Register ISqlConnectionFactory and Tools for DI
         _ = builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
+        if (InsightsLayerEnvironment.IsInsightsLayerEnabled)
+        {
+            _ = builder.Services.AddSingleton<IInsightsLayerService, InsightsLayerService>();
+        }
+        else
+        {
+            _ = builder.Services.AddSingleton<IInsightsLayerService>(NoOpInsightsLayerService.Instance);
+        }
+
         _ = builder.Services.AddSingleton<Tools>();
 
         // Register MCP server and tools (instance-based)

@@ -49,6 +49,7 @@ public partial class Tools
                 {
                     // Use ExecuteNonQueryAsync for INSERT, UPDATE, DELETE, DDL
                     int rowsAffected = await cmd.ExecuteNonQueryAsync();
+                    QueueInsightDdlProcessing();
                     return new DbOperationResult(success: true, rowsAffected: rowsAffected);
                 }
             }

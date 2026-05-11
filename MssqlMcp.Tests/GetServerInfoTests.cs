@@ -4,6 +4,7 @@
 using Microsoft.Extensions.Logging;
 using Moq;
 using Mssql.McpServer;
+using Mssql.McpServer.InsightsLayer;
 
 namespace MssqlMcp.Tests
 {
@@ -13,9 +14,10 @@ namespace MssqlMcp.Tests
 
         public GetServerInfoTests()
         {
+            TestConnectionString.EnsureInitialized();
             var connectionFactory = new SqlConnectionFactory();
             var loggerMock = new Mock<ILogger<Tools>>();
-            _tools = new Tools(connectionFactory, loggerMock.Object);
+            _tools = new Tools(connectionFactory, NoOpInsightsLayerService.Instance, loggerMock.Object);
         }
 
         [Fact]

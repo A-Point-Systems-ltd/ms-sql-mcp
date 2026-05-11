@@ -24,6 +24,7 @@ public partial class Tools
             {
                 using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, conn);
                 var rows = await cmd.ExecuteNonQueryAsync();
+                QueueInsightDdlProcessing();
                 return new DbOperationResult(success: true, rowsAffected: rows);
             }
         }

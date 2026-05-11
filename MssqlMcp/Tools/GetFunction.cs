@@ -81,7 +81,7 @@ public partial class Tools
         {
             using (conn)
             {
-                var result = new Dictionary<string, object>();
+                var result = new Dictionary<string, object?>();
 
                 // Function Info
                 using (var cmd = new SqlCommand(FunctionInfoQuery, conn))
@@ -141,6 +141,7 @@ public partial class Tools
                     }
                 }
 
+                await TryAttachInsightAsync(result, "Function", schema, name).ConfigureAwait(false);
                 return new DbOperationResult(success: true, data: result);
             }
         }
