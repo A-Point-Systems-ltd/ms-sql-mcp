@@ -15,9 +15,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Get function details including parameters and code (works for all function types)")]
+        Description("Returns a function's metadata (schema, name, type_desc, create/modify dates, description), its parameter list, and the full T-SQL definition. Works for scalar (FN), inline table-valued (IF), multi-statement table-valued (TF), and assembly table-valued (FT) functions. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), the response also includes 'insight' and 'insightFreshness'.")]
     public async Task<DbOperationResult> GetFunction(
-        [Description("Name of function, supports schema.functionname format")] string name)
+        [Description("Function name. Accepts 'fn' or 'schema.fn'. Schema-qualified is recommended when ambiguous.")] string name)
     {
         string? schema = null;
         if (name.Contains('.'))

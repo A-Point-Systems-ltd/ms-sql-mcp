@@ -15,9 +15,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Get trigger details and SQL code")]
+        Description("Returns metadata for a table trigger (schema, parent table, create/modify dates, is_disabled, is_instead_of_trigger, trigger_events such as INSERT/UPDATE/DELETE, description) plus the full T-SQL definition. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), the response also includes 'insight' and 'insightFreshness'. Database-level / server-level triggers are not returned by this tool.")]
     public async Task<DbOperationResult> GetTrigger(
-        [Description("Name of trigger")] string name)
+        [Description("Trigger name (unique per parent table). Accepts 'trigger' or 'schema.trigger'.")] string name)
     {
         // Note: Triggers are typically identified by name directly, but we still parse for consistency
         string? schema = null;

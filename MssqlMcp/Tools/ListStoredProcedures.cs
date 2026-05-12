@@ -31,7 +31,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("List all stored procedures with descriptions")]
+        Description("Lists all stored procedures with schema, name, object id, create/modify dates, and MS_Description extended property when present. Sorted by schema then name. Use GetStoredProc for parameters + T-SQL of a specific procedure.")]
     public async Task<DbOperationResult> ListStoredProcedures()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();

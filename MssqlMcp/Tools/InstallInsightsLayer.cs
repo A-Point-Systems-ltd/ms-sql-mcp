@@ -13,7 +13,7 @@ public partial class Tools
         ReadOnly = false,
         Idempotent = true,
         Destructive = false),
-        Description("Installs AIInsights schema, core tables, DDL_AuditLog table, and DDL_Audit database trigger (idempotent). Requires USE_INSIGHTS_LAYER and sufficient database permissions.")]
+        Description("Idempotently installs the AIInsights layer: AIInsights schema, SchemaInsights/InsightHistory/QueryPatterns and supporting tables, dbo.DDL_AuditLog table, and the database-level DDL_Audit trigger. Safe to re-run. The layer is enabled by default; only disabled when USE_INSIGHTS_LAYER is set to false/0/off/disabled. Requires DDL trigger permission (ALTER ANY DATABASE DDL TRIGGER, or ddl_admin / sysadmin). Run once per database before using other insight tools. Returns success plus an installed=true marker.")]
     public async Task<DbOperationResult> InstallInsightsLayer()
     {
         return await _insightsLayer.InstallLayerAsync().ConfigureAwait(false);

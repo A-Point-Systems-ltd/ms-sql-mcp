@@ -36,9 +36,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Return sys.objects table data with optional filtering")]
+        Description("Returns user-defined entries from sys.objects (is_ms_shipped = 0) with object_id, schema, name, type, type_desc, create/modify dates, is_ms_shipped, description. Use for cross-cutting object discovery when the typed list tools (ListTables/Views/StoredProcedures/Functions/Triggers) are too narrow. Optional 'type' filter accepts JSON null for no filter.")]
     public async Task<DbOperationResult> ListSysObjects(
-        [Description("Object type filter (e.g., 'U' for tables, 'P' for procs, 'V' for views)")] string? type = null)
+        [Description("Object type code: 'U'=user table, 'V'=view, 'P'=stored proc, 'FN'=scalar fn, 'IF'=inline TVF, 'TF'=multi-statement TVF, 'TR'=trigger, 'SO'=sequence, etc. Pass null for no filter.")] string? type = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try

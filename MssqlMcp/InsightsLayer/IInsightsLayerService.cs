@@ -8,7 +8,9 @@ namespace Mssql.McpServer.InsightsLayer;
 public interface IInsightsLayerService
 {
     /// <summary>
-    /// True when <c>USE_INSIGHTS_LAYER</c> is set to <c>true</c> or <c>1</c>.
+    /// True unless <c>USE_INSIGHTS_LAYER</c> is explicitly set to a falsey value
+    /// (<c>false</c>, <c>0</c>, <c>no</c>, <c>off</c>, <c>disabled</c>). The env var is opt-OUT only;
+    /// missing or empty means enabled.
     /// </summary>
     bool IsEnabled { get; }
 

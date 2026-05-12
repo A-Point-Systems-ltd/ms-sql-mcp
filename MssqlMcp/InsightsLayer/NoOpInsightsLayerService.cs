@@ -3,7 +3,8 @@ using Mssql.McpServer.InsightsLayer.Models;
 namespace Mssql.McpServer.InsightsLayer;
 
 /// <summary>
-/// Used when <c>USE_INSIGHTS_LAYER</c> is not enabled; keeps DI simple without null checks in tools.
+/// Used when the AI Insights layer has been explicitly disabled via <c>USE_INSIGHTS_LAYER</c>
+/// (e.g. <c>false</c>, <c>0</c>, <c>off</c>); keeps DI simple without null checks in tools.
 /// </summary>
 public sealed class NoOpInsightsLayerService : IInsightsLayerService
 {
@@ -33,7 +34,7 @@ public sealed class NoOpInsightsLayerService : IInsightsLayerService
     {
         return Task.FromResult(new DbOperationResult(
             success: false,
-            error: "AI Insights layer is disabled. Set environment variable USE_INSIGHTS_LAYER=true (or 1) on the MCP server, then restart."));
+            error: "AI Insights layer is disabled. Remove USE_INSIGHTS_LAYER from the MCP environment (or set it to true) and restart the server. The layer is enabled by default; only false/0/off/disabled turns it off."));
     }
 
     public Task<(SchemaInsight? insight, InsightFreshness freshness)> GetInsightForObjectAsync(

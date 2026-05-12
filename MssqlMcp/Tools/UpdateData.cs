@@ -13,9 +13,9 @@ public partial class Tools
         Title = "Update Data",
         ReadOnly = false,
         Destructive = true),
-        Description("Updates data in a table in the SQL Database. Expects a valid UPDATE SQL statement as input.")]
+        Description("Updates rows from a single UPDATE T-SQL statement. DESTRUCTIVE - always include a WHERE clause. Returns rowsAffected. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), a background reconciliation is queued after success.")]
     public async Task<DbOperationResult> UpdateData(
-        [Description("UPDATE SQL statement")] string sql)
+        [Description("A complete UPDATE T-SQL statement. WHERE clause strongly recommended to avoid full-table updates.")] string sql)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try

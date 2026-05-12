@@ -15,9 +15,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Get stored procedure details including parameters and code")]
+        Description("Returns a stored procedure's metadata (schema, name, create/modify dates, description), its parameter list (name/type/length/precision/scale/is_output/has_default_value/default_value), and the full T-SQL definition. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), the response also includes 'insight' and 'insightFreshness'.")]
     public async Task<DbOperationResult> GetStoredProc(
-        [Description("Name of stored procedure, supports schema.procname format")] string name)
+        [Description("Stored procedure name. Accepts 'proc' or 'schema.proc'. Schema-qualified is recommended when ambiguous.")] string name)
     {
         string? schema = null;
         if (name.Contains('.'))

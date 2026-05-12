@@ -15,9 +15,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns table schema")]
+        Description("Returns a comprehensive description of a single table: identity, columns (type/length/precision/scale/nullable/description), indexes, key constraints, foreign keys (both column lists), and triggers (enabled flag + events). Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), the response also includes 'insight' (cached AIInsights row or null) and 'insightFreshness'. Prefer this over multiple sys.* queries for a single table.")]
     public async Task<DbOperationResult> DescribeTable(
-        [Description("Name of table")] string name)
+        [Description("Table name. Accepts 'table' or 'schema.table'. When schema is omitted, the first match across schemas is returned.")] string name)
     {
         string? schema = null;
         if (name.Contains('.'))

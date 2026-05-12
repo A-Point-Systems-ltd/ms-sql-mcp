@@ -14,9 +14,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Executes SQL queries against SQL Database to read data")]
+        Description("Executes a SELECT query against the configured database and returns rows as an array of objects (column name -> value, with NULL as JSON null). Intended for read-only queries; use ExecuteSQL for DDL/DML. SQL parameters are not supported here - build the literal yourself and never interpolate untrusted input. For schema introspection prefer DescribeTable/DescribeView/GetStoredProc/GetFunction/GetTrigger over hand-written sys.* queries.")]
     public async Task<DbOperationResult> ReadData(
-        [Description("SQL query to execute")] string sql)
+        [Description("A single T-SQL SELECT statement. Multi-batch scripts and DDL/DML are not allowed here; use ExecuteSQL for those.")] string sql)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try

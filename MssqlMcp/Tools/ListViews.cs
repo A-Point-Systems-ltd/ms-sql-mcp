@@ -31,7 +31,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("List all views")]
+        Description("Lists all views in the database with schema, name, object id, create/modify dates, and MS_Description extended property when present. Sorted by schema then name. Use DescribeView for columns + T-SQL of a specific view.")]
     public async Task<DbOperationResult> ListViews()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();

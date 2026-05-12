@@ -17,7 +17,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Lists all tables in the SQL Database.")]
+        Description("Lists all user tables in the current database as 'schema.name' strings, sorted by schema then name. Excludes views, system tables, and other object types. Use DescribeTable for column/constraint/FK detail on any single table.")]
     public async Task<DbOperationResult> ListTables()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();

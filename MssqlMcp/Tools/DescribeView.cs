@@ -15,9 +15,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Get view definition including columns and SQL code")]
+        Description("Returns a view's metadata (schema, name, id, create/modify dates, description), its column list, and the full T-SQL definition. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), the response also includes 'insight' and 'insightFreshness' for this view.")]
     public async Task<DbOperationResult> DescribeView(
-        [Description("Name of view, supports schema.viewname format")] string name)
+        [Description("View name. Accepts 'view' or 'schema.view'. Schema-qualified is recommended when ambiguous.")] string name)
     {
         string? schema = null;
         if (name.Contains('.'))

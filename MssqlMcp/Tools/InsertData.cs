@@ -13,9 +13,9 @@ public partial class Tools
         Title = "Insert Data",
         ReadOnly = false,
         Destructive = false),
-        Description("Updates data in a table in the SQL Database. Expects a valid INSERT SQL statement as input. ")]
+        Description("Inserts rows from a single INSERT T-SQL statement. Returns rowsAffected. Use parameter-less, fully literal SQL; multi-batch scripts are not supported. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), a background DDL/fingerprint reconciliation is queued after success.")]
     public async Task<DbOperationResult> InsertData(
-        [Description("INSERT SQL statement")] string sql)
+        [Description("A complete INSERT T-SQL statement (INSERT ... VALUES / INSERT ... SELECT).")] string sql)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try

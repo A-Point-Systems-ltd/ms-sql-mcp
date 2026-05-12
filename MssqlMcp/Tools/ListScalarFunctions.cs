@@ -32,7 +32,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("List all scalar functions")]
+        Description("Lists all scalar (FN) user-defined functions with schema, name, object id, create/modify dates, and description. Use GetFunction for parameters + T-SQL of a specific function. For table-valued functions use ListTableFunctions.")]
     public async Task<DbOperationResult> ListScalarFunctions()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();

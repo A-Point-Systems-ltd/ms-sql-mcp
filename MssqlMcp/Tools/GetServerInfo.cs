@@ -29,10 +29,14 @@ public partial class Tools
         SELECT 
             cpu_count AS CPUCount,
             hyperthread_ratio AS HyperthreadRatio,
-            physical_memory_kb / 1024 AS PhysicalMemoryMB,
-            virtual_memory_kb / 1024 AS VirtualMemoryMB,
             sqlserver_start_time AS SQLServerStartTime
         FROM sys.dm_os_sys_info";
+
+    private const string ProcessMemoryQuery = @"
+        SELECT
+            physical_memory_in_use_kb / 1024 AS PhysicalMemoryMB,
+            virtual_address_space_committed_kb / 1024 AS VirtualMemoryMB
+        FROM sys.dm_os_process_memory";
 
     private const string DatabaseStatsQuery = @"
         SELECT 
@@ -47,7 +51,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns comprehensive SQL Server metadata including version, edition, hardware information, and database statistics")]
+        Description("Returns SQL Server metadata in three sections: 'server' (ProductVersion/ProductLevel/Edition/EngineEdition/ServerName/MachineName/InstanceName/IsClustered/IsFullTextInstalled/IsIntegratedSecurityOnly/Collation/@@VERSION), 'hardware' (cpuCount, hyperthreadRatio, physicalMemoryMB, virtualMemoryMB, sqlServerStartTime, optional 'warning' string), and 'databases' (totalDatabases/onlineDatabases/offlineDatabases excluding system DBs). Compatible with SQL Server 2008 R2 through 2022 and Azure SQL. When VIEW SERVER STATE is restricted or a DMV column does not exist on the target version, hardware fields are returned as null and 'hardware.warning' explains why; the call still succeeds.")]
     public async Task<DbOperationResult> GetServerInfo()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
@@ -81,22 +85,61 @@ public partial class Tools
                     }
                 }
 
-                // Query 2: Hardware Info
-                using (var cmd = new SqlCommand(HardwareInfoQuery, conn))
+                // Query 2: Hardware / runtime info.
+                // Keep this section resilient across SQL Server versions + permission boundaries:
+                // - sys.dm_os_sys_info shape changed between versions.
+                // - VIEW SERVER STATE may be restricted for some users/tiers.
+                object? cpuCount = null;
+                object? hyperthreadRatio = null;
+                object? sqlServerStartTime = null;
+                object? physicalMemoryMB = null;
+                object? virtualMemoryMB = null;
+                string? hardwareWarning = null;
+
+                try
                 {
+                    using var cmd = new SqlCommand(HardwareInfoQuery, conn);
                     using var reader = await cmd.ExecuteReaderAsync();
                     if (await reader.ReadAsync())
                     {
-                        result["hardware"] = new
-                        {
-                            cpuCount = reader["CPUCount"],
-                            hyperthreadRatio = reader["HyperthreadRatio"],
-                            physicalMemoryMB = reader["PhysicalMemoryMB"],
-                            virtualMemoryMB = reader["VirtualMemoryMB"],
-                            sqlServerStartTime = reader["SQLServerStartTime"]
-                        };
+                        cpuCount = reader["CPUCount"] is DBNull ? null : reader["CPUCount"];
+                        hyperthreadRatio = reader["HyperthreadRatio"] is DBNull ? null : reader["HyperthreadRatio"];
+                        sqlServerStartTime = reader["SQLServerStartTime"] is DBNull ? null : reader["SQLServerStartTime"];
                     }
                 }
+                catch (Exception ex)
+                {
+                    hardwareWarning = $"sys.dm_os_sys_info unavailable: {ex.Message}";
+                    _logger.LogWarning(ex, "GetServerInfo: unable to read sys.dm_os_sys_info.");
+                }
+
+                try
+                {
+                    using var cmd = new SqlCommand(ProcessMemoryQuery, conn);
+                    using var reader = await cmd.ExecuteReaderAsync();
+                    if (await reader.ReadAsync())
+                    {
+                        physicalMemoryMB = reader["PhysicalMemoryMB"] is DBNull ? null : reader["PhysicalMemoryMB"];
+                        virtualMemoryMB = reader["VirtualMemoryMB"] is DBNull ? null : reader["VirtualMemoryMB"];
+                    }
+                }
+                catch (Exception ex)
+                {
+                    hardwareWarning = hardwareWarning is null
+                        ? $"sys.dm_os_process_memory unavailable: {ex.Message}"
+                        : $"{hardwareWarning}; sys.dm_os_process_memory unavailable: {ex.Message}";
+                    _logger.LogWarning(ex, "GetServerInfo: unable to read sys.dm_os_process_memory.");
+                }
+
+                result["hardware"] = new
+                {
+                    cpuCount,
+                    hyperthreadRatio,
+                    physicalMemoryMB,
+                    virtualMemoryMB,
+                    sqlServerStartTime,
+                    warning = hardwareWarning
+                };
 
                 // Query 3: Database Statistics
                 using (var cmd = new SqlCommand(DatabaseStatsQuery, conn))

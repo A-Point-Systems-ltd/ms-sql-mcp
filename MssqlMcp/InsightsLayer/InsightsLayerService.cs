@@ -1282,12 +1282,32 @@ public sealed class InsightsLayerService(
 
 public static class InsightsLayerEnvironment
 {
+    /// <summary>
+    /// True unless <c>USE_INSIGHTS_LAYER</c> is explicitly set to a falsey value
+    /// (<c>false</c>, <c>0</c>, <c>no</c>, <c>off</c>, <c>disabled</c>). The variable is
+    /// therefore an opt-OUT switch: missing/empty == enabled.
+    /// </summary>
     public static bool IsInsightsLayerEnabled
     {
         get
         {
             var v = Environment.GetEnvironmentVariable("USE_INSIGHTS_LAYER");
-            return string.Equals(v, "true", StringComparison.OrdinalIgnoreCase) || v == "1";
+            if (string.IsNullOrWhiteSpace(v))
+            {
+                return true;
+            }
+
+            var trimmed = v.Trim();
+            if (string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase)
+                || trimmed == "0"
+                || string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(trimmed, "disabled", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 }

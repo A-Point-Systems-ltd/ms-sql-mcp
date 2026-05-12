@@ -6,7 +6,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Mssql.McpServer.InsightsLayer;
 using System.Diagnostics;
-using System.Reflection;
 
 namespace Mssql.McpServer;
 
@@ -83,7 +82,7 @@ internal class Program
                 $"Process ID: {Process.GetCurrentProcess().Id}",
                 $"Working Directory: {Environment.CurrentDirectory}",
                 $"Log File: {logFilePath}",
-                $"Assembly Location: {Assembly.GetExecutingAssembly().Location}",
+                $"App Base Directory: {AppContext.BaseDirectory}",
                 $".NET Version: {Environment.Version}",
                 $"OS Version: {Environment.OSVersion}",
                 $"Machine Name: {Environment.MachineName}",

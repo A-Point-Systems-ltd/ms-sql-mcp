@@ -33,7 +33,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("List all table-valued functions")]
+        Description("Lists all table-valued functions (inline IF, multi-statement TF, assembly FT) with schema, name, type_desc, create/modify dates, and description. Use GetFunction for parameters + T-SQL of a specific function. For scalar functions use ListScalarFunctions.")]
     public async Task<DbOperationResult> ListTableFunctions()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();

@@ -41,7 +41,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("List all table triggers")]
+        Description("Lists all table triggers in the database with schema, parent table, name, create/modify dates, is_disabled, is_instead_of_trigger, the comma-joined event types (INSERT/UPDATE/DELETE), and description. Sorted by schema, table, trigger. Use GetTrigger for the full T-SQL of a specific trigger. Database-level / server-level triggers are NOT included.")]
     public async Task<DbOperationResult> ListTableTriggers()
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();

@@ -14,7 +14,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns whether the AI Insights layer and DDL audit objects are present in the database (requires USE_INSIGHTS_LAYER).")]
+        Description("Reports the AI Insights layer state for the current database. Returns: layerEnabledViaEnvironment, aiInsightsSchemaExists, ddlAuditTableExists, ddlAuditTriggerEnabled, schemaInsightsCount, lastProcessedAuditId, lastProcessedAt. Call BEFORE other AIInsights tools to decide whether to run InstallInsightsLayer. The layer is enabled by default; it is only off when USE_INSIGHTS_LAYER is set to false/0/off/disabled.")]
     public async Task<DbOperationResult> InsightsCheck()
     {
         try

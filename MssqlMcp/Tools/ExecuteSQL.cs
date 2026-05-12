@@ -15,9 +15,9 @@ public partial class Tools
         ReadOnly = false,
         Idempotent = false,
         Destructive = true),
-        Description("Execute custom SQL commands (DDL, DML, queries)")]
+        Description("Executes an arbitrary T-SQL command. Marked DESTRUCTIVE: may modify schema or data. If the statement starts with SELECT, returns rows like ReadData; otherwise executes as a non-query and returns rowsAffected. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), non-SELECT statements queue a background DDL/fingerprint reconciliation. Prefer ReadData for SELECTs and CreateTable/DropTable/InsertData/UpdateData for typed operations; reserve ExecuteSQL for ALTER, MERGE, multi-statement batches, etc. Confirm intent with the user before running destructive commands.")]
     public async Task<DbOperationResult> ExecuteSQL(
-        [Description("SQL command to execute")] string sql)
+        [Description("A single T-SQL statement (DDL, DML, or SELECT). Multi-batch scripts separated by 'GO' are not supported.")] string sql)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try

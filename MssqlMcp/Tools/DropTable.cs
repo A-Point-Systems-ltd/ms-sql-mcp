@@ -13,9 +13,9 @@ public partial class Tools
         Title = "Drop Table",
         ReadOnly = false,
         Destructive = true),
-        Description("Drops a table in the SQL Database. Expects a valid DROP TABLE SQL statement as input.")]
+        Description("Drops a table. DESTRUCTIVE - irreversible. Accepts a DROP TABLE statement; prefer `IF EXISTS` guards. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), related insights are auto-archived to AIInsights.InsightHistory by the background reconciliation. Confirm with the user before calling.")]
     public async Task<DbOperationResult> DropTable(
-        [Description("DROP TABLE SQL statement")] string sql)
+        [Description("A complete DROP TABLE T-SQL statement (schema-qualified, optionally with `IF EXISTS`).")] string sql)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
