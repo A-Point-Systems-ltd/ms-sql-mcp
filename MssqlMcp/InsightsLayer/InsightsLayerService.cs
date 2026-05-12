@@ -989,9 +989,13 @@ public sealed class InsightsLayerService(
             var storedFp = r2.IsDBNull(1) ? null : r2.GetString(1);
             await r2.CloseAsync().ConfigureAwait(false);
 
+            // Keep stale detection aligned with GetInsightForObjectAsync:
+            // only compare a signal when both stored and live values are present.
             var stale = (row.ObjectIdAtAnalysis.HasValue && live.ObjectId.HasValue && row.ObjectIdAtAnalysis.Value != live.ObjectId.Value)
-                || (storedModify is null || !live.ModifyDate.HasValue || storedModify.Value != live.ModifyDate.Value)
-                || (string.IsNullOrWhiteSpace(storedFp) ? false : !string.Equals(storedFp, live.Fingerprint, StringComparison.OrdinalIgnoreCase));
+                || (storedModify.HasValue && live.ModifyDate.HasValue && storedModify.Value != live.ModifyDate.Value)
+                || (!string.IsNullOrWhiteSpace(storedFp)
+                    && !string.IsNullOrWhiteSpace(live.Fingerprint)
+                    && !string.Equals(storedFp, live.Fingerprint, StringComparison.OrdinalIgnoreCase));
             if (stale)
             {
                 await ArchiveInsightAsync(conn, row.Id, "FingerprintMismatch", "FingerprintScan", null, cancellationToken).ConfigureAwait(false);

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <RootNamespace>Mssql.McpServer</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -16,6 +17,22 @@
   <PropertyGroup>
       <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
       <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>    
+  </PropertyGroup>
+
+  <!-- Default Release publish settings: single self-contained exe to fixed folder. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishProtocol>FileSystem</PublishProtocol>
+    <PublishDir>C:\Development\MCPs\MS-SQL-Release\</PublishDir>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Keep non-project artifacts in PublishDir (e.g. skills/, ai_insights_guide.md.lnk, README.md.lnk). -->
+    <DeleteExistingFiles>false</DeleteExistingFiles>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
   
   <ItemGroup>

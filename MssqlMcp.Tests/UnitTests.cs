@@ -18,7 +18,11 @@ namespace MssqlMcp.Tests
             _tableName = $"TestTable_{Guid.NewGuid():N}";
             var connectionFactory = new SqlConnectionFactory();
             var loggerMock = new Mock<ILogger<Tools>>();
-            _tools = new Tools(connectionFactory, NoOpInsightsLayerService.Instance, loggerMock.Object);
+            _tools = new Tools(
+                connectionFactory,
+                NoOpInsightsLayerService.Instance,
+                NoOpInsightDdlProcessingQueue.Instance,
+                loggerMock.Object);
         }
 
         public void Dispose()

@@ -14,10 +14,12 @@ namespace Mssql.McpServer;
 public partial class Tools(
     ISqlConnectionFactory connectionFactory,
     IInsightsLayerService insightsLayer,
+    IInsightDdlProcessingQueue insightDdlProcessingQueue,
     ILogger<Tools> logger)
 {
     private readonly ISqlConnectionFactory _connectionFactory = connectionFactory;
     private readonly IInsightsLayerService _insightsLayer = insightsLayer;
+    private readonly IInsightDdlProcessingQueue _insightDdlProcessingQueue = insightDdlProcessingQueue;
     private readonly ILogger<Tools> _logger = logger;
 
     /// <summary>
@@ -54,22 +56,7 @@ public partial class Tools(
     /// </summary>
     protected void QueueInsightDdlProcessing()
     {
-        if (!_insightsLayer.IsEnabled)
-        {
-            return;
-        }
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await _insightsLayer.ProcessDdlChangesAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Post-write insight DDL processing failed.");
-            }
-        });
+        _insightDdlProcessingQueue.RequestProcessing();
     }
 
     private static object? ProjectInsightForResponse(SchemaInsight? insight)

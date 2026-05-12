@@ -167,10 +167,16 @@ internal class Program
         if (InsightsLayerEnvironment.IsInsightsLayerEnabled)
         {
             _ = builder.Services.AddSingleton<IInsightsLayerService, InsightsLayerService>();
+            _ = builder.Services.AddSingleton<InsightDdlProcessingQueue>();
+            _ = builder.Services.AddSingleton<IInsightDdlProcessingQueue>(
+                static sp => sp.GetRequiredService<InsightDdlProcessingQueue>());
+            _ = builder.Services.AddHostedService(
+                static sp => sp.GetRequiredService<InsightDdlProcessingQueue>());
         }
         else
         {
             _ = builder.Services.AddSingleton<IInsightsLayerService>(NoOpInsightsLayerService.Instance);
+            _ = builder.Services.AddSingleton<IInsightDdlProcessingQueue>(NoOpInsightDdlProcessingQueue.Instance);
         }
 
         _ = builder.Services.AddSingleton<Tools>();

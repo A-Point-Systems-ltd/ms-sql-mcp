@@ -17,7 +17,11 @@ namespace MssqlMcp.Tests
             TestConnectionString.EnsureInitialized();
             var connectionFactory = new SqlConnectionFactory();
             var loggerMock = new Mock<ILogger<Tools>>();
-            _tools = new Tools(connectionFactory, NoOpInsightsLayerService.Instance, loggerMock.Object);
+            _tools = new Tools(
+                connectionFactory,
+                NoOpInsightsLayerService.Instance,
+                NoOpInsightDdlProcessingQueue.Instance,
+                loggerMock.Object);
         }
 
         [Fact]
