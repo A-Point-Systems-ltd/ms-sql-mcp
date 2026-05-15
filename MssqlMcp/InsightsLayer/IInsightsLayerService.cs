@@ -24,6 +24,17 @@ public interface IInsightsLayerService
         string objectName,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Ensures a baseline insight row exists for the requested object.
+    /// If a row already exists it is returned unchanged.
+    /// If missing, a mechanical low-confidence baseline is created and then returned.
+    /// </summary>
+    Task<(SchemaInsight? insight, InsightFreshness freshness)> EnsureBaselineForObjectAsync(
+        string objectType,
+        string? schemaName,
+        string objectName,
+        CancellationToken cancellationToken = default);
+
     Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -36,7 +47,8 @@ public interface IInsightsLayerService
     Task<DbOperationResult> GetHistoryAsync(string? schemaName, string? objectName, int take, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Runs <see cref="ProcessDdlChangesAsync"/> and returns recent insight summaries plus top query patterns (in-code equivalents of former views).
+    /// Runs <see cref="ProcessDdlChangesAsync"/> and returns recent insight summaries.
+    /// <c>topQueryPatterns</c> is kept in the response shape for compatibility and currently returns an empty list.
     /// </summary>
     Task<DbOperationResult> RefreshInsightsAsync(CancellationToken cancellationToken = default);
 }

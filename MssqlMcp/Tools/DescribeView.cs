@@ -15,7 +15,7 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns a view's metadata (schema, name, id, create/modify dates, description), its column list, and the full T-SQL definition. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), the response also includes 'insight' and 'insightFreshness' for this view.")]
+        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call UpsertInsight using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation. Returns: view metadata (schema, name, id, create/modify dates, description), column list, and full T-SQL definition. When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments.")]
     public async Task<DbOperationResult> DescribeView(
         [Description("View name. Accepts 'view' or 'schema.view'. Schema-qualified is recommended when ambiguous.")] string name)
     {

@@ -14,6 +14,7 @@ namespace MssqlMcp.Tests;
 public sealed class InsightsLayerEnvironmentTests
 {
     private const string EnvVar = "USE_INSIGHTS_LAYER";
+    private const string AutoPopulateVar = "INSIGHTS_AUTOPOPULATE";
 
     [Fact]
     public void Missing_variable_enables_layer()
@@ -58,9 +59,78 @@ public sealed class InsightsLayerEnvironmentTests
         Assert.False(InsightsLayerEnvironment.IsInsightsLayerEnabled);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("true")]
+    [InlineData("1")]
+    [InlineData("yes")]
+    [InlineData("on")]
+    [InlineData("custom")]
+    public void AutoPopulate_defaults_enabled_unless_falsey(string? value)
+    {
+        using var _ = WithEnvVar(AutoPopulateVar, value);
+        Assert.True(InsightsLayerEnvironment.IsAutoPopulationEnabled);
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("0")]
+    [InlineData("off")]
+    [InlineData("disabled")]
+    public void AutoPopulate_falsey_disables(string value)
+    {
+        using var _ = WithEnvVar(AutoPopulateVar, value);
+        Assert.False(InsightsLayerEnvironment.IsAutoPopulationEnabled);
+    }
+
+    [Fact]
+    public void Derived_auto_flags_follow_two_public_switches()
+    {
+        using var _ = new MultiEnvVarScope(new[]
+        {
+            (EnvVar, (string?)"true"),
+            (AutoPopulateVar, (string?)"true")
+        });
+        Assert.True(InsightsLayerEnvironment.IsEnrichmentDirectiveEnabled);
+        Assert.True(InsightsLayerEnvironment.IsAutoPopulationRowCountsEnabled);
+        Assert.True(InsightsLayerEnvironment.IsAutoPopulationRefreshEnabled);
+    }
+
+    [Fact]
+    public void Derived_auto_flags_disable_when_auto_population_is_off()
+    {
+        using var _ = new MultiEnvVarScope(new[]
+        {
+            (EnvVar, (string?)"true"),
+            (AutoPopulateVar, (string?)"false")
+        });
+        Assert.False(InsightsLayerEnvironment.IsEnrichmentDirectiveEnabled);
+        Assert.False(InsightsLayerEnvironment.IsAutoPopulationRowCountsEnabled);
+        Assert.False(InsightsLayerEnvironment.IsAutoPopulationRefreshEnabled);
+    }
+
+    [Fact]
+    public void Derived_auto_flags_disable_when_layer_is_off()
+    {
+        using var _ = new MultiEnvVarScope(new[]
+        {
+            (EnvVar, (string?)"false"),
+            (AutoPopulateVar, (string?)"true")
+        });
+        Assert.False(InsightsLayerEnvironment.IsEnrichmentDirectiveEnabled);
+        Assert.False(InsightsLayerEnvironment.IsAutoPopulationRowCountsEnabled);
+        Assert.False(InsightsLayerEnvironment.IsAutoPopulationRefreshEnabled);
+    }
+
     private static EnvVarScope WithEnvVar(string? value)
     {
         return new EnvVarScope(EnvVar, value);
+    }
+
+    private static EnvVarScope WithEnvVar(string variableName, string? value)
+    {
+        return new EnvVarScope(variableName, value);
     }
 
     private sealed class EnvVarScope : IDisposable
@@ -78,6 +148,28 @@ public sealed class InsightsLayerEnvironmentTests
         public void Dispose()
         {
             Environment.SetEnvironmentVariable(_name, _original);
+        }
+    }
+
+    private sealed class MultiEnvVarScope : IDisposable
+    {
+        private readonly Dictionary<string, string?> _original = new(StringComparer.OrdinalIgnoreCase);
+
+        public MultiEnvVarScope(IEnumerable<(string name, string? value)> values)
+        {
+            foreach (var (name, value) in values)
+            {
+                _original[name] = Environment.GetEnvironmentVariable(name);
+                Environment.SetEnvironmentVariable(name, value);
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (var kv in _original)
+            {
+                Environment.SetEnvironmentVariable(kv.Key, kv.Value);
+            }
         }
     }
 }

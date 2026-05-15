@@ -20,7 +20,49 @@ This skill standardizes how an agent uses the MSSQL MCP server in this repo. It 
 - Connection: `CONNECTION_STRING` env var (Windows auth or SQL auth)
 - Insights layer: enabled by default, use mcp.json param `USE_INSIGHTS_LAYER=false` to disable. When enabled:
   - Introspection tools attach `insight` + `insightFreshness` to responses.
+  - Auto-population is enabled by default (`INSIGHTS_AUTOPOPULATE=true`) and controls the full auto flow: baseline creation, baseline refresh during scans, and enrichment directives.
   - Write tools (`CreateTable`, `DropTable`, `InsertData`, `UpdateData`, `ExecuteSQL`) queue a background DDL/fingerprint reconciliation.
+
+## STOP — Mandatory enrichment protocol (MCP-Insight-Enrichment-v1)
+
+This is the most important section in this skill. Read it before doing anything else.
+
+After EVERY call to `DescribeTable`, `DescribeView`, `GetStoredProc`, `GetFunction`, or `GetTrigger`, check the response for ANY of these signals:
+
+- top-level `_agentDirective` string is present
+- top-level `pendingEnrichments` array is non-empty
+- `insightEnrichment.required` is `true`
+- `enrichmentSuggested` is `true`
+
+If ANY of those are present, you are under an unfulfilled tool-call obligation. You MUST:
+
+1. **Before writing any user-facing text**, call `UpsertInsight` for the introspected object using `insightEnrichment.nextAction.args`. Replace every `<fill in: ...>` placeholder using the metadata that came back in the same response (columns, FKs, indexes, definition, etc.). Do NOT pass `llmModel="auto-mechanical"` and do NOT pass `confidence <= 0.30` — those are placeholder values; the whole point of this call is to upgrade them.
+2. **For each entry in `insightEnrichment.relatedObjectsToIntrospect`**, call the matching introspection tool (`DescribeTable` / `DescribeView` / `GetStoredProc` / `GetFunction` / `GetTrigger`) and repeat the loop. Related objects that you never introspect will have no insight row at all — that is a worse outcome than a stale baseline.
+3. Only AFTER step 1 and step 2 have completed for every pending enrichment, write your final answer to the user.
+
+Why this is non-negotiable: auto-mechanical baselines exist solely so the cache has *something* for the next agent. They are confidence 0.30 placeholders with `LlmModel="auto-mechanical"`. If you skip this loop, the cache stays at 0.30 indefinitely, and every future agent re-investigates the same objects from scratch.
+
+### Worked example (Documents + related tables)
+
+User: "describe `Documents` and its related tables".
+
+```
+- [ ] 1. DescribeTable(name="Documents")
+       → response has _agentDirective + insightEnrichment.required=true
+       → insightEnrichment.relatedObjectsToIntrospect = ["[dbo].[Buildings]","[dbo].[TableMoneySub]","[dbo].[UnitContacts]","[dbo].[Units]"]
+- [ ] 2. UpsertInsight(<filled args for dbo.Documents>)   ← REQUIRED, before answering
+- [ ] 3. DescribeTable(name="dbo.Buildings")              ← because it was in relatedObjectsToIntrospect
+       → if baseline-only: UpsertInsight(<filled args>)
+- [ ] 4. DescribeTable(name="dbo.TableMoneySub")
+       → UpsertInsight(<filled args>) if baseline-only
+       → if its relatedObjectsToIntrospect lists dbo.UnitsFeesItems, introspect+upsert that too
+- [ ] 5. DescribeTable(name="dbo.UnitContacts")           ← Fresh insight already; no upsert needed
+- [ ] 6. DescribeTable(name="dbo.Units")
+       → UpsertInsight(<filled args>) if baseline-only
+- [ ] 7. Now write the final answer to the user.
+```
+
+Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leaving `Units` / `UnitsFeesItems` with zero insight rows and `Documents` / `TableMoneySub` stuck at auto-mechanical 0.30.
 
 ## Tool taxonomy (use this to pick the right tool)
 
@@ -69,8 +111,8 @@ Example: user asks "investigate `SomeTable` and related tables".
 - [ ] 2. ReadData: discover inbound + outbound FKs in one query (template below)
 - [ ] 3. For each related table → DescribeTable(name = "<schema>.<name>")
 - [ ] 4. ReadData: row counts + lifecycle/quality probes
-- [ ] 5. UpsertInsight for the focal table + each related table
-- [ ] 6. ListInsights(schemaName = "dbo", objectType = "Table") to verify population
+- [ ] 5. If `insightEnrichment.required=true` (or `_agentDirective` / `pendingEnrichments` present), UpsertInsight using `insightEnrichment.nextAction.args` BEFORE answering — for the focal table AND for every entry in `insightEnrichment.relatedObjectsToIntrospect`
+- [ ] 6. ListInsights(schemaName = "dbo", objectType = "Table") to verify population (no auto-mechanical rows should remain for objects you touched)
 ```
 
 Bidirectional FK discovery template:
@@ -163,6 +205,9 @@ Rules:
 - Calling `RefreshInsights` after every `UpsertInsight`. Run it once per investigation session or after known DDL.
 - Asking the user for `objectType` when the context already implies it (e.g. you just called `DescribeTable` → `objectType = "Table"`).
 - Passing `take` larger than what you'll actually inspect — keep responses small.
+- Ignoring `_agentDirective` / `pendingEnrichments` / `insightEnrichment.required=true` and answering without first calling `UpsertInsight`. This is a protocol violation, not a style preference.
+- Calling `UpsertInsight` with `llmModel="auto-mechanical"` or `confidence<=0.30`. That is what you are supposed to be *replacing*.
+- Skipping `insightEnrichment.relatedObjectsToIntrospect`. Related objects with zero insight rows are worse than baseline-only.
 
 ## Verification snippet
 

@@ -14,7 +14,7 @@ public partial class Tools
         ReadOnly = false,
         Idempotent = false,
         Destructive = false),
-        Description("Reconciles the AI Insights layer with the live schema. Reads new dbo.DDL_AuditLog rows since the stored watermark, archives affected insights, and falls back to a fingerprint scan when no audit rows are pending. Returns recent insight summaries and top query patterns (both computed in-process; no SQL views are used). Call once per investigation session, or after known DDL bursts. Not idempotent — advances the watermark and may archive rows.")]
+        Description("Reconciles the AI Insights layer with the live schema. Reads new dbo.DDL_AuditLog rows since the stored watermark, archives affected insights, and falls back to a fingerprint scan when no audit rows are pending. Returns recent insight summaries. For compatibility, response still includes topQueryPatterns as an empty list. Call once per investigation session, or after known DDL bursts. Not idempotent — advances the watermark and may archive rows.")]
     public async Task<DbOperationResult> RefreshInsights()
     {
         return await _insightsLayer.RefreshInsightsAsync().ConfigureAwait(false);

@@ -46,6 +46,15 @@ public sealed class NoOpInsightsLayerService : IInsightsLayerService
         return Task.FromResult<(SchemaInsight?, InsightFreshness)>((null, InsightFreshness.LayerDisabled));
     }
 
+    public Task<(SchemaInsight? insight, InsightFreshness freshness)> EnsureBaselineForObjectAsync(
+        string objectType,
+        string? schemaName,
+        string objectName,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<(SchemaInsight?, InsightFreshness)>((null, InsightFreshness.LayerDisabled));
+    }
+
     public Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default)
     {
         return Task.FromResult(new DbOperationResult(success: false, error: "AI Insights layer is disabled."));

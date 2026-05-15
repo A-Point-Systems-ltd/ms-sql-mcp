@@ -17,6 +17,7 @@ public sealed class InsightsLayerService(
 {
     private const string SchemaScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateInsightsSchema.sql";
     private const string TriggerScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditTrigger.sql";
+    internal const string AutoMechanicalModel = "auto-mechanical";
 
     private readonly ISqlConnectionFactory _connectionFactory = connectionFactory;
     private readonly ILogger<InsightsLayerService> _logger = logger;
@@ -34,6 +35,7 @@ public sealed class InsightsLayerService(
         DateTime? ModifyDate,
         int? ObjectId,
         string? Fingerprint);
+    private sealed record ObjectIdentity(string ObjectType, string SchemaName, string ObjectName);
 
     public bool IsEnabled => InsightsLayerEnvironment.IsInsightsLayerEnabled;
 
@@ -214,6 +216,59 @@ public sealed class InsightsLayerService(
         return (insight, InsightFreshness.Fresh);
     }
 
+    public async Task<(SchemaInsight? insight, InsightFreshness freshness)> EnsureBaselineForObjectAsync(
+        string objectType,
+        string? schemaName,
+        string objectName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled)
+        {
+            return await GetInsightForObjectAsync(objectType, schemaName, objectName, cancellationToken).ConfigureAwait(false);
+        }
+
+        var schema = NormalizeSchema(schemaName);
+        var (existing, existingFreshness) = await GetInsightForObjectAsync(objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
+        if (existingFreshness is InsightFreshness.LayerDisabled or InsightFreshness.AccessDenied or InsightFreshness.DefinitionUnavailable)
+        {
+            return (existing, existingFreshness);
+        }
+
+        var shouldRefreshAutoMechanical = existing is not null
+            && existingFreshness == InsightFreshness.Fresh
+            && IsAutoMechanical(existing)
+            && InsightsLayerEnvironment.IsAutoPopulationRefreshEnabled
+            && existing.LastAnalyzed.Date < DateTime.Now.Date;
+
+        if (existing is not null && !shouldRefreshAutoMechanical)
+        {
+            return (existing, existingFreshness);
+        }
+
+        try
+        {
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
+            var live = await TryComputeLiveFingerprintAsync(conn, objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
+            if (live.State != LiveObjectState.Found)
+            {
+                return await GetInsightForObjectAsync(objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
+            }
+
+            var baseline = await BuildMechanicalBaselineAsync(conn, objectType, schema, objectName, live, cancellationToken).ConfigureAwait(false);
+            var upsert = await UpsertInsightAsync(baseline, cancellationToken).ConfigureAwait(false);
+            if (!upsert.Success)
+            {
+                _logger.LogDebug("Auto baseline upsert skipped for {Type} {Schema}.{Object}: {Error}", objectType, schema, objectName, upsert.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "EnsureBaselineForObjectAsync failed for {Type} {Schema}.{Object}", objectType, schema, objectName);
+        }
+
+        return await GetInsightForObjectAsync(objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default)
     {
         if (!IsEnabled)
@@ -245,7 +300,7 @@ public sealed class InsightsLayerService(
                         RelatedObjects = @RelatedObjects,
                         LLMModel = @LLMModel,
                         Confidence = @Confidence,
-                        LastAnalyzed = SYSUTCDATETIME(),
+                        LastAnalyzed = GETDATE(),
                         AnalyzedBy = @AnalyzedBy,
                         Version = Version + 1,
                         ModifyDateAtAnalysis = @ModifyDateAtAnalysis,
@@ -312,6 +367,8 @@ public sealed class InsightsLayerService(
                 return;
             }
 
+            var archivedObjects = new List<ObjectIdentity>();
+
             if (await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false)
                 && await DdlWatermarkTableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
             {
@@ -323,15 +380,22 @@ public sealed class InsightsLayerService(
                     foreach (var row in newRows)
                     {
                         maxId = Math.Max(maxId, row.Id);
-                        await ArchiveInsightsForDdlObjectAsync(conn, row, cancellationToken).ConfigureAwait(false);
+                        archivedObjects.AddRange(await ArchiveInsightsForDdlObjectAsync(conn, row, cancellationToken).ConfigureAwait(false));
                     }
 
                     await UpdateWatermarkAsync(conn, maxId, cancellationToken).ConfigureAwait(false);
-                    return;
                 }
             }
 
-            await ScanFingerprintsAndArchiveAsync(conn, take: 500, cancellationToken).ConfigureAwait(false);
+            archivedObjects.AddRange(await ScanFingerprintsAndArchiveAsync(conn, take: 500, cancellationToken).ConfigureAwait(false));
+
+            if (InsightsLayerEnvironment.IsAutoPopulationEnabled)
+            {
+                foreach (var obj in archivedObjects.DistinctBy(o => $"{o.ObjectType}|{o.SchemaName}|{o.ObjectName}"))
+                {
+                    _ = await EnsureBaselineForObjectAsync(obj.ObjectType, obj.SchemaName, obj.ObjectName, cancellationToken).ConfigureAwait(false);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -448,7 +512,7 @@ public sealed class InsightsLayerService(
             await ProcessDdlChangesAsync(cancellationToken).ConfigureAwait(false);
             await using var conn = await _connectionFactory.GetOpenConnectionAsync();
             var recent = await QueryRecentInsightsAsync(conn, cancellationToken).ConfigureAwait(false);
-            var topPatterns = await QueryTopQueryPatternsAsync(conn, cancellationToken).ConfigureAwait(false);
+            var topPatterns = new List<Dictionary<string, object?>>();
             return new DbOperationResult(success: true, data: new { recentInsights = recent, topQueryPatterns = topPatterns });
         }
         catch (Exception ex)
@@ -492,6 +556,177 @@ public sealed class InsightsLayerService(
             ["version"] = reader.GetInt32(9)
         };
 
+    private static bool IsAutoMechanical(SchemaInsight? insight) =>
+        insight is not null
+        && string.Equals(insight.LlmModel, AutoMechanicalModel, StringComparison.OrdinalIgnoreCase);
+
+    private async Task<SchemaInsight> BuildMechanicalBaselineAsync(
+        SqlConnection conn,
+        string objectType,
+        string schema,
+        string objectName,
+        LiveFingerprintResult live,
+        CancellationToken cancellationToken)
+    {
+        var normalizedType = objectType.Trim();
+        int? columnCount = null;
+        long? approxRowCount = null;
+
+        var relatedObjects = await ReadRelatedObjectsAsync(conn, normalizedType, schema, objectName, cancellationToken).ConfigureAwait(false);
+        if (string.Equals(normalizedType, "Table", StringComparison.OrdinalIgnoreCase))
+        {
+            columnCount = await ReadTableColumnCountAsync(conn, schema, objectName, cancellationToken).ConfigureAwait(false);
+            if (InsightsLayerEnvironment.IsAutoPopulationRowCountsEnabled)
+            {
+                approxRowCount = await ReadTableApproxRowCountAsync(conn, schema, objectName, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        var dataPatterns = JsonSerializer.Serialize(new
+        {
+            mode = AutoMechanicalModel,
+            generatedAtUtc = DateTime.UtcNow,
+            objectType = normalizedType,
+            schemaName = schema,
+            objectName,
+            objectId = live.ObjectId,
+            modifyDateAtAnalysis = live.ModifyDate,
+            columnCount,
+            approxRowCount
+        });
+
+        var shortName = $"{schema}.{objectName}";
+        var description = string.Equals(normalizedType, "Table", StringComparison.OrdinalIgnoreCase)
+            ? $"Auto-baseline for {shortName}: columns={columnCount?.ToString() ?? "?"}, approxRows={(approxRowCount?.ToString() ?? "n/a")}."
+            : $"Auto-baseline for {shortName} ({normalizedType}) from live schema metadata.";
+
+        return new SchemaInsight
+        {
+            InsightId = 0,
+            ObjectType = normalizedType,
+            SchemaName = schema,
+            ObjectName = objectName,
+            ColumnName = null,
+            Description = description,
+            BusinessPurpose = "Auto-generated baseline from schema metadata. Replace with domain-specific business purpose.",
+            DataPatterns = dataPatterns,
+            UsageGuidelines = "Auto-generated baseline. Enrich with preferred joins, filters, and known caveats after inspection.",
+            RelatedObjects = JsonSerializer.Serialize(relatedObjects),
+            LlmModel = AutoMechanicalModel,
+            Confidence = 0.30m,
+            LastAnalyzed = default,
+            AnalyzedBy = "MssqlMcp-AutoBaseline",
+            Version = 1,
+            ModifyDateAtAnalysis = live.ModifyDate,
+            ObjectIdAtAnalysis = live.ObjectId,
+            SchemaFingerprint = live.Fingerprint
+        };
+    }
+
+    private static async Task<int?> ReadTableColumnCountAsync(SqlConnection conn, string schema, string tableName, CancellationToken cancellationToken)
+    {
+        await using var cmd = new SqlCommand(
+            """
+            SELECT COUNT(*)
+            FROM sys.columns c
+            INNER JOIN sys.tables t ON c.object_id = t.object_id
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+            WHERE s.name = @Schema AND t.name = @TableName;
+            """,
+            conn);
+        cmd.Parameters.AddWithValue("@Schema", schema);
+        cmd.Parameters.AddWithValue("@TableName", tableName);
+        var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return scalar is int i ? i : null;
+    }
+
+    private static async Task<long?> ReadTableApproxRowCountAsync(SqlConnection conn, string schema, string tableName, CancellationToken cancellationToken)
+    {
+        await using var cmd = new SqlCommand(
+            """
+            SELECT SUM(CAST(ps.row_count AS BIGINT))
+            FROM sys.dm_db_partition_stats ps
+            INNER JOIN sys.tables t ON ps.object_id = t.object_id
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+            WHERE s.name = @Schema
+              AND t.name = @TableName
+              AND ps.index_id IN (0, 1);
+            """,
+            conn);
+        cmd.Parameters.AddWithValue("@Schema", schema);
+        cmd.Parameters.AddWithValue("@TableName", tableName);
+        var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        if (scalar is DBNull || scalar is null)
+        {
+            return null;
+        }
+
+        return Convert.ToInt64(scalar, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<List<string>> ReadRelatedObjectsAsync(
+        SqlConnection conn,
+        string objectType,
+        string schema,
+        string objectName,
+        CancellationToken cancellationToken)
+    {
+        var related = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.Equals(objectType, "Table", StringComparison.OrdinalIgnoreCase))
+        {
+            await using var fkCmd = new SqlCommand(
+                """
+                SELECT DISTINCT QUOTENAME(SCHEMA_NAME(t2.schema_id)) + N'.' + QUOTENAME(t2.name) AS related_name
+                FROM sys.foreign_keys fk
+                INNER JOIN sys.tables t1 ON fk.parent_object_id = t1.object_id
+                INNER JOIN sys.schemas s1 ON t1.schema_id = s1.schema_id
+                INNER JOIN sys.tables t2 ON fk.referenced_object_id = t2.object_id
+                WHERE s1.name = @Schema AND t1.name = @Name
+                UNION
+                SELECT DISTINCT QUOTENAME(SCHEMA_NAME(t1.schema_id)) + N'.' + QUOTENAME(t1.name) AS related_name
+                FROM sys.foreign_keys fk
+                INNER JOIN sys.tables t2 ON fk.referenced_object_id = t2.object_id
+                INNER JOIN sys.schemas s2 ON t2.schema_id = s2.schema_id
+                INNER JOIN sys.tables t1 ON fk.parent_object_id = t1.object_id
+                WHERE s2.name = @Schema AND t2.name = @Name;
+                """,
+                conn);
+            fkCmd.Parameters.AddWithValue("@Schema", schema);
+            fkCmd.Parameters.AddWithValue("@Name", objectName);
+            await using var fkReader = await fkCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await fkReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!fkReader.IsDBNull(0))
+                {
+                    _ = related.Add(fkReader.GetString(0));
+                }
+            }
+        }
+        else
+        {
+            await using var depCmd = new SqlCommand(
+                """
+                SELECT DISTINCT QUOTENAME(ISNULL(referenced_schema_name, N'dbo')) + N'.' + QUOTENAME(referenced_entity_name)
+                FROM sys.sql_expression_dependencies
+                WHERE referencing_id = OBJECT_ID(QUOTENAME(@Schema) + N'.' + QUOTENAME(@Name))
+                  AND referenced_entity_name IS NOT NULL;
+                """,
+                conn);
+            depCmd.Parameters.AddWithValue("@Schema", schema);
+            depCmd.Parameters.AddWithValue("@Name", objectName);
+            await using var depReader = await depCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await depReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!depReader.IsDBNull(0))
+                {
+                    _ = related.Add(depReader.GetString(0));
+                }
+            }
+        }
+
+        return related.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     private static async Task<List<Dictionary<string, object?>>> QueryRecentInsightsAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
         var list = new List<(string Type, string Name, string? Description, DateTime Date, string? By)>();
@@ -504,38 +739,11 @@ public sealed class InsightsLayerService(
                 LastAnalyzed,
                 AnalyzedBy
             FROM AIInsights.SchemaInsights
-            WHERE LastAnalyzed >= DATEADD(day, -7, SYSUTCDATETIME())
+            WHERE LastAnalyzed >= DATEADD(day, -7, GETDATE())
             ORDER BY LastAnalyzed DESC;
             """;
 
         await using (var cmd = new SqlCommand(schemaSql, conn))
-        {
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                list.Add((
-                    reader.GetString(0),
-                    reader.GetString(1),
-                    reader.IsDBNull(2) ? null : reader.GetString(2),
-                    reader.GetDateTime(3),
-                    reader.IsDBNull(4) ? null : reader.GetString(4)));
-            }
-        }
-
-        const string dqSql = """
-            SELECT TOP (50)
-                CAST(N'DataQuality' AS NVARCHAR(20)),
-                TableName + N'.' + ISNULL(ColumnName, N'*'),
-                IssueDescription,
-                DetectedDate,
-                AssignedTo
-            FROM AIInsights.DataQualityInsights
-            WHERE DetectedDate >= DATEADD(day, -7, SYSUTCDATETIME())
-              AND Status = N'Open'
-            ORDER BY DetectedDate DESC;
-            """;
-
-        await using (var cmd = new SqlCommand(dqSql, conn))
         {
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -560,39 +768,6 @@ public sealed class InsightsLayerService(
                 ["by"] = x.By
             })
             .ToList();
-    }
-
-    private static async Task<List<Dictionary<string, object?>>> QueryTopQueryPatternsAsync(SqlConnection conn, CancellationToken cancellationToken)
-    {
-        const string sql = """
-            SELECT TOP (20)
-                PatternName,
-                Purpose,
-                UsageCount,
-                AvgExecutionTimeMS,
-                LastUsed,
-                Tags
-            FROM AIInsights.QueryPatterns
-            ORDER BY UsageCount DESC;
-            """;
-
-        await using var cmd = new SqlCommand(sql, conn);
-        var list = new List<Dictionary<string, object?>>();
-        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            list.Add(new Dictionary<string, object?>
-            {
-                ["patternName"] = reader.GetString(0),
-                ["purpose"] = reader.IsDBNull(1) ? null : reader.GetString(1),
-                ["usageCount"] = reader.GetInt32(2),
-                ["avgExecutionTimeMS"] = reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                ["lastUsed"] = reader.IsDBNull(4) ? null : reader.GetDateTime(4),
-                ["tags"] = reader.IsDBNull(5) ? null : reader.GetString(5)
-            });
-        }
-
-        return list;
     }
 
     private async Task ExecuteScriptBatchesAsync(string script, CancellationToken cancellationToken)
@@ -708,11 +883,12 @@ public sealed class InsightsLayerService(
         return rows;
     }
 
-    private async Task ArchiveInsightsForDdlObjectAsync(SqlConnection conn, DdlAuditRow row, CancellationToken cancellationToken)
+    private async Task<List<ObjectIdentity>> ArchiveInsightsForDdlObjectAsync(SqlConnection conn, DdlAuditRow row, CancellationToken cancellationToken)
     {
+        var archived = new List<ObjectIdentity>();
         if (string.IsNullOrWhiteSpace(row.ObjectName))
         {
-            return;
+            return archived;
         }
 
         var schema = string.IsNullOrWhiteSpace(row.SchemaName) ? "dbo" : row.SchemaName.Trim();
@@ -720,7 +896,7 @@ public sealed class InsightsLayerService(
         var matchedInsightType = MapAuditTypeToInsightType(row.ObjectType, row.EventType);
         if (matchedInsightType is null)
         {
-            return;
+            return archived;
         }
 
         var liveObjectId = await TryResolveObjectIdForInsightTypeAsync(conn, matchedInsightType, schema, objectName, cancellationToken).ConfigureAwait(false);
@@ -763,7 +939,10 @@ public sealed class InsightsLayerService(
             }
 
             await ArchiveInsightAsync(conn, candidate.Id, "DdlAudit", "ProcessDdlChanges", row.Id, cancellationToken).ConfigureAwait(false);
+            archived.Add(new ObjectIdentity(matchedInsightType, schema, objectName));
         }
+
+        return archived;
     }
 
     private static bool IsRenameEvent(string? eventType) =>
@@ -934,7 +1113,7 @@ public sealed class InsightsLayerService(
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task ScanFingerprintsAndArchiveAsync(SqlConnection conn, int take, CancellationToken cancellationToken)
+    private async Task<List<ObjectIdentity>> ScanFingerprintsAndArchiveAsync(SqlConnection conn, int take, CancellationToken cancellationToken)
     {
         await using var cmd = new SqlCommand(
             """
@@ -947,6 +1126,7 @@ public sealed class InsightsLayerService(
         cmd.Parameters.AddWithValue("@Take", take);
 
         var rows = new List<(int Id, string Type, string? Schema, string Name, int? ObjectIdAtAnalysis)>();
+        var archived = new List<ObjectIdentity>();
         await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -967,6 +1147,7 @@ public sealed class InsightsLayerService(
             if (live.State == LiveObjectState.Missing)
             {
                 await ArchiveInsightAsync(conn, row.Id, "ObjectMissing", "FingerprintScan", null, cancellationToken).ConfigureAwait(false);
+                archived.Add(new ObjectIdentity(row.Type, schema, row.Name));
                 continue;
             }
 
@@ -999,8 +1180,11 @@ public sealed class InsightsLayerService(
             if (stale)
             {
                 await ArchiveInsightAsync(conn, row.Id, "FingerprintMismatch", "FingerprintScan", null, cancellationToken).ConfigureAwait(false);
+                archived.Add(new ObjectIdentity(row.Type, schema, row.Name));
             }
         }
+
+        return archived;
     }
 
     private async Task ArchiveInsightAsync(SqlConnection conn, int insightId, string reason, string archivedByEvent, int? sourceDdlAuditId, CancellationToken cancellationToken)
@@ -1286,32 +1470,49 @@ public sealed class InsightsLayerService(
 
 public static class InsightsLayerEnvironment
 {
+    private static bool IsDisabledByFalseyValue(string variableName)
+    {
+        var v = Environment.GetEnvironmentVariable(variableName);
+        if (string.IsNullOrWhiteSpace(v))
+        {
+            return false;
+        }
+
+        var trimmed = v.Trim();
+        return string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase)
+            || trimmed == "0"
+            || string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, "disabled", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// True unless <c>USE_INSIGHTS_LAYER</c> is explicitly set to a falsey value
     /// (<c>false</c>, <c>0</c>, <c>no</c>, <c>off</c>, <c>disabled</c>). The variable is
     /// therefore an opt-OUT switch: missing/empty == enabled.
     /// </summary>
-    public static bool IsInsightsLayerEnabled
-    {
-        get
-        {
-            var v = Environment.GetEnvironmentVariable("USE_INSIGHTS_LAYER");
-            if (string.IsNullOrWhiteSpace(v))
-            {
-                return true;
-            }
+    public static bool IsInsightsLayerEnabled => !IsDisabledByFalseyValue("USE_INSIGHTS_LAYER");
 
-            var trimmed = v.Trim();
-            if (string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase)
-                || trimmed == "0"
-                || string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(trimmed, "disabled", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
+    /// <summary>
+    /// True unless <c>INSIGHTS_AUTOPOPULATE</c> is explicitly set to a falsey value.
+    /// </summary>
+    public static bool IsAutoPopulationEnabled => !IsDisabledByFalseyValue("INSIGHTS_AUTOPOPULATE");
 
-            return true;
-        }
-    }
+    /// <summary>
+    /// Derived from the two public feature switches only:
+    /// when insights + auto-population are enabled, enrichment directives are enabled.
+    /// </summary>
+    public static bool IsEnrichmentDirectiveEnabled => IsInsightsLayerEnabled && IsAutoPopulationEnabled;
+
+    /// <summary>
+    /// Derived from the two public feature switches only:
+    /// when insights + auto-population are enabled, baseline row-count probing is enabled.
+    /// </summary>
+    public static bool IsAutoPopulationRowCountsEnabled => IsInsightsLayerEnabled && IsAutoPopulationEnabled;
+
+    /// <summary>
+    /// Derived from the two public feature switches only:
+    /// when insights + auto-population are enabled, fresh auto-mechanical rows may be refreshed.
+    /// </summary>
+    public static bool IsAutoPopulationRefreshEnabled => IsInsightsLayerEnabled && IsAutoPopulationEnabled;
 }

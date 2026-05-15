@@ -38,7 +38,7 @@ BEGIN
         RelatedObjects NVARCHAR(MAX) NULL,
         LLMModel NVARCHAR(100) NULL,
         Confidence DECIMAL(3,2) NULL,
-        LastAnalyzed DATETIME2 NOT NULL CONSTRAINT DF_SchemaInsights_LastAnalyzed DEFAULT (SYSUTCDATETIME()),
+        LastAnalyzed DATETIME2 NOT NULL CONSTRAINT DF_SchemaInsights_LastAnalyzed DEFAULT (GETDATE()),
         AnalyzedBy NVARCHAR(100) NULL,
         Version INT NOT NULL CONSTRAINT DF_SchemaInsights_Version DEFAULT (1),
         ModifyDateAtAnalysis DATETIME2 NULL,
@@ -59,6 +59,31 @@ IF COL_LENGTH('AIInsights.SchemaInsights', 'SchemaFingerprint') IS NULL
     ALTER TABLE AIInsights.SchemaInsights ADD SchemaFingerprint VARCHAR(64) NULL;
 GO
 
+/* ---- Ensure LastAnalyzed default uses local server time (GETDATE) on existing installs ---- */
+IF EXISTS (
+    SELECT 1
+    FROM sys.default_constraints dc
+    JOIN sys.columns c ON c.default_object_id = dc.object_id
+    WHERE dc.parent_object_id = OBJECT_ID('AIInsights.SchemaInsights')
+      AND c.name = N'LastAnalyzed'
+      AND dc.definition <> '(getdate())'
+)
+BEGIN
+    DECLARE @dfName SYSNAME;
+    SELECT @dfName = dc.name
+    FROM sys.default_constraints dc
+    JOIN sys.columns c ON c.default_object_id = dc.object_id
+    WHERE dc.parent_object_id = OBJECT_ID('AIInsights.SchemaInsights')
+      AND c.name = N'LastAnalyzed';
+
+    IF @dfName IS NOT NULL
+        EXEC(N'ALTER TABLE AIInsights.SchemaInsights DROP CONSTRAINT ' + QUOTENAME(@dfName));
+
+    ALTER TABLE AIInsights.SchemaInsights
+        ADD CONSTRAINT DF_SchemaInsights_LastAnalyzed DEFAULT (GETDATE()) FOR LastAnalyzed;
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SchemaInsights_Object' AND object_id = OBJECT_ID('AIInsights.SchemaInsights'))
     CREATE INDEX IX_SchemaInsights_Object ON AIInsights.SchemaInsights(ObjectType, SchemaName, ObjectName);
 GO
@@ -66,123 +91,21 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SchemaInsights_LastAn
     CREATE INDEX IX_SchemaInsights_LastAnalyzed ON AIInsights.SchemaInsights(LastAnalyzed DESC);
 GO
 
-IF OBJECT_ID('AIInsights.QueryPatterns', 'U') IS NULL
-BEGIN
-    CREATE TABLE AIInsights.QueryPatterns (
-        PatternID INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_QueryPatterns PRIMARY KEY,
-        PatternName NVARCHAR(200) NOT NULL,
-        QueryTemplate NVARCHAR(MAX) NOT NULL,
-        Purpose NVARCHAR(MAX) NULL,
-        TypicalUseCase NVARCHAR(MAX) NULL,
-        PerformanceNotes NVARCHAR(MAX) NULL,
-        ExampleParameters NVARCHAR(MAX) NULL,
-        UsageCount INT NOT NULL CONSTRAINT DF_QueryPatterns_UsageCount DEFAULT (0),
-        AvgExecutionTimeMS INT NULL,
-        LastUsed DATETIME2 NULL,
-        CreatedDate DATETIME2 NOT NULL CONSTRAINT DF_QueryPatterns_CreatedDate DEFAULT (SYSUTCDATETIME()),
-        CreatedBy NVARCHAR(100) NULL,
-        LLMModel NVARCHAR(100) NULL,
-        Tags NVARCHAR(500) NULL
-    );
-END
+/* ---- Remove legacy/non-active tables from earlier schema versions ---- */
+IF OBJECT_ID('AIInsights.InsightFeedback', 'U') IS NOT NULL
+    DROP TABLE AIInsights.InsightFeedback;
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_QueryPatterns_Tags' AND object_id = OBJECT_ID('AIInsights.QueryPatterns'))
-    CREATE INDEX IX_QueryPatterns_Tags ON AIInsights.QueryPatterns(Tags);
+IF OBJECT_ID('AIInsights.AnalysisSessions', 'U') IS NOT NULL
+    DROP TABLE AIInsights.AnalysisSessions;
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_QueryPatterns_UsageCount' AND object_id = OBJECT_ID('AIInsights.QueryPatterns'))
-    CREATE INDEX IX_QueryPatterns_UsageCount ON AIInsights.QueryPatterns(UsageCount DESC);
+IF OBJECT_ID('AIInsights.BusinessRules', 'U') IS NOT NULL
+    DROP TABLE AIInsights.BusinessRules;
 GO
-
-IF OBJECT_ID('AIInsights.DataQualityInsights', 'U') IS NULL
-BEGIN
-    CREATE TABLE AIInsights.DataQualityInsights (
-        QualityInsightID INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_DataQualityInsights PRIMARY KEY,
-        SchemaName NVARCHAR(128) NULL,
-        TableName NVARCHAR(128) NOT NULL,
-        ColumnName NVARCHAR(128) NULL,
-        IssueType NVARCHAR(100) NULL,
-        IssueSeverity NVARCHAR(20) NULL,
-        IssueDescription NVARCHAR(MAX) NULL,
-        AffectedRowsEstimate INT NULL,
-        RecommendedFix NVARCHAR(MAX) NULL,
-        PreventionStrategy NVARCHAR(MAX) NULL,
-        Status NVARCHAR(50) NOT NULL CONSTRAINT DF_DataQuality_Status DEFAULT (N'Open'),
-        DetectedDate DATETIME2 NOT NULL CONSTRAINT DF_DataQuality_Detected DEFAULT (SYSUTCDATETIME()),
-        ResolvedDate DATETIME2 NULL,
-        AssignedTo NVARCHAR(100) NULL
-    );
-END
+IF OBJECT_ID('AIInsights.DataQualityInsights', 'U') IS NOT NULL
+    DROP TABLE AIInsights.DataQualityInsights;
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DataQuality_Status' AND object_id = OBJECT_ID('AIInsights.DataQualityInsights'))
-    CREATE INDEX IX_DataQuality_Status ON AIInsights.DataQualityInsights(Status, IssueSeverity);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DataQuality_Table' AND object_id = OBJECT_ID('AIInsights.DataQualityInsights'))
-    CREATE INDEX IX_DataQuality_Table ON AIInsights.DataQualityInsights(SchemaName, TableName);
-GO
-
-IF OBJECT_ID('AIInsights.BusinessRules', 'U') IS NULL
-BEGIN
-    CREATE TABLE AIInsights.BusinessRules (
-        RuleID INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_BusinessRules PRIMARY KEY,
-        RuleName NVARCHAR(200) NOT NULL,
-        RuleCategory NVARCHAR(100) NULL,
-        RuleDescription NVARCHAR(MAX) NULL,
-        SQLExpression NVARCHAR(MAX) NULL,
-        AffectedObjects NVARCHAR(MAX) NULL,
-        IsImplemented BIT NOT NULL CONSTRAINT DF_BusinessRules_IsImplemented DEFAULT (0),
-        ImplementedIn NVARCHAR(MAX) NULL,
-        DiscoveredDate DATETIME2 NOT NULL CONSTRAINT DF_BusinessRules_Discovered DEFAULT (SYSUTCDATETIME()),
-        DiscoveredBy NVARCHAR(100) NULL,
-        Confidence DECIMAL(3,2) NULL,
-        ValidationStatus NVARCHAR(50) NOT NULL CONSTRAINT DF_BusinessRules_Validation DEFAULT (N'Pending'),
-        ValidatedBy NVARCHAR(100) NULL,
-        ValidatedDate DATETIME2 NULL
-    );
-END
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_BusinessRules_Category' AND object_id = OBJECT_ID('AIInsights.BusinessRules'))
-    CREATE INDEX IX_BusinessRules_Category ON AIInsights.BusinessRules(RuleCategory);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_BusinessRules_ValidationStatus' AND object_id = OBJECT_ID('AIInsights.BusinessRules'))
-    CREATE INDEX IX_BusinessRules_ValidationStatus ON AIInsights.BusinessRules(ValidationStatus);
-GO
-
-IF OBJECT_ID('AIInsights.AnalysisSessions', 'U') IS NULL
-BEGIN
-    CREATE TABLE AIInsights.AnalysisSessions (
-        SessionID INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_AnalysisSessions PRIMARY KEY,
-        SessionGUID UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_AnalysisSessions_Guid DEFAULT (NEWID()),
-        AnalysisType NVARCHAR(100) NULL,
-        Scope NVARCHAR(MAX) NULL,
-        InsightsGenerated INT NOT NULL CONSTRAINT DF_AnalysisSessions_InsightsGen DEFAULT (0),
-        IssuesFound INT NOT NULL CONSTRAINT DF_AnalysisSessions_Issues DEFAULT (0),
-        Duration INT NULL,
-        StartTime DATETIME2 NOT NULL CONSTRAINT DF_AnalysisSessions_Start DEFAULT (SYSUTCDATETIME()),
-        EndTime DATETIME2 NULL,
-        PerformedBy NVARCHAR(100) NULL,
-        LLMModel NVARCHAR(100) NULL,
-        Status NVARCHAR(50) NOT NULL CONSTRAINT DF_AnalysisSessions_Status DEFAULT (N'Running')
-    );
-END
-GO
-
-IF OBJECT_ID('AIInsights.InsightFeedback', 'U') IS NULL
-BEGIN
-    CREATE TABLE AIInsights.InsightFeedback (
-        FeedbackID INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_InsightFeedback PRIMARY KEY,
-        InsightType NVARCHAR(50) NULL,
-        InsightID INT NOT NULL,
-        IsHelpful BIT NULL,
-        IsAccurate BIT NULL,
-        Rating INT NULL,
-        Comments NVARCHAR(MAX) NULL,
-        ProvidedBy NVARCHAR(100) NULL,
-        ProvidedDate DATETIME2 NOT NULL CONSTRAINT DF_InsightFeedback_Provided DEFAULT (SYSUTCDATETIME())
-    );
-END
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Feedback_Insight' AND object_id = OBJECT_ID('AIInsights.InsightFeedback'))
-    CREATE INDEX IX_Feedback_Insight ON AIInsights.InsightFeedback(InsightType, InsightID);
+IF OBJECT_ID('AIInsights.QueryPatterns', 'U') IS NOT NULL
+    DROP TABLE AIInsights.QueryPatterns;
 GO
 
 IF OBJECT_ID('AIInsights.InsightHistory', 'U') IS NULL
