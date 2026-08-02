@@ -1,3 +1,4 @@
+using System.Data;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -198,22 +199,55 @@ public sealed class InsightsLayerService(
             return (insight, InsightFreshness.DefinitionUnavailable);
         }
 
-        var staleByObjectId = insight.ObjectIdAtAnalysis.HasValue
-            && live.ObjectId.HasValue
-            && insight.ObjectIdAtAnalysis.Value != live.ObjectId.Value;
-        var staleByModify = insight.ModifyDateAtAnalysis.HasValue
-            && live.ModifyDate.HasValue
-            && insight.ModifyDateAtAnalysis.Value != live.ModifyDate.Value;
-        var staleByFingerprint = !string.IsNullOrWhiteSpace(insight.SchemaFingerprint)
-            && !string.IsNullOrWhiteSpace(live.Fingerprint)
-            && !string.Equals(insight.SchemaFingerprint, live.Fingerprint, StringComparison.OrdinalIgnoreCase);
-        if (staleByObjectId || staleByModify || staleByFingerprint)
+        if (IsStaleAgainstLive(
+                insight.ObjectIdAtAnalysis,
+                insight.ModifyDateAtAnalysis,
+                insight.SchemaFingerprint,
+                live.ObjectId,
+                live.ModifyDate,
+                live.Fingerprint))
         {
             await ArchiveInsightAsync(conn, insight.InsightId, "FingerprintMismatch", "GetInsight", null, cancellationToken).ConfigureAwait(false);
             return (null, InsightFreshness.StaleArchived);
         }
 
         return (insight, InsightFreshness.Fresh);
+    }
+
+    /// <summary>
+    /// sys.objects.modify_date is a datetime (1/300s granularity), so a value that has been through
+    /// the DATETIME2 storage column can legitimately differ from the live read by a few milliseconds.
+    /// </summary>
+    private static readonly TimeSpan ModifyDateTolerance = TimeSpan.FromMilliseconds(10);
+
+    /// <summary>
+    /// Decides whether a stored insight no longer matches the live object. Shared by the read path
+    /// and the background fingerprint scan so both invalidate on exactly the same signals.
+    /// </summary>
+    internal static bool IsStaleAgainstLive(
+        int? storedObjectId,
+        DateTime? storedModifyDate,
+        string? storedFingerprint,
+        int? liveObjectId,
+        DateTime? liveModifyDate,
+        string? liveFingerprint)
+    {
+        if (storedObjectId.HasValue && liveObjectId.HasValue && storedObjectId.Value != liveObjectId.Value)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(storedFingerprint) && !string.IsNullOrWhiteSpace(liveFingerprint))
+        {
+            // The fingerprint covers the columns/definition that an insight actually describes, so it
+            // decides alone: modify_date also moves for changes that leave the shape intact, such as
+            // auto-created statistics or an index rebuild.
+            return !string.Equals(storedFingerprint, liveFingerprint, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return storedModifyDate.HasValue
+            && liveModifyDate.HasValue
+            && (storedModifyDate.Value - liveModifyDate.Value).Duration() > ModifyDateTolerance;
     }
 
     public async Task<(SchemaInsight? insight, InsightFreshness freshness)> EnsureBaselineForObjectAsync(
@@ -536,7 +570,9 @@ public sealed class InsightsLayerService(
         cmd.Parameters.AddWithValue("@LLMModel", input.LlmModel ?? (object)DBNull.Value);
         cmd.Parameters.AddWithValue("@Confidence", input.Confidence ?? (object)DBNull.Value);
         cmd.Parameters.AddWithValue("@AnalyzedBy", input.AnalyzedBy ?? (object)DBNull.Value);
-        cmd.Parameters.AddWithValue("@ModifyDateAtAnalysis", modifyDate ?? (object)DBNull.Value);
+        // Explicit DATETIME2: an inferred datetime parameter is re-rounded to 1/300s on the way into
+        // the DATETIME2 column, which made the stored value differ from the live read.
+        cmd.Parameters.Add("@ModifyDateAtAnalysis", SqlDbType.DateTime2).Value = modifyDate ?? (object)DBNull.Value;
         cmd.Parameters.AddWithValue("@ObjectIdAtAnalysis", objectId ?? (object)DBNull.Value);
         cmd.Parameters.AddWithValue("@SchemaFingerprint", fingerprint ?? (object)DBNull.Value);
     }
@@ -1170,13 +1206,13 @@ public sealed class InsightsLayerService(
             var storedFp = r2.IsDBNull(1) ? null : r2.GetString(1);
             await r2.CloseAsync().ConfigureAwait(false);
 
-            // Keep stale detection aligned with GetInsightForObjectAsync:
-            // only compare a signal when both stored and live values are present.
-            var stale = (row.ObjectIdAtAnalysis.HasValue && live.ObjectId.HasValue && row.ObjectIdAtAnalysis.Value != live.ObjectId.Value)
-                || (storedModify.HasValue && live.ModifyDate.HasValue && storedModify.Value != live.ModifyDate.Value)
-                || (!string.IsNullOrWhiteSpace(storedFp)
-                    && !string.IsNullOrWhiteSpace(live.Fingerprint)
-                    && !string.Equals(storedFp, live.Fingerprint, StringComparison.OrdinalIgnoreCase));
+            var stale = IsStaleAgainstLive(
+                row.ObjectIdAtAnalysis,
+                storedModify,
+                storedFp,
+                live.ObjectId,
+                live.ModifyDate,
+                live.Fingerprint);
             if (stale)
             {
                 await ArchiveInsightAsync(conn, row.Id, "FingerprintMismatch", "FingerprintScan", null, cancellationToken).ConfigureAwait(false);

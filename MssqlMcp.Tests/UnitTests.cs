@@ -91,12 +91,28 @@ namespace MssqlMcp.Tests
         }
 
         [Fact]
-        public async Task ListTables_ReturnsTables()
+        public async Task ListObjects_ReturnsTables_WhenObjectTypeIsTable()
         {
-            var result = await _tools.ListTables() as DbOperationResult;
+            var result = await _tools.ListObjects("Table") as DbOperationResult;
             Assert.NotNull(result);
             Assert.True(result.Success);
             Assert.NotNull(result.Data);
+        }
+
+        [Fact]
+        public async Task ListObjects_FiltersTables_ByPartialName()
+        {
+            var createResult = await _tools.CreateTable($"CREATE TABLE {_tableName} (Id INT PRIMARY KEY)") as DbOperationResult;
+            Assert.NotNull(createResult);
+            Assert.True(createResult.Success);
+
+            var suffix = _tableName[^8..];
+            var result = await _tools.ListObjects("Table", partialName: suffix) as DbOperationResult;
+            Assert.NotNull(result);
+            Assert.True(result.Success);
+
+            var tables = Assert.IsAssignableFrom<IEnumerable<string>>(result.Data);
+            Assert.Contains(tables, t => t.EndsWith(_tableName, StringComparison.OrdinalIgnoreCase));
         }
 
         [Fact]
@@ -182,6 +198,33 @@ namespace MssqlMcp.Tests
             Assert.NotNull(result);
             Assert.False(result.Success);
             Assert.Contains("syntax", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async Task ReadData_ReturnsError_WhenSqlIsNotSelect()
+        {
+            var result = await _tools.ReadData("UPDATE dbo.NonExistent SET x = 1") as DbOperationResult;
+            Assert.NotNull(result);
+            Assert.False(result.Success);
+            Assert.Contains("ReadData", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async Task ExecuteSQL_ReturnsError_WhenSqlIsSelect()
+        {
+            var result = await _tools.ExecuteSQL("SELECT 1") as DbOperationResult;
+            Assert.NotNull(result);
+            Assert.False(result.Success);
+            Assert.Contains("ReadData", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public async Task ReadData_ReturnsData_WhenQueryUsesSysTables()
+        {
+            var result = await _tools.ReadData("SELECT TOP 1 name FROM sys.tables") as DbOperationResult;
+            Assert.NotNull(result);
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
         }
 
         [Fact]

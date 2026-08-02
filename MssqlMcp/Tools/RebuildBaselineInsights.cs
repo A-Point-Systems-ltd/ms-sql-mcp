@@ -20,7 +20,7 @@ public partial class Tools
         Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has at least a baseline insight row. Rows authored with llmModel='auto-mechanical' will still require enrichment (see enrichmentSuggested/insightEnrichment in Describe*/Get* responses).")]
     public async Task<DbOperationResult> RebuildBaselineInsights(
         [Description("Optional schema filter. Pass null for all schemas.")] string? schemaName = null,
-        [Description("Optional object type filter: 'Table' | 'View' | 'Procedure' | 'Function' | 'Trigger'. Pass null for all supported types.")] string? objectType = null,
+        [Description("Optional object type filter: 'Table' | 'View' | 'Procedure' | 'Function'. Pass null for all supported types. Triggers are not covered by baseline scans.")] string? objectType = null,
         [Description("Maximum objects to scan (1..2000).")] int take = 200)
     {
         if (!_insightsLayer.IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled)
@@ -29,8 +29,18 @@ public partial class Tools
         }
 
         take = Math.Clamp(take, 1, 2000);
-        var wantedType = string.IsNullOrWhiteSpace(objectType) ? null : objectType.Trim();
         var wantedSchema = string.IsNullOrWhiteSpace(schemaName) ? null : schemaName.Trim();
+        string? wantedType = null;
+        if (!string.IsNullOrWhiteSpace(objectType))
+        {
+            wantedType = NormalizeBaselineObjectType(objectType);
+            if (wantedType is null)
+            {
+                return new DbOperationResult(
+                    success: false,
+                    error: "Unsupported objectType. Use one of: Table, View, Procedure, Function.");
+            }
+        }
 
         var scanned = 0;
         var created = 0;
@@ -53,6 +63,12 @@ public partial class Tools
             WHERE o.is_ms_shipped = 0
               AND o.type IN ('U','V','P','FN','IF','TF','FT')
               AND (@SchemaName IS NULL OR s.name = @SchemaName)
+              AND (@ObjectType IS NULL OR @ObjectType = CASE
+                    WHEN o.type = 'U' THEN N'Table'
+                    WHEN o.type = 'V' THEN N'View'
+                    WHEN o.type = 'P' THEN N'Procedure'
+                    WHEN o.type IN ('FN','IF','TF','FT') THEN N'Function'
+                  END)
             ORDER BY s.name, o.name;
             """;
 
@@ -66,6 +82,7 @@ public partial class Tools
                 {
                     cmd.Parameters.AddWithValue("@Take", take);
                     cmd.Parameters.AddWithValue("@SchemaName", wantedSchema is null ? DBNull.Value : wantedSchema);
+                    cmd.Parameters.AddWithValue("@ObjectType", wantedType is null ? DBNull.Value : wantedType);
                     await using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
                     while (await reader.ReadAsync().ConfigureAwait(false))
                     {
@@ -80,12 +97,6 @@ public partial class Tools
 
                 foreach (var target in targets)
                 {
-                    if (!string.IsNullOrWhiteSpace(wantedType)
-                        && !string.Equals(wantedType, target.Type, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
                     scanned++;
                     try
                     {
@@ -120,5 +131,27 @@ public partial class Tools
             _logger.LogError(ex, "RebuildBaselineInsights failed.");
             return new DbOperationResult(success: false, error: ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Maps a caller-supplied object type to the canonical label produced by the baseline scan query,
+    /// or null when the type is not covered by baseline scans.
+    /// </summary>
+    internal static string? NormalizeBaselineObjectType(string objectType)
+    {
+        var compact = objectType
+            .Trim()
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .ToLowerInvariant();
+
+        return compact switch
+        {
+            "table" or "tables" => "Table",
+            "view" or "views" => "View",
+            "procedure" or "procedures" or "proc" or "procs" or "storedprocedure" or "storedprocedures" => "Procedure",
+            "function" or "functions" or "scalarfunction" or "tablefunction" or "tvf" => "Function",
+            _ => null
+        };
     }
 }

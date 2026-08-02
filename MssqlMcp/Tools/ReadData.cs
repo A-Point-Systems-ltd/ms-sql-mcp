@@ -14,10 +14,15 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Executes a SELECT query against the configured database and returns rows as an array of objects (column name -> value, with NULL as JSON null). Intended for read-only queries; use ExecuteSQL for DDL/DML. SQL parameters are not supported here - build the literal yourself and never interpolate untrusted input. For schema introspection prefer DescribeTable/DescribeView/GetStoredProc/GetFunction/GetTrigger over hand-written sys.* queries.")]
+        Description("Executes read-only SELECT queries and returns rows as column-name objects. Use this tool for ALL queries that return result sets — user tables, sys.*, INFORMATION_SCHEMA.*, DMVs, and WITH ... SELECT. ExecuteSQL rejects SELECT; do not use ExecuteSQL for reads. SQL parameters are not supported — build literals yourself and never interpolate untrusted input. For built-in schema detail prefer DescribeTable/DescribeView/GetObject when applicable.")]
     public async Task<DbOperationResult> ReadData(
-        [Description("A single T-SQL SELECT statement. Multi-batch scripts and DDL/DML are not allowed here; use ExecuteSQL for those.")] string sql)
+        [Description("A single read-only T-SQL SELECT (or WITH ... SELECT). Includes queries against sys.* and INFORMATION_SCHEMA. DDL/DML and SELECT ... INTO are not allowed — use ExecuteSQL for those.")] string sql)
     {
+        if (!SqlStatementClassifier.TryValidateReadOnly(sql, out var validationError))
+        {
+            return new DbOperationResult(success: false, error: validationError);
+        }
+
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {

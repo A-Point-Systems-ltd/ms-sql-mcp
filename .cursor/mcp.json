@@ -2,9 +2,10 @@
   "mcpServers": {
     "TestDB": {
       "type": "stdio",
-      "command": "C:\\Development\\MCPs\\MS-SQL-Release\\MssqlMcp.exe",
+      /*"command": "C:\\Development\\MCPs\\MS-SQL-Release\\MssqlMcp.exe",*/
+      "command": "C:\\Development_dev5\\MCPs\\MS-SQL\\MssqlMcp\\Bin\\Debug\\net9.0\\MssqlMcp.exe",      
       "env": {
-        "CONNECTION_STRING": "Server=DC\\DEV;Database=EasyHouse;Trusted_Connection=True;TrustServerCertificate=True",
+        "CONNECTION_STRING": "Server=DC\\DEV;Database=easyhouseTest;Trusted_Connection=True;TrustServerCertificate=True",
         "USE_INSIGHTS_LAYER": "true",
         "INSIGHTS_AUTOPOPULATE": "true",
         "LOG_FILE_PATH": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\log\\mssql_mcp_log.txt"

@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
@@ -24,15 +22,12 @@ public partial class Tools
             ON ep.major_id = p.object_id 
             AND ep.minor_id = 0 
             AND ep.name = 'MS_Description'
+        WHERE (@NamePattern IS NULL
+            OR p.name LIKE @NamePattern
+            OR (s.name + '.' + p.name) LIKE @NamePattern)
         ORDER BY s.name, p.name";
 
-    [McpServerTool(
-        Title = "List Stored Procedures",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("Lists all stored procedures with schema, name, object id, create/modify dates, and MS_Description extended property when present. Sorted by schema then name. Use GetStoredProc for parameters + T-SQL of a specific procedure.")]
-    public async Task<DbOperationResult> ListStoredProcedures()
+    private async Task<DbOperationResult> ListStoredProcedures(string? partialName = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -40,6 +35,7 @@ public partial class Tools
             using (conn)
             {
                 using var cmd = new SqlCommand(ListStoredProceduresQuery, conn);
+                AddNamePatternParameter(cmd, partialName);
                 var procedures = new List<Dictionary<string, object?>>();
                 using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())

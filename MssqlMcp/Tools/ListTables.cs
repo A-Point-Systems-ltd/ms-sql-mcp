@@ -1,24 +1,23 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
 public partial class Tools
 {
-    private const string ListTablesQuery = @"SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME";
+    private const string ListTablesQuery = @"
+        SELECT TABLE_SCHEMA, TABLE_NAME
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_TYPE = 'BASE TABLE'
+            AND (@NamePattern IS NULL
+                OR TABLE_NAME LIKE @NamePattern
+                OR (TABLE_SCHEMA + '.' + TABLE_NAME) LIKE @NamePattern)
+        ORDER BY TABLE_SCHEMA, TABLE_NAME";
 
-    [McpServerTool(
-        Title = "List Tables",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("Lists all user tables in the current database as 'schema.name' strings, sorted by schema then name. Excludes views, system tables, and other object types. Use DescribeTable for column/constraint/FK detail on any single table.")]
-    public async Task<DbOperationResult> ListTables()
+    private async Task<DbOperationResult> ListTables(string? partialName = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -26,6 +25,7 @@ public partial class Tools
             using (conn)
             {
                 using var cmd = new SqlCommand(ListTablesQuery, conn);
+                AddNamePatternParameter(cmd, partialName);
                 var tables = new List<string>();
                 using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())

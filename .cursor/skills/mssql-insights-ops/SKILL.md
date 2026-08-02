@@ -27,7 +27,7 @@ This skill standardizes how an agent uses the MSSQL MCP server in this repo. It 
 
 This is the most important section in this skill. Read it before doing anything else.
 
-After EVERY call to `DescribeTable`, `DescribeView`, `GetStoredProc`, `GetFunction`, or `GetTrigger`, check the response for ANY of these signals:
+After EVERY call to `DescribeTable`, `DescribeView`, or `GetObject`, check the response for ANY of these signals:
 
 - top-level `_agentDirective` string is present
 - top-level `pendingEnrichments` array is non-empty
@@ -37,7 +37,7 @@ After EVERY call to `DescribeTable`, `DescribeView`, `GetStoredProc`, `GetFuncti
 If ANY of those are present, you are under an unfulfilled tool-call obligation. You MUST:
 
 1. **Before writing any user-facing text**, call `UpsertInsight` for the introspected object using `insightEnrichment.nextAction.args`. Replace every `<fill in: ...>` placeholder using the metadata that came back in the same response (columns, FKs, indexes, definition, etc.). Do NOT pass `llmModel="auto-mechanical"` and do NOT pass `confidence <= 0.30` — those are placeholder values; the whole point of this call is to upgrade them.
-2. **For each entry in `insightEnrichment.relatedObjectsToIntrospect`**, call the matching introspection tool (`DescribeTable` / `DescribeView` / `GetStoredProc` / `GetFunction` / `GetTrigger`) and repeat the loop. Related objects that you never introspect will have no insight row at all — that is a worse outcome than a stale baseline.
+2. **For each entry in `insightEnrichment.relatedObjectsToIntrospect`**, call the matching introspection tool (`DescribeTable` / `DescribeView` / `GetObject` with the appropriate `objectType`) and repeat the loop. Related objects that you never introspect will have no insight row at all — that is a worse outcome than a stale baseline.
 3. Only AFTER step 1 and step 2 have completed for every pending enrichment, write your final answer to the user.
 
 Why this is non-negotiable: auto-mechanical baselines exist solely so the cache has *something* for the next agent. They are confidence 0.30 placeholders with `LlmModel="auto-mechanical"`. If you skip this loop, the cache stays at 0.30 indefinitely, and every future agent re-investigates the same objects from scratch.
@@ -67,16 +67,16 @@ Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leavi
 ## Tool taxonomy (use this to pick the right tool)
 
 ### Read-only inspection
-- `ListTables`, `ListViews`, `ListStoredProcedures`, `ListTableFunctions`, `ListScalarFunctions`, `ListTableTriggers`, `ListSysObjects`
-- `DescribeTable`, `DescribeView`, `GetStoredProc`, `GetFunction`, `GetTrigger`
-- `ReadData` — arbitrary `SELECT` only
+- `ListObjects` (by `objectType`: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject)
+- `DescribeTable`, `DescribeView`, `GetObject` (StoredProcedure / Function / Trigger)
+- `ReadData` — **all** read-only `SELECT` queries (including `sys.*`, `INFORMATION_SCHEMA`, DMVs). ExecuteSQL rejects SELECT.
 
 ### Server metadata
 - `GetServerInfo` — version, edition, hardware, DB counts. Some fields may be `null` with a `hardware.warning` string when permissions/version restrict DMVs.
 
 ### Writes / DDL
 - `CreateTable`, `DropTable`, `InsertData`, `UpdateData`
-- `ExecuteSQL` — anything else (DDL/DML/batches). Destructive — confirm first.
+- `ExecuteSQL` — DDL/DML only (no SELECT). Destructive — confirm first.
 
 ### AI Insights layer
 - `InsightsCheck` — status of `AIInsights` schema, `DDL_AuditLog` table, `DDL_Audit` trigger, watermark.
@@ -97,7 +97,7 @@ Copy this checklist and track progress:
 - [ ] 1. GetServerInfo (note version)
 - [ ] 2. InsightsCheck (verify layer state)
 - [ ] 3. InstallInsightsLayer (only if missing or trigger disabled)
-- [ ] 4. ListTables (broad orientation)
+- [ ] 4. ListObjects(objectType = "Table") (broad orientation)
 - [ ] 5. (Optional) ReadData with sys.foreign_keys for relationship graph
 ```
 
@@ -195,7 +195,7 @@ Rules:
 ## Safety rules
 
 - Treat `ExecuteSQL` and `DropTable` as destructive. Confirm intent before running.
-- Default to `ReadData` for `SELECT`s — `ExecuteSQL` also works but advertises destructive intent.
+- Use `ReadData` for **every** `SELECT` (including `sys.*`). `ExecuteSQL` rejects SELECT at validation time.
 - Never embed user-provided values directly into `ReadData` SQL. Build the literal yourself; do not echo unsanitized inputs.
 - When `DescribeTable` returns `insightFreshness: "StaleArchived"`, do NOT trust the previous insight; re-investigate.
 

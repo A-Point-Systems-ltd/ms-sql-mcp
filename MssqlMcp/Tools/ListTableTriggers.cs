@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
@@ -34,15 +32,14 @@ public partial class Tools
         AND ep.minor_id = 0
         AND ep.name = 'MS_Description'
     WHERE tr.parent_class = 1
+        AND (@NamePattern IS NULL
+            OR tr.name LIKE @NamePattern
+            OR OBJECT_NAME(tr.parent_id) LIKE @NamePattern
+            OR (s.name + '.' + OBJECT_NAME(tr.parent_id)) LIKE @NamePattern
+            OR (s.name + '.' + tr.name) LIKE @NamePattern)
     ORDER BY s.name, OBJECT_NAME(tr.parent_id), tr.name";
 
-    [McpServerTool(
-        Title = "List Table Triggers",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("Lists all table triggers in the database with schema, parent table, name, create/modify dates, is_disabled, is_instead_of_trigger, the comma-joined event types (INSERT/UPDATE/DELETE), and description. Sorted by schema, table, trigger. Use GetTrigger for the full T-SQL of a specific trigger. Database-level / server-level triggers are NOT included.")]
-    public async Task<DbOperationResult> ListTableTriggers()
+    private async Task<DbOperationResult> ListTableTriggers(string? partialName = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -50,6 +47,7 @@ public partial class Tools
             using (conn)
             {
                 using var cmd = new SqlCommand(ListTableTriggersQuery, conn);
+                AddNamePatternParameter(cmd, partialName);
                 var triggers = new List<Dictionary<string, object?>>();
                 using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())

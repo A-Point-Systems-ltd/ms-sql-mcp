@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
@@ -24,15 +22,12 @@ public partial class Tools
             ON ep.major_id = v.object_id 
             AND ep.minor_id = 0 
             AND ep.name = 'MS_Description'
+        WHERE (@NamePattern IS NULL
+            OR v.name LIKE @NamePattern
+            OR (s.name + '.' + v.name) LIKE @NamePattern)
         ORDER BY s.name, v.name";
 
-    [McpServerTool(
-        Title = "List Views",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("Lists all views in the database with schema, name, object id, create/modify dates, and MS_Description extended property when present. Sorted by schema then name. Use DescribeView for columns + T-SQL of a specific view.")]
-    public async Task<DbOperationResult> ListViews()
+    private async Task<DbOperationResult> ListViews(string? partialName = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -40,6 +35,7 @@ public partial class Tools
             using (conn)
             {
                 using var cmd = new SqlCommand(ListViewsQuery, conn);
+                AddNamePatternParameter(cmd, partialName);
                 var views = new List<Dictionary<string, object?>>();
                 using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())

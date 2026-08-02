@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
@@ -24,16 +22,13 @@ public partial class Tools
             ON ep.major_id = o.object_id 
             AND ep.minor_id = 0 
             AND ep.name = 'MS_Description'
-        WHERE o.type = 'FN'  -- FN=Scalar Function
+        WHERE o.type = 'FN'
+            AND (@NamePattern IS NULL
+                OR o.name LIKE @NamePattern
+                OR (s.name + '.' + o.name) LIKE @NamePattern)
         ORDER BY s.name, o.name";
 
-    [McpServerTool(
-        Title = "List Scalar Functions",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("Lists all scalar (FN) user-defined functions with schema, name, object id, create/modify dates, and description. Use GetFunction for parameters + T-SQL of a specific function. For table-valued functions use ListTableFunctions.")]
-    public async Task<DbOperationResult> ListScalarFunctions()
+    private async Task<DbOperationResult> ListScalarFunctions(string? partialName = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -41,6 +36,7 @@ public partial class Tools
             using (conn)
             {
                 using var cmd = new SqlCommand(ListScalarFunctionsQuery, conn);
+                AddNamePatternParameter(cmd, partialName);
                 var functions = new List<Dictionary<string, object?>>();
                 using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())

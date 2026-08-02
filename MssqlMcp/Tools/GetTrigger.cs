@@ -1,37 +1,21 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
 public partial class Tools
 {
-    [McpServerTool(
-        Title = "Get Trigger",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call UpsertInsight using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation. Returns: trigger metadata (schema, parent table, create/modify dates, is_disabled, is_instead_of_trigger, trigger_events such as INSERT/UPDATE/DELETE, description) plus full T-SQL definition. When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments. Database-level / server-level triggers are not returned by this tool.")]
-    public async Task<DbOperationResult> GetTrigger(
-        [Description("Trigger name (unique per parent table). Accepts 'trigger' or 'schema.trigger'.")] string name)
+    private async Task<DbOperationResult> GetTrigger(string name)
     {
-        // Note: Triggers are typically identified by name directly, but we still parse for consistency
-        string? schema = null;
-        if (name.Contains('.'))
+        var parsed = TriggerQualifiedName.Parse(name);
+        if (string.IsNullOrWhiteSpace(parsed.Name))
         {
-            var parts = name.Split('.');
-            if (parts.Length > 1)
-            {
-                name = parts[1];
-                schema = parts[0];
-            }
+            return new DbOperationResult(success: false, error: "Trigger name is required.");
         }
 
-        // Query for trigger info
         const string TriggerInfoQuery = @"SELECT
             s.name AS [schema],
             OBJECT_NAME(tr.parent_id) AS table_name,
@@ -56,15 +40,17 @@ public partial class Tools
             AND ep.name = 'MS_Description'
         WHERE tr.name = @ObjectName
             AND tr.parent_class = 1
-            AND (s.name = @SchemaName OR @SchemaName IS NULL)";
+            AND (@SchemaName IS NULL OR s.name = @SchemaName)
+            AND (@TableName IS NULL OR OBJECT_NAME(tr.parent_id) = @TableName)";
 
-        // Query for code definition
         const string DefinitionQuery = @"SELECT OBJECT_DEFINITION(tr.object_id) AS definition
         FROM sys.triggers tr
         INNER JOIN sys.objects o ON tr.parent_id = o.object_id
         INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
         WHERE tr.name = @ObjectName
-            AND (s.name = @SchemaName OR @SchemaName IS NULL)";
+            AND tr.parent_class = 1
+            AND (@SchemaName IS NULL OR s.name = @SchemaName)
+            AND (@TableName IS NULL OR OBJECT_NAME(tr.parent_id) = @TableName)";
 
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -73,11 +59,9 @@ public partial class Tools
             {
                 var result = new Dictionary<string, object?>();
 
-                // Trigger Info
                 using (var cmd = new SqlCommand(TriggerInfoQuery, conn))
                 {
-                    cmd.Parameters.AddWithValue("@ObjectName", name);
-                    cmd.Parameters.AddWithValue("@SchemaName", schema == null ? DBNull.Value : schema);
+                    AddTriggerLookupParameters(cmd, parsed);
                     using var reader = await cmd.ExecuteReaderAsync();
                     if (await reader.ReadAsync())
                     {
@@ -96,15 +80,15 @@ public partial class Tools
                     }
                     else
                     {
-                        return new DbOperationResult(success: false, error: $"Trigger '{name}' not found.");
+                        return new DbOperationResult(
+                            success: false,
+                            error: $"Trigger '{parsed.DisplayName}' not found.");
                     }
                 }
 
-                // Code Definition
                 using (var cmd = new SqlCommand(DefinitionQuery, conn))
                 {
-                    cmd.Parameters.AddWithValue("@ObjectName", name);
-                    cmd.Parameters.AddWithValue("@SchemaName", schema == null ? DBNull.Value : schema);
+                    AddTriggerLookupParameters(cmd, parsed);
                     using var reader = await cmd.ExecuteReaderAsync();
                     if (await reader.ReadAsync())
                     {
@@ -112,7 +96,7 @@ public partial class Tools
                     }
                 }
 
-                await TryAttachInsightAsync(result, "Trigger", schema, name).ConfigureAwait(false);
+                await TryAttachInsightAsync(result, "Trigger", parsed.Schema, parsed.Name).ConfigureAwait(false);
                 return new DbOperationResult(success: true, data: result);
             }
         }
@@ -121,5 +105,12 @@ public partial class Tools
             _logger.LogError(ex, "GetTrigger failed: {Message}", ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
+    }
+
+    private static void AddTriggerLookupParameters(SqlCommand cmd, TriggerQualifiedName parsed)
+    {
+        cmd.Parameters.AddWithValue("@ObjectName", parsed.Name);
+        cmd.Parameters.AddWithValue("@SchemaName", parsed.Schema is null ? DBNull.Value : parsed.Schema);
+        cmd.Parameters.AddWithValue("@TableName", parsed.TableName is null ? DBNull.Value : parsed.TableName);
     }
 }

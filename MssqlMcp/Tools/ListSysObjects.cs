@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.ComponentModel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
 
@@ -28,17 +26,13 @@ public partial class Tools
             AND ep.minor_id = 0 
             AND ep.name = 'MS_Description'
         WHERE (@Type IS NULL OR o.type = @Type)
-            AND o.is_ms_shipped = 0  -- Exclude system objects
+            AND o.is_ms_shipped = 0
+            AND (@NamePattern IS NULL
+                OR o.name LIKE @NamePattern
+                OR (s.name + '.' + o.name) LIKE @NamePattern)
         ORDER BY s.name, o.name";
 
-    [McpServerTool(
-        Title = "List System Objects",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("Returns user-defined entries from sys.objects (is_ms_shipped = 0) with object_id, schema, name, type, type_desc, create/modify dates, is_ms_shipped, description. Use for cross-cutting object discovery when the typed list tools (ListTables/Views/StoredProcedures/Functions/Triggers) are too narrow. Optional 'type' filter accepts JSON null for no filter.")]
-    public async Task<DbOperationResult> ListSysObjects(
-        [Description("Object type code: 'U'=user table, 'V'=view, 'P'=stored proc, 'FN'=scalar fn, 'IF'=inline TVF, 'TF'=multi-statement TVF, 'TR'=trigger, 'SO'=sequence, etc. Pass null for no filter.")] string? type = null)
+    private async Task<DbOperationResult> ListSysObjects(string? type = null, string? partialName = null)
     {
         var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
@@ -47,6 +41,7 @@ public partial class Tools
             {
                 using var cmd = new SqlCommand(ListSysObjectsQuery, conn);
                 cmd.Parameters.AddWithValue("@Type", type == null ? DBNull.Value : type);
+                AddNamePatternParameter(cmd, partialName);
                 
                 var objects = new List<Dictionary<string, object?>>();
                 using var reader = await cmd.ExecuteReaderAsync();

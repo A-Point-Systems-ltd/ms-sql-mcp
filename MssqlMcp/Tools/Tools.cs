@@ -3,6 +3,7 @@
 
 using System.Data;
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using Mssql.McpServer.InsightsLayer;
@@ -140,7 +141,7 @@ public partial class Tools(
             {
                 "1. Replace every '<fill in: ...>' placeholder in nextAction.args using the metadata you just received in this response.",
                 "2. Call UpsertInsight with the completed args. Do NOT reuse llmModel='auto-mechanical' and do NOT pass confidence<=0.30 — those values indicate a placeholder, not a real authored insight.",
-                "3. For each entry in relatedObjectsToIntrospect, call the matching introspection tool (DescribeTable / DescribeView / GetStoredProc / GetFunction / GetTrigger) and complete the same enrichment loop for it.",
+                "3. For each entry in relatedObjectsToIntrospect, call the matching introspection tool (DescribeTable / DescribeView / GetObject) and complete the same enrichment loop for it.",
                 "4. Only AFTER every enrichment call, produce the final user-facing answer."
             },
             completionCriteria = $"AIInsights.SchemaInsights row for {qualified} updated with LLMModel != 'auto-mechanical' and Confidence > 0.30.",
@@ -200,6 +201,28 @@ public partial class Tools(
         {
             return Array.Empty<string>();
         }
+    }
+
+    private static string? BuildNameLikePattern(string? partialName)
+    {
+        if (string.IsNullOrWhiteSpace(partialName))
+        {
+            return null;
+        }
+
+        return $"%{EscapeLikeLiteral(partialName.Trim())}%";
+    }
+
+    private static string EscapeLikeLiteral(string value) =>
+        value
+            .Replace("[", "[[]", StringComparison.Ordinal)
+            .Replace("%", "[%]", StringComparison.Ordinal)
+            .Replace("_", "[_]", StringComparison.Ordinal);
+
+    private static void AddNamePatternParameter(SqlCommand cmd, string? partialName)
+    {
+        var pattern = BuildNameLikePattern(partialName);
+        cmd.Parameters.AddWithValue("@NamePattern", pattern is null ? DBNull.Value : pattern);
     }
 
     // Helper to convert DataTable to a serializable list
