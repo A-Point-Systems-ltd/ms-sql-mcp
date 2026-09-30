@@ -81,7 +81,7 @@ public sealed class TableDdlRendererTests
         var fk = ddl.IndexOf("ALTER TABLE [sales].[Order Lines] WITH CHECK ADD CONSTRAINT [FK_OL_Orders] FOREIGN KEY ([OrderId]) REFERENCES [sales].[Orders] ([Id]) ON DELETE CASCADE", StringComparison.Ordinal);
         var ck = ddl.IndexOf("ALTER TABLE [sales].[Order Lines] WITH NOCHECK ADD CONSTRAINT [CK_OL_Qty] CHECK ([Qty]>=(0));", StringComparison.Ordinal);
         Assert.True(ix > 0 && fk > ix && ck > fk, ddl);
-        Assert.DoesNotContain("CONSTRAINT [CK_OL_Qty] CHECK ([Qty]>=(0))\r\n", ddl);
+        Assert.DoesNotContain("\tCONSTRAINT [CK_OL_Qty]", ddl);
         Assert.DoesNotContain("NOCHECK CONSTRAINT", ddl);
         Assert.Contains("sys.sp_addextendedproperty @name = N'MS_Description', @value = N'Order lines'", ddl);
         Assert.DoesNotContain("ON UPDATE NO ACTION", ddl);
@@ -109,13 +109,15 @@ public sealed class TableDdlRendererTests
     }
 
     [Fact]
-    public void Collation_equal_to_database_is_suppressed_and_alias_types_get_collate()
+    public void Collation_equal_to_database_is_suppressed_and_alias_types_warn_instead_of_collate()
     {
         var same = Col("a", "varchar", 10) with { Collation = "hebrew_ci_ai" };
         var alias = Col("b", "Phone", 10) with { UserTypeSchema = "dbo", Collation = "Latin1_General_CI_AS" };
         var ddl = TableDdlRenderer.RenderTable(Orders() with { Columns = [same, alias], Indexes = [], Checks = [], ForeignKeys = [] }, false);
         Assert.Contains("[a] [varchar](10) NULL", ddl);
-        Assert.Contains("[b] [dbo].[Phone] COLLATE Latin1_General_CI_AS NULL", ddl);
+        Assert.Contains("[b] [dbo].[Phone] NULL", ddl);
+        Assert.DoesNotContain("COLLATE", ddl.Replace("collation", ""));
+        Assert.Contains("-- WARNING: column [b] uses alias type [dbo].[Phone] with collation Latin1_General_CI_AS; alias-typed columns take the database collation and this cannot be reproduced.", ddl);
     }
 
     [Fact]

@@ -39,7 +39,7 @@ internal static class TableDdlRenderer
         }
 
         var sb = new StringBuilder().Append(Sql.Q(c.Name)).Append(' ').Append(FormatType(c));
-        if (c.Collation is not null && !string.Equals(c.Collation, databaseCollation, StringComparison.OrdinalIgnoreCase))
+        if (c.Collation is not null && c.UserTypeSchema is null && !string.Equals(c.Collation, databaseCollation, StringComparison.OrdinalIgnoreCase))
         {
             sb.Append(" COLLATE ").Append(c.Collation);
         }
@@ -99,6 +99,13 @@ internal static class TableDdlRenderer
         foreach (var w in t.Warnings)
         {
             sb.Append("-- WARNING: ").Append(w).Append("\r\n");
+        }
+
+        // COLLATE is invalid on alias-typed columns (Msg 452), so a differing collation can only be reported.
+        foreach (var c in t.Columns.Where(c => !c.IsComputed && c.UserTypeSchema is not null && c.Collation is not null
+            && !string.Equals(c.Collation, t.DatabaseCollation, StringComparison.OrdinalIgnoreCase)))
+        {
+            sb.Append($"-- WARNING: column {Sql.Q(c.Name)} uses alias type {Sql.Qualified(c.UserTypeSchema!, c.TypeName)} with collation {c.Collation}; alias-typed columns take the database collation and this cannot be reproduced.\r\n");
         }
 
         foreach (var i in t.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint))
