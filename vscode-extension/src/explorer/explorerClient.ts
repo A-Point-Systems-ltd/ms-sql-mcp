@@ -9,6 +9,9 @@ import { Logger } from '../logger';
 
 const RESET_DEBOUNCE_MS = 300;
 
+/** A start that was overtaken by reset()/dispose() while spawning. */
+class SupersededError extends Error {}
+
 /**
  * The object tree's private, read-only MssqlMcp process (separate from the agent-facing one).
  * Spawned lazily with a single-flight guard; every call carries `connection`. Only OPEN profiles are served.
@@ -18,6 +21,10 @@ export class ExplorerClient implements vscode.Disposable {
   private starting?: Promise<McpStdioClient>;
   private generation = 0;
   private timer?: NodeJS.Timeout;
+  private disposed = false;
+  private readonly resetEmitter = new vscode.EventEmitter<void>();
+  /** Fired after the process was reset (profile set changed); tree views should refresh. */
+  readonly onDidReset = this.resetEmitter.event;
   private readonly sub: vscode.Disposable;
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly store: ConnectionStore, private readonly log: Logger) {
@@ -29,6 +36,8 @@ export class ExplorerClient implements vscode.Disposable {
    * Throws Error(server error text) when the tool reports success=false.
    */
   async call<T = unknown>(connection: string, tool: string, args: Record<string, unknown>): Promise<T> {
+    // A pending debounced reset means the running process has a stale profile set: apply it first.
+    if (this.timer) this.reset();
     const client = await this.ensure();
     const payload = await client.callTool(tool, { ...args, connection });
     const data = pick(payload, 'data');
@@ -44,27 +53,41 @@ export class ExplorerClient implements vscode.Disposable {
     const old = this.client;
     this.client = undefined;
     old?.dispose();
+    if (!this.disposed) this.resetEmitter.fire();
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.sub.dispose();
     this.reset();
+    this.resetEmitter.dispose();
   }
 
   private scheduleReset(): void {
+    if (this.disposed) return;
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.reset(), RESET_DEBOUNCE_MS);
   }
 
-  private ensure(): Promise<McpStdioClient> {
-    if (this.client) return Promise.resolve(this.client);
-    if (!this.starting) {
-      const starting = this.start(this.generation).finally(() => {
-        if (this.starting === starting) this.starting = undefined;
-      });
-      this.starting = starting;
+  private async ensure(): Promise<McpStdioClient> {
+    for (let attempt = 0; ; attempt++) {
+      if (this.disposed) throw new Error('Explorer client is disposed.');
+      if (this.client) return this.client;
+      if (!this.starting) {
+        const starting = this.start(this.generation).finally(() => {
+          if (this.starting === starting) this.starting = undefined;
+        });
+        this.starting = starting;
+      }
+      try {
+        return await this.starting;
+      } catch (err) {
+        // The profile set changed while starting: retry once against the new one.
+        if (err instanceof SupersededError && attempt === 0) continue;
+        throw err;
+      }
     }
-    return this.starting;
   }
 
   private async start(generation: number): Promise<McpStdioClient> {
@@ -94,10 +117,10 @@ export class ExplorerClient implements vscode.Disposable {
       client.dispose();
       throw err;
     }
-    if (generation !== this.generation) {
-      // reset() ran while we were starting: this process carries a stale profile set.
+    if (generation !== this.generation || this.disposed) {
+      // reset()/dispose() ran while we were starting: this process carries a stale profile set.
       client.dispose();
-      throw new Error('Connections changed while the explorer was starting; retry.');
+      throw new SupersededError('Explorer restarted while starting.');
     }
     this.client = client;
     return client;

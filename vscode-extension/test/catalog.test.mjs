@@ -32,3 +32,12 @@ test('view indexes', () => {
   assert.deepEqual(parseViewIndexes({ indexes: [{ name: 'IXV' }] }, 'dbo', 'v').map(i => [i.name, i.parent]), [['IXV', 'dbo.v']]);
   assert.deepEqual(parseViewIndexes({}, 'dbo', 'v'), []);
 });
+
+test('rows without a usable name are skipped', () => {
+  assert.deepEqual(parseObjectList([{ schema: 'dbo' }, { name: 5 }, null, '', { name: 'ok' }], cat('views')), [{ name: 'ok' }]);
+  const c = parseTableChildren({ constraints: [{ type: 'x' }], indexes: [{ name: 'I' }, {}], foreignKeys: [{ name: null }], triggers: [{}] }, 'dbo', 'T');
+  assert.deepEqual(c.indexes.map(i => i.name), ['I']);
+  assert.equal(c.foreignKeys.length, 0);
+  assert.equal(c.triggers.length, 0);
+  assert.deepEqual(parseViewIndexes({ indexes: [{}, { name: 'V' }] }, 'dbo', 'v').map(i => i.name), ['V']);
+});

@@ -202,6 +202,7 @@ export function registerConnectionCommands(context: vscode.ExtensionContext, sto
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Testing '${p.name}'...`, cancellable: true }, async (_progress, token) => {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(new Error(`Timed out after ${TEST_TIMEOUT_MS / 1000} s.`)), TEST_TIMEOUT_MS);
+      let onAbort: (() => void) | undefined;
       const sub = token.onCancellationRequested(() => ac.abort(new Error('Cancelled.')));
       try {
         // Open profiles are served by the shared explorer process; closed ones need a one-off probe process.
@@ -209,8 +210,9 @@ export function registerConnectionCommands(context: vscode.ExtensionContext, sto
           ? await Promise.race([
               explorer.call(p.name, 'get_server_info', {}).then(describeServerInfo),
               new Promise<never>((_, reject) => {
-                if (ac.signal.aborted) reject(ac.signal.reason);
-                ac.signal.addEventListener('abort', () => reject(ac.signal.reason), { once: true });
+                if (ac.signal.aborted) { reject(ac.signal.reason); return; }
+                onAbort = () => reject(ac.signal.reason);
+                ac.signal.addEventListener('abort', onAbort, { once: true });
               }),
             ])
           : await probeConnection(context.extensionUri, p, passwords, log, ac.signal);
@@ -221,6 +223,7 @@ export function registerConnectionCommands(context: vscode.ExtensionContext, sto
         void vscode.window.showErrorMessage(`MSSQL-MCP '${p.name}' failed: ${withConnectionHint(err instanceof Error ? err.message : String(err))}`);
       } finally {
         clearTimeout(timer);
+        if (onAbort) ac.signal.removeEventListener('abort', onAbort);
         sub.dispose();
       }
     });

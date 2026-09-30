@@ -35,23 +35,27 @@ export const CATEGORIES: CategoryDef[] = [
 ];
 
 const asArray = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v : []) as Record<string, unknown>[];
+/** Rows of a describe_* array that carry a usable name. */
+const named = (v: unknown): Record<string, unknown>[] => asArray(v).filter(r => !!str(pick(r, 'name')));
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length ? v : undefined);
 
 /** Rows of a list_objects `data` array. Tables are "schema.name" strings; everything else is objects. */
 export function parseObjectList(data: unknown, def: CategoryDef): { schema?: string; name: string; detail?: string }[] {
   const rows = Array.isArray(data) ? data : [];
-  return rows.map(row => {
+  return rows.flatMap(row => {
     if (typeof row === 'string') {
       const dot = row.indexOf('.');
-      return dot > 0 ? { schema: row.slice(0, dot), name: row.slice(dot + 1) } : { name: row };
+      if (!row) return [];
+      return [dot > 0 ? { schema: row.slice(0, dot), name: row.slice(dot + 1) } : { name: row }];
     }
     const r = row as Record<string, unknown>;
-    const name = str(pick(r, 'name')) ?? '?';
+    const name = str(pick(r, 'name'));
+    if (!name) return [];
     const schema = str(pick(r, 'schema'));
     const detail = def.parent === 'security' || def.id === 'types' || def.id === 'dbTriggers'
       ? [str(pick(r, 'type')) ?? str(pick(r, 'kind')), pick(r, 'isDisabled') === true ? 'disabled' : undefined].filter(Boolean).join(' · ') || undefined
       : undefined;
-    return { ...(schema ? { schema } : {}), name, ...(detail ? { detail } : {}) };
+    return [{ ...(schema ? { schema } : {}), name, ...(detail ? { detail } : {}) }];
   });
 }
 
@@ -65,12 +69,12 @@ export function parseTableChildren(d: unknown, schema: string, table: string): R
   const parent = `${schema}.${table}`;
   const index = (row: Record<string, unknown>): Ref => ({ scriptType: 'Index', name: String(pick(row, 'name')), parent });
   return {
-    indexes: [...asArray(pick(r, 'constraints')).map(index), ...asArray(pick(r, 'indexes')).map(index)],
-    foreignKeys: asArray(pick(r, 'foreignKeys')).map(f => ({ scriptType: 'ForeignKey', schema: str(pick(f, 'schema')) ?? schema, name: String(pick(f, 'name')) })),
-    triggers: asArray(pick(r, 'triggers')).map(t => ({ scriptType: 'TableTrigger', schema, name: String(pick(t, 'name')) })),
+    indexes: [...named(pick(r, 'constraints')).map(index), ...named(pick(r, 'indexes')).map(index)],
+    foreignKeys: named(pick(r, 'foreignKeys')).map(f => ({ scriptType: 'ForeignKey', schema: str(pick(f, 'schema')) ?? schema, name: String(pick(f, 'name')) })),
+    triggers: named(pick(r, 'triggers')).map(t => ({ scriptType: 'TableTrigger', schema, name: String(pick(t, 'name')) })),
   };
 }
 
 export function parseViewIndexes(d: unknown, schema: string, view: string): Ref[] {
-  return asArray(pick(d, 'indexes')).map(i => ({ scriptType: 'Index', name: String(pick(i, 'name')), parent: `${schema}.${view}` }));
+  return named(pick(d, 'indexes')).map(i => ({ scriptType: 'Index', name: String(pick(i, 'name')), parent: `${schema}.${view}` }));
 }
