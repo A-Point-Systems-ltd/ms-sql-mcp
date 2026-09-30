@@ -16,7 +16,7 @@ namespace MssqlMcp.Tests
         {
             TestConnectionString.EnsureInitialized();
             _tableName = $"TestTable_{Guid.NewGuid():N}";
-            var connectionFactory = new SqlConnectionFactory();
+            var connectionFactory = TestConnectionString.CreateFactory();
             var loggerMock = new Mock<ILogger<Tools>>();
             _tools = new Tools(
                 connectionFactory,

@@ -61,11 +61,13 @@ internal class Program
 
         log.Append($"Connection String: {ConnectionStringMasker.Mask(connStr)}");
 
+        var registry = new ConnectionRegistry(ConnectionConfigLoader.Load(Environment.GetEnvironmentVariable, File.ReadAllText));
+
         // Test SQL connection before starting MCP server
         try
         {
             log.Append("Testing SQL Server connection...");
-            ISqlConnectionFactory testFactory = new SqlConnectionFactory();
+            ISqlConnectionFactory testFactory = new SqlConnectionFactory(registry);
             await using var testConnection = await testFactory.GetOpenConnectionAsync(CancellationToken.None);
             var successMsg = $"SQL Server connection test SUCCESSFUL - Server: {testConnection.DataSource}, Database: {testConnection.Database}";
             Console.Error.WriteLine(successMsg);
@@ -89,6 +91,7 @@ internal class Program
 
         log.Append("Starting MCP server initialization...");
 
+        _ = builder.Services.AddSingleton(registry);
         _ = builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
         if (InsightsLayerEnvironment.IsInsightsLayerEnabled)
         {

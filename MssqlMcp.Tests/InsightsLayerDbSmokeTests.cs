@@ -24,7 +24,7 @@ public sealed class InsightsLayerDbSmokeTests
         TestConnectionString.EnsureInitialized();
         Environment.SetEnvironmentVariable("USE_INSIGHTS_LAYER", "true");
 
-        var factory = new SqlConnectionFactory();
+        var factory = TestConnectionString.CreateFactory();
         var svc = new InsightsLayerService(factory, NullLogger<InsightsLayerService>.Instance);
         Assert.True(svc.IsEnabled);
 

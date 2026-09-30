@@ -1,18 +1,18 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
 using Microsoft.Data.SqlClient;
+using Mssql.McpServer.Connections;
 
 namespace Mssql.McpServer;
 
-public class SqlConnectionFactory : ISqlConnectionFactory
+public class SqlConnectionFactory(ConnectionRegistry registry) : ISqlConnectionFactory
 {
     public async Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
-        var connectionString = GetConnectionString();
-
-        // Let ADO.Net handle connection pooling
-        var conn = new SqlConnection(connectionString);
+        // The routing filter binds CurrentConnection per tool call; background work binds it per connection.
+        var profile = CurrentConnection.Value ?? registry.Resolve(null);
+        var conn = new SqlConnection(profile.ConnectionString);
         try
         {
             await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -23,14 +23,5 @@ public class SqlConnectionFactory : ISqlConnectionFactory
             await conn.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-    }
-
-    private static string GetConnectionString()
-    {
-        var connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
-
-        return string.IsNullOrEmpty(connectionString)
-            ? throw new InvalidOperationException("Connection string is not set in the environment variable 'CONNECTION_STRING'.\n\nHINT: Have a local SQL Server, with a database called 'test', from console, run `SET CONNECTION_STRING=Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True` and the load the .sln file")
-            : connectionString;
     }
 }

@@ -15,7 +15,7 @@ namespace MssqlMcp.Tests
         public GetServerInfoTests()
         {
             TestConnectionString.EnsureInitialized();
-            var connectionFactory = new SqlConnectionFactory();
+            var connectionFactory = TestConnectionString.CreateFactory();
             var loggerMock = new Mock<ILogger<Tools>>();
             _tools = new Tools(
                 connectionFactory,

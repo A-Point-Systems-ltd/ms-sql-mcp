@@ -37,4 +37,11 @@ internal static class TestConnectionString
     }
 
     public static void EnsureInitialized() => _ = typeof(TestConnectionString);
+
+    public static Mssql.McpServer.SqlConnectionFactory CreateFactory()
+    {
+        EnsureInitialized();
+        return new Mssql.McpServer.SqlConnectionFactory(new Mssql.McpServer.Connections.ConnectionRegistry(
+            Mssql.McpServer.Connections.ConnectionConfigLoader.Load(Environment.GetEnvironmentVariable, File.ReadAllText)));
+    }
 }
