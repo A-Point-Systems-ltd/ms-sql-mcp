@@ -106,6 +106,44 @@ public sealed class ConnectionRegistryTests
     }
 
     [Fact]
+    public void TryClose_reports_each_outcome()
+    {
+        var reg = new ConnectionRegistry([P("a"), P("b")]);
+        Assert.Equal(CloseResult.NotFound, reg.TryClose("zzz"));
+        Assert.Equal(CloseResult.Closed, reg.TryClose("b"));
+        Assert.Equal(CloseResult.NotOpen, reg.TryClose("b"));
+        Assert.Equal(CloseResult.LastOpen, reg.TryClose("a"));
+        Assert.True(reg.IsOpen("a"));
+    }
+
+    [Fact]
+    public async Task Concurrent_TryClose_of_two_open_connections_closes_exactly_one()
+    {
+        for (var round = 0; round < 200; round++)
+        {
+            var reg = new ConnectionRegistry([P("a"), P("b")]);
+            using var gate = new ManualResetEventSlim();
+            var tasks = new[] { "a", "b" }.Select(n => Task.Run(() => { gate.Wait(); return reg.TryClose(n); })).ToArray();
+            gate.Set();
+            var results = await Task.WhenAll(tasks);
+
+            Assert.Single(results, CloseResult.Closed);
+            Assert.Single(results, CloseResult.LastOpen);
+            Assert.Equal(1, reg.List().Count(s => s.IsOpen));
+        }
+    }
+
+    [Fact]
+    public void Register_returns_the_status_of_the_stored_profile()
+    {
+        var reg = new ConnectionRegistry([P("a")]);
+        var status = reg.Register(P("t", source: ConnectionSource.Adhoc));
+        Assert.Equal("t", status.Name);
+        Assert.True(status.IsOpen);
+        Assert.Equal("srv-t", status.DataSource);
+    }
+
+    [Fact]
     public void Empty_registry_resolve_and_try_resolve_single_do_not_throw_unexpectedly()
     {
         var reg = new ConnectionRegistry([]);

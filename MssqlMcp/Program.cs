@@ -89,10 +89,13 @@ internal class Program
             }
             catch (Exception ex)
             {
-                var msg = $"FATAL: SQL Server connection test FAILED: {ex.Message}";
-                Console.Error.WriteLine(msg);
-                log.Append(msg);
-                log.Append($"Stack: {ex.StackTrace}");
+                var errorMsg = $"FATAL: SQL Server connection test FAILED: {ex.Message}";
+                var detailMsg = $"Connection String (masked): {ConnectionStringMasker.Mask(profiles[0].ConnectionString)}";
+                Console.Error.WriteLine(errorMsg);
+                Console.Error.WriteLine(detailMsg);
+                log.Append(errorMsg);
+                log.Append(detailMsg);
+                log.Append($"Stack trace: {ex.StackTrace}");
                 Environment.ExitCode = 1;
                 return;
             }

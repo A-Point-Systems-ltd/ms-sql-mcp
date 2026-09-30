@@ -11,13 +11,16 @@ public partial class Tools
         Description("Lists every database connection this server knows: name, open/closed, read-only, server and database (never credentials). " +
                     "connectionRequired=true means there is more than one connection and NO default: every other tool call MUST pass one of these names as its 'connection' argument. " +
                     "Call this first in a session, and again after " + ToolNames.OpenConnection + " / " + ToolNames.CloseConnection + ".")]
-    public DbOperationResult ListConnections() =>
-        new(success: true, data: new
+    public DbOperationResult ListConnections()
+    {
+        var connections = _connections.List();
+        return new(success: true, data: new
         {
-            connectionRequired = _connections.ConnectionArgumentRequired,
-            count = _connections.Count,
-            connections = _connections.List(),
+            connectionRequired = connections.Count > 1,
+            count = connections.Count,
+            connections,
         });
+    }
 
     [McpServerTool(Name = ToolNames.OpenConnection, Title = "Open Connection", ReadOnly = false, Idempotent = true, Destructive = false, OpenWorld = true),
         Description("Opens a connection so tools can use it. Without connectionString: reopens a configured connection (see " + ToolNames.ListConnections + "). " +
@@ -62,7 +65,10 @@ public partial class Tools
 
         try
         {
-            await using var conn = new SqlConnection(profile.ConnectionString);
+            // The probe is capped at 5 s; the registered profile keeps the user's own connection string.
+            var probe = new SqlConnectionStringBuilder(profile.ConnectionString);
+            probe.ConnectTimeout = Math.Min(probe.ConnectTimeout, 5);
+            await using var conn = new SqlConnection(probe.ConnectionString);
             await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = new SqlCommand("SELECT 1", conn);
             _ = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -76,7 +82,7 @@ public partial class Tools
         return new DbOperationResult(true, data: new
         {
             connectionRequired = _connections.ConnectionArgumentRequired,
-            connection = _connections.List().Single(s => string.Equals(s.Name, registered.Name, StringComparison.OrdinalIgnoreCase)),
+            connection = registered,
         });
     }
 
@@ -86,18 +92,12 @@ public partial class Tools
     public DbOperationResult CloseConnection(
         [Description("Connection name to close.")] string name)
     {
-        if (!_connections.IsOpen(name ?? string.Empty))
+        return _connections.TryClose(name ?? string.Empty) switch
         {
-            return new DbOperationResult(false, $"Connection '{name}' is not open. Connections:{Environment.NewLine}{_connections.DescribeAll()}");
-        }
-
-        if (_connections.List().Count(s => s.IsOpen) == 1)
-        {
-            return new DbOperationResult(false, $"'{name}' is the last open connection and cannot be closed.");
-        }
-
-        return _connections.Close(name!)
-            ? new DbOperationResult(true, data: new { connectionRequired = _connections.ConnectionArgumentRequired })
-            : new DbOperationResult(false, $"Connection '{name}' does not exist.");
+            CloseResult.Closed => new DbOperationResult(true, data: new { connectionRequired = _connections.ConnectionArgumentRequired }),
+            CloseResult.LastOpen => new DbOperationResult(false, $"'{name}' is the last open connection and cannot be closed."),
+            CloseResult.NotOpen => new DbOperationResult(false, $"Connection '{name}' is not open. Connections:{Environment.NewLine}{_connections.DescribeAll()}"),
+            _ => new DbOperationResult(false, $"Connection '{name}' does not exist. Connections:{Environment.NewLine}{_connections.DescribeAll()}"),
+        };
     }
 }

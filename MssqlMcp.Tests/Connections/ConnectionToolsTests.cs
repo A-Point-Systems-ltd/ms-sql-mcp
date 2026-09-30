@@ -54,6 +54,25 @@ public sealed class ConnectionToolsTests
         Assert.True(reg.ConnectionArgumentRequired);
     }
 
+
+    [Fact]
+    public void List_connections_count_and_rule_come_from_one_snapshot()
+    {
+        var (tools, _) = Create(P("a"), P("b"), P("c"));
+        var json = JsonSerializer.Serialize(tools.ListConnections().Data);
+        Assert.Contains("\"connectionRequired\":true", json, StringComparison.Ordinal);
+        Assert.Contains("\"count\":3", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Close_unknown_and_already_closed_are_distinct_errors()
+    {
+        var (tools, _) = Create(P("a"), P("b"));
+        Assert.Contains("does not exist", tools.CloseConnection("zzz").Error, StringComparison.Ordinal);
+        Assert.True(tools.CloseConnection("b").Success);
+        Assert.Contains("is not open", tools.CloseConnection("b").Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Adhoc_open_is_refused_unless_enabled()
     {
