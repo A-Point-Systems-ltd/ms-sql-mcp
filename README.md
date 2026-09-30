@@ -1,6 +1,6 @@
-# MSSQL MCP Server (.NET 9)
+# MSSQL MCP Server (.NET 10)
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for Microsoft SQL Server and Azure SQL Database. Built with the official [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk) (`ModelContextProtocol` 0.1.0-preview.10) on .NET 9.
+A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for Microsoft SQL Server and Azure SQL Database. Built with the official [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk) (`ModelContextProtocol` 2.2.0) on .NET 10.
 
 Forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-AI-samples) and extended with unified object introspection, strict read/write SQL routing, and an optional **AI Insights** cache layer that helps LLM agents investigate databases with less repeated schema work.
 
@@ -23,7 +23,7 @@ Forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-
 
 | Component | Version |
 |-----------|---------|
-| .NET SDK / Runtime | **.NET 9.0** |
+| .NET SDK / Runtime | **.NET 10.0** |
 | SQL Server | **2008 R2 (10.50)** or later |
 | Azure SQL Database | Supported |
 
@@ -46,12 +46,12 @@ dotnet test
 Point your MCP client at the built executable:
 
 ```
-MssqlMcp\bin\Debug\net9.0\MssqlMcp.exe
+MssqlMcp\bin\Debug\net10.0\MssqlMcp.exe
 ```
 
 Set `CONNECTION_STRING` in the MCP server environment (see [sample_mcp.json](sample_mcp.json) for a template).
 
-**First prompt to try:** “List tables in the database” (the agent should call `ListObjects` with `objectType=Table`).
+**First prompt to try:** “List tables in the database” (the agent should call `list_objects` with `objectType=Table`).
 
 ## MCP client configuration
 
@@ -64,7 +64,7 @@ Add a project-level or user-level MCP config. Example (adjust paths and connecti
   "mcpServers": {
     "MSSQL-MCP": {
       "type": "stdio",
-      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\bin\\Debug\\net9.0\\MssqlMcp.exe",
+      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\bin\\Debug\\net10.0\\MssqlMcp.exe",
       "env": {
         "CONNECTION_STRING": "Server=.;Database=MyDb;Trusted_Connection=True;TrustServerCertificate=True",
         "USE_INSIGHTS_LAYER": "true",
@@ -140,43 +140,43 @@ When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the serv
 
 ## MCP tools reference
 
-The server exposes **19 tools** through a single partial `Tools` class. Legacy per-type list/get tools (`ListTables`, `GetStoredProc`, etc.) remain as internal helpers; clients should use the unified tools below.
+The server exposes **19 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (ModelContextProtocol SDK 2.x default). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
 
 ### Read-only inspection
 
 | Tool | Purpose |
 |------|---------|
-| **ListObjects** | List objects by `objectType`: `Table`, `View`, `StoredProcedure`, `TableFunction`, `ScalarFunction`, `Function` (scalar + table), `TableTrigger`, `SysObject`. Optional `partialName` does a `LIKE` filter on name and `schema.name`. For `SysObject`, optional `sysObjectType` filters by `sys.objects.type` (`U`, `V`, `P`, `FN`, …). |
-| **DescribeTable** | Full table metadata: columns (type, nullability, descriptions), indexes, constraints, foreign keys, triggers. Preferred over ad-hoc `sys.*` queries for one table. |
-| **DescribeView** | View metadata, column list, and full T-SQL definition. |
-| **GetObject** | Stored procedure, function, or trigger: parameters (where applicable) + definition. `objectType`: `StoredProcedure`, `Function`, or `Trigger`. Trigger names accept `name`, `schema.name`, or `schema.table.name`. |
-| **ReadData** | **All** read-only `SELECT` / `WITH … SELECT` queries. Use for user tables, `sys.*`, `INFORMATION_SCHEMA`, and DMVs. |
-| **GetServerInfo** | Server version/edition, hardware DMVs (with graceful degradation), and user-database counts. |
+| **list_objects** | List objects by `objectType`: `Table`, `View`, `StoredProcedure`, `TableFunction`, `ScalarFunction`, `Function` (scalar + table), `TableTrigger`, `SysObject`. Optional `partialName` does a `LIKE` filter on name and `schema.name`. For `SysObject`, optional `sysObjectType` filters by `sys.objects.type` (`U`, `V`, `P`, `FN`, …). |
+| **describe_table** | Full table metadata: columns (type, nullability, descriptions), indexes, constraints, foreign keys, triggers. Preferred over ad-hoc `sys.*` queries for one table. |
+| **describe_view** | View metadata, column list, and full T-SQL definition. |
+| **get_object** | Stored procedure, function, or trigger: parameters (where applicable) + definition. `objectType`: `StoredProcedure`, `Function`, or `Trigger`. Trigger names accept `name`, `schema.name`, or `schema.table.name`. |
+| **read_data** | **All** read-only `SELECT` / `WITH … SELECT` queries. Use for user tables, `sys.*`, `INFORMATION_SCHEMA`, and DMVs. |
+| **get_server_info** | Server version/edition, hardware DMVs (with graceful degradation), and user-database counts. |
 
 ### Data modification and DDL
 
 | Tool | MCP flags | Purpose |
 |------|-----------|---------|
-| **CreateTable** | write | Run a `CREATE TABLE` statement. |
-| **DropTable** | write, destructive | Run a `DROP TABLE` statement. Confirm with the user first. |
-| **InsertData** | write | Run a single `INSERT` statement. |
-| **UpdateData** | write, destructive | Run a single `UPDATE` statement. Always use a `WHERE` clause. |
-| **ExecuteSQL** | write, destructive | DDL/DML only (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `EXEC`, …). **SELECT is rejected** — use `ReadData`. Multi-batch `GO` scripts are not supported. |
+| **create_table** | write | Run a `CREATE TABLE` statement. |
+| **drop_table** | write, destructive | Run a `DROP TABLE` statement. Confirm with the user first. |
+| **insert_data** | write | Run a single `INSERT` statement. |
+| **update_data** | write, destructive | Run a single `UPDATE` statement. Always use a `WHERE` clause. |
+| **execute_sql** | write, destructive | DDL/DML only (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `EXEC`, …). **SELECT is rejected** — use `read_data`. Multi-batch `GO` scripts are not supported. |
 
 ### AI Insights (8 tools)
 
-Requires `USE_INSIGHTS_LAYER` enabled (default) and **InstallInsightsLayer** run once per database.
+Requires `USE_INSIGHTS_LAYER` enabled (default) and **install_insights_layer** run once per database.
 
 | Tool | Purpose |
 |------|---------|
-| **InsightsCheck** | Reports layer install state, DDL audit presence, insight row count, and DDL processing watermark. |
-| **InstallInsightsLayer** | Idempotent install of `AIInsights` schema, `SchemaInsights`, `InsightHistory`, `DdlChangeWatermark`, `dbo.DDL_AuditLog`, and the database-level `DDL_Audit` trigger. |
-| **GetInsight** | Read cached insight + freshness for one object. |
-| **UpsertInsight** | Create or update a cached insight (UPDATE-then-INSERT; fingerprint captured server-side). |
-| **ListInsights** | Recent rows from `AIInsights.SchemaInsights`. |
-| **GetInsightHistory** | Archived rows from `AIInsights.InsightHistory`. |
-| **RefreshInsights** | Process DDL backlog / fingerprint drift; returns recent summaries. |
-| **RebuildBaselineInsights** | Bulk warm mechanical baselines (`schemaName?`, `objectType?`, `take` 1–2000). |
+| **insights_check** | Reports layer install state, DDL audit presence, insight row count, and DDL processing watermark. |
+| **install_insights_layer** | Idempotent install of `AIInsights` schema, `SchemaInsights`, `InsightHistory`, `DdlChangeWatermark`, `dbo.DDL_AuditLog`, and the database-level `DDL_Audit` trigger. |
+| **get_insight** | Read cached insight + freshness for one object. |
+| **upsert_insight** | Create or update a cached insight (UPDATE-then-INSERT; fingerprint captured server-side). |
+| **list_insights** | Recent rows from `AIInsights.SchemaInsights`. |
+| **get_insight_history** | Archived rows from `AIInsights.InsightHistory`. |
+| **refresh_insights** | Process DDL backlog / fingerprint drift; returns recent summaries. |
+| **rebuild_baseline_insights** | Bulk warm mechanical baselines (`schemaName?`, `objectType?`, `take` 1–2000). |
 
 When `USE_INSIGHTS_LAYER=false`, insight-specific tools return errors or empty status; introspection tools skip insight enrichment.
 
@@ -184,14 +184,14 @@ When `USE_INSIGHTS_LAYER=false`, insight-specific tools return errors or empty s
 
 `SqlStatementClassifier` enforces a strict split:
 
-- **ReadData** — `SELECT` and read-only `WITH … SELECT` only. `SELECT … INTO` is rejected.
-- **ExecuteSQL** — everything else that mutates schema or data. Any `SELECT` is rejected with a message pointing to `ReadData`.
+- **read_data** — `SELECT` and read-only `WITH … SELECT` only. `SELECT … INTO` is rejected.
+- **execute_sql** — everything else that mutates schema or data. Any `SELECT` is rejected with a message pointing to `read_data`.
 
 This keeps destructive operations behind an explicitly flagged tool and prevents accidental full-table reads through the write path.
 
 ## AI Insights layer
 
-The AI Insights layer caches LLM-authored (or server-generated baseline) summaries of database objects so repeated investigations cost fewer tokens. It is **enabled by default** but **not auto-installed** — call **InstallInsightsLayer** once per database.
+The AI Insights layer caches LLM-authored (or server-generated baseline) summaries of database objects so repeated investigations cost fewer tokens. It is **enabled by default** but **not auto-installed** — call **install_insights_layer** once per database.
 
 ### What gets installed
 
@@ -206,35 +206,35 @@ Install is idempotent; re-running is safe.
 ```mermaid
 flowchart LR
     subgraph introspect [Introspection]
-        DT[DescribeTable / DescribeView / GetObject]
+        DT[describe_table / describe_view / get_object]
     end
     subgraph cache [AIInsights]
         SI[SchemaInsights]
         IH[InsightHistory]
     end
     subgraph writes [Write tools]
-        W[CreateTable / DropTable / InsertData / UpdateData / ExecuteSQL]
+        W[create_table / drop_table / insert_data / update_data / execute_sql]
     end
     DT -->|attach insight| SI
     W -->|queue DDL processing| SI
     SI -->|stale / DDL change| IH
 ```
 
-1. **Read path** — `DescribeTable`, `DescribeView`, and `GetObject` attach `insight`, `insightFreshness`, and optionally `enrichmentSuggested` / `insightEnrichment` to their responses (best-effort; never fails the parent tool).
+1. **Read path** — `describe_table`, `describe_view`, and `get_object` attach `insight`, `insightFreshness`, and optionally `enrichmentSuggested` / `insightEnrichment` to their responses (best-effort; never fails the parent tool).
 2. **Freshness** — On read, the service compares the cached row’s schema fingerprint and `modify_date` to the live object. Mismatches archive the row to `InsightHistory` and return `insightFreshness: StaleArchived`.
 3. **Auto-population** — When `INSIGHTS_AUTOPOPULATE` is enabled (default), absent or stale insights trigger a mechanical baseline (`LlmModel = "auto-mechanical"`, `Confidence = 0.30`) built from `sys.*` metadata.
-4. **Enrichment contract** — Baseline rows set `enrichmentSuggested: true` and include an `insightEnrichment` block with a pre-filled `UpsertInsight` payload. MCP-aware agents should upgrade these rows before answering the user (protocol **MCP-Insight-Enrichment-v1**). See [.cursor/skills/mssql-insights-ops/SKILL.md](.cursor/skills/mssql-insights-ops/SKILL.md) for the full agent workflow.
+4. **Enrichment contract** — Baseline rows set `enrichmentSuggested: true` and include an `insightEnrichment` block with a pre-filled `upsert_insight` payload. MCP-aware agents should upgrade these rows before answering the user (protocol **MCP-Insight-Enrichment-v1**). See [.cursor/skills/mssql-insights-ops/SKILL.md](.cursor/skills/mssql-insights-ops/SKILL.md) for the full agent workflow.
 5. **Write path** — After successful writes, a background `InsightDdlProcessingQueue` drains DDL audit rows (or falls back to fingerprint scans) and archives affected insights. When auto-population is on, baselines are rebuilt for archived objects.
 
 ### Recommended first-time workflow
 
 ```
-1. GetServerInfo
-2. InsightsCheck
-3. InstallInsightsLayer          (if schema or DDL trigger missing)
-4. ListObjects(objectType=Table)
-5. DescribeTable(name=…)        (inspect insight / enrichmentSuggested)
-6. UpsertInsight(…)              (when enrichmentSuggested is true)
+1. get_server_info
+2. insights_check
+3. install_insights_layer          (if schema or DDL trigger missing)
+4. list_objects(objectType=Table)
+5. describe_table(name=…)        (inspect insight / enrichmentSuggested)
+6. upsert_insight(…)              (when enrichmentSuggested is true)
 ```
 
 ### `insightFreshness` values
@@ -263,7 +263,7 @@ All tools return `DbOperationResult`:
 
 - `success` — whether the operation completed without error.
 - `error` — message when `success` is false.
-- `rowsAffected` — for DML tools (`InsertData`, `UpdateData`, `ExecuteSQL`, …).
+- `rowsAffected` — for DML tools (`insert_data`, `update_data`, `execute_sql`, …).
 - `data` — tool-specific payload (object metadata, row arrays, insight status, …).
 
 Introspection tools may add top-level keys inside `data` for insights (`insight`, `insightFreshness`, `enrichmentSuggested`, `insightEnrichment`, `_agentDirective`, `pendingEnrichments`).
@@ -315,7 +315,7 @@ Output path is configured in `MssqlMcp/MssqlMcp.csproj` and `Properties/PublishP
 
 ```
 MS-SQL/
-├── MssqlMcp/                    # MCP server (.NET 9 exe)
+├── MssqlMcp/                    # MCP server (.NET 10 exe)
 │   ├── Program.cs               # Startup, logging, DI, stdio transport
 │   ├── SqlConnectionFactory.cs  # CONNECTION_STRING → SqlConnection
 │   ├── SqlStatementClassifier.cs
@@ -335,8 +335,8 @@ MS-SQL/
 ## Security notes
 
 - **Connection strings** live in MCP client config / environment variables — never commit real credentials to the repo.
-- **ExecuteSQL**, **DropTable**, and **UpdateData** are marked destructive in MCP metadata; agents should confirm intent with the user.
-- **ReadData** and **ExecuteSQL** do not support parameterized queries — literals are embedded in SQL. Do not pass untrusted user input through these tools without sanitization.
+- **execute_sql**, **drop_table**, and **update_data** are marked destructive in MCP metadata; agents should confirm intent with the user.
+- **read_data** and **execute_sql** do not support parameterized queries — literals are embedded in SQL. Do not pass untrusted user input through these tools without sanitization.
 - **DDL audit trigger** installation requires elevated database permissions; use a dedicated database role in production.
 - Startup logs mask password fields in connection strings; other secrets in the connection string are still logged — prefer Windows / Entra authentication where possible.
 
@@ -361,14 +361,14 @@ Logs include process info, masked connection string, SQL connection test results
 |---------|--------------|-----|
 | Immediate exit code 1 | `CONNECTION_STRING` not set | Add it to MCP `env` |
 | Connection test failed | Wrong server/database/auth | Verify string outside MCP (`sqlcmd`, SSMS) |
-| InstallInsightsLayer permission error | Missing DDL trigger rights | Grant `ALTER ANY DATABASE DDL TRIGGER` or use `ddl_admin` |
-| ExecuteSQL rejects SELECT | By design | Use **ReadData** for all queries that return rows |
+| install_insights_layer permission error | Missing DDL trigger rights | Grant `ALTER ANY DATABASE DDL TRIGGER` or use `ddl_admin` |
+| execute_sql rejects SELECT | By design | Use **read_data** for all queries that return rows |
 | Insight tools return "layer is disabled" | `USE_INSIGHTS_LAYER=false` | Remove or set to `true`; restart server |
-| Hardware fields null in GetServerInfo | Missing `VIEW SERVER STATE` | Expected on restricted accounts; see `hardware.warning` |
+| Hardware fields null in get_server_info | Missing `VIEW SERVER STATE` | Expected on restricted accounts; see `hardware.warning` |
 
 ### Missing .NET runtime
 
-Install [.NET 9.0 Runtime](https://dotnet.microsoft.com/download/dotnet/9.0) on the machine running `MssqlMcp.exe` (not required for self-contained publish output).
+Install [.NET 10.0 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) on the machine running `MssqlMcp.exe` (not required for self-contained publish output).
 
 ## License
 

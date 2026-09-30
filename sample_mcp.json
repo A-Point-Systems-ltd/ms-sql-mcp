@@ -2,7 +2,7 @@
   "mcpServers": {
     "MSSQL-MCP": {
       "type": "stdio",
-      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\Bin\\Debug\\net9.0\\MssqlMcp.exe",
+      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\Bin\\Debug\\net10.0\\MssqlMcp.exe",
       "env": {
         "CONNECTION_STRING": "Server=DC\\DEV;Database=EasyHouse;Trusted_Connection=True;TrustServerCertificate=True",
         "USE_INSIGHTS_LAYER": "true",
