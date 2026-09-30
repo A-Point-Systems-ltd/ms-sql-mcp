@@ -46,6 +46,29 @@ public sealed class SecurityDdlRendererTests
         Assert.Contains("EXEC sys.sp_addrolemember @rolename = N'db_datareader', @membername = N'app';", ddl);
     }
 
+    [Theory]
+    [InlineData("guest")]
+    [InlineData("sys")]
+    [InlineData("INFORMATION_SCHEMA")]
+    [InlineData("dbo")]
+    public void Builtin_database_users_are_not_created(string name)
+    {
+        var ddl = SecurityDdlRenderer.RenderDatabaseUser(new(name, 'S', null, name, false, ["db_owner"]), V2019, out var warnings);
+        Assert.Equal($"-- {name} is a built-in principal and is not scripted.", ddl);
+        Assert.DoesNotContain("CREATE USER", ddl);
+        Assert.Single(warnings);
+    }
+
+    [Fact]
+    public void Contained_database_user_gets_password_placeholder_and_warning()
+    {
+        var ddl = SecurityDdlRenderer.RenderDatabaseUser(new("cu", 'S', null, "app", false, ["db_datareader"], true), V2019, out var warnings);
+        Assert.Contains("CREATE USER [cu] WITH PASSWORD = " + SecurityDdlRenderer.PasswordPlaceholder + ", DEFAULT_SCHEMA = [app];", ddl);
+        Assert.DoesNotContain("WITHOUT LOGIN", ddl);
+        Assert.Contains("ALTER ROLE [db_datareader] ADD MEMBER [cu];", ddl);
+        Assert.Single(warnings);
+    }
+
     [Fact]
     public void Database_user_without_login()
     {

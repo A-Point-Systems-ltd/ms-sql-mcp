@@ -15,7 +15,7 @@ public sealed class McpProtocolTests
     private static readonly string[] ReadOnlyTools =
     [
         ToolNames.ListObjects, ToolNames.DescribeTable, ToolNames.DescribeView, ToolNames.GetObject,
-        ToolNames.ReadData, ToolNames.GetServerInfo, ToolNames.GetInsight, ToolNames.ListInsights,
+        ToolNames.ReadData, ToolNames.ScriptObject, ToolNames.GetServerInfo, ToolNames.GetInsight, ToolNames.ListInsights,
         ToolNames.GetInsightHistory, ToolNames.InsightsCheck, ToolNames.ListConnections,
     ];
 
@@ -29,6 +29,7 @@ public sealed class McpProtocolTests
 
         var tools = await client.ListToolsAsync();
 
+        Assert.Equal(23, tools.Count);
         Assert.Equal(ToolNames.All.OrderBy(n => n, StringComparer.Ordinal), tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
         foreach (var tool in tools)
         {
@@ -41,6 +42,33 @@ public sealed class McpProtocolTests
             }
 
             Assert.DoesNotContain("cancellationToken", tool.ProtocolTool.InputSchema.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Script_object_returns_create_table_over_the_wire()
+    {
+        await using var client = await StartClientAsync();
+
+        try
+        {
+            var created = await client.CallToolAsync(
+                ToolNames.ExecuteSql,
+                new Dictionary<string, object?> { ["sql"] = "CREATE TABLE dbo.mcp_protocol_probe (id int NOT NULL PRIMARY KEY)" });
+            Assert.Contains("\"success\":true", Text(created), StringComparison.OrdinalIgnoreCase);
+
+            var scripted = await client.CallToolAsync(
+                ToolNames.ScriptObject,
+                new Dictionary<string, object?> { ["objectType"] = "Table", ["name"] = "dbo.mcp_protocol_probe" });
+            var text = Text(scripted);
+            Assert.Contains("\"success\":true", text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("CREATE TABLE", text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await client.CallToolAsync(
+                ToolNames.DropTable,
+                new Dictionary<string, object?> { ["sql"] = "DROP TABLE IF EXISTS dbo.mcp_protocol_probe" });
         }
     }
 

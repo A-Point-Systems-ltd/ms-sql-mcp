@@ -346,7 +346,7 @@ internal static class ObjectScripter
 
                 break;
             case "DatabaseUser":
-                if (await CatalogReader.ReadDatabaseUserAsync(conn, principal, ct).ConfigureAwait(false) is { } user)
+                if (await CatalogReader.ReadDatabaseUserAsync(conn, principal, version, ct).ConfigureAwait(false) is { } user)
                 {
                     ddl = SecurityDdlRenderer.RenderDatabaseUser(user, version, out warnings);
                 }

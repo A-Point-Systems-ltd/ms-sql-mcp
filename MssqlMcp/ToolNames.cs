@@ -11,6 +11,7 @@ public static class ToolNames
 {
     public const string ListObjects = "list_objects";
     public const string DescribeTable = "describe_table";
+    public const string ScriptObject = "script_object";
     public const string DescribeView = "describe_view";
     public const string GetObject = "get_object";
     public const string ReadData = "read_data";
@@ -33,10 +34,10 @@ public static class ToolNames
     public const string OpenConnection = "open_connection";
     public const string CloseConnection = "close_connection";
 
-    /// <summary>All 22 tool names, in the order documented in README.md.</summary>
+    /// <summary>All 23 tool names, in the order documented in README.md.</summary>
     public static readonly IReadOnlyList<string> All =
     [
-        ListObjects, DescribeTable, DescribeView, GetObject, ReadData, ExecuteSql, InsertData, UpdateData,
+        ListObjects, DescribeTable, DescribeView, GetObject, ScriptObject, ReadData, ExecuteSql, InsertData, UpdateData,
         CreateTable, DropTable, GetServerInfo, GetInsight, UpsertInsight, ListInsights, GetInsightHistory,
         RefreshInsights, InstallInsightsLayer, InsightsCheck, RebuildBaselineInsights,
         ListConnections, OpenConnection, CloseConnection,

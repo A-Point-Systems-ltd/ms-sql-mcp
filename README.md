@@ -144,7 +144,7 @@ When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the serv
 
 ## MCP tools reference
 
-The server exposes **22 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
+The server exposes **23 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
 
 > **Breaking change (.NET 10 / MCP SDK 2.x upgrade):** tool names changed from PascalCase (`ReadData`, `ExecuteSQL`, …) to snake_case (`read_data`, `execute_sql`, …). Update client tool allow-lists, auto-approve rules and saved prompts that reference the old names.
 
@@ -152,9 +152,10 @@ The server exposes **22 tools** through a single partial `Tools` class. MCP wire
 
 | Tool | Purpose |
 |------|---------|
-| **list_objects** | List objects by `objectType`: `Table`, `View`, `StoredProcedure`, `TableFunction`, `ScalarFunction`, `Function` (scalar + table), `TableTrigger`, `SysObject`. Optional `partialName` does a `LIKE` filter on name and `schema.name`. For `SysObject`, optional `sysObjectType` filters by `sys.objects.type` (`U`, `V`, `P`, `FN`, …). |
+| **list_objects** | List objects by `objectType`: `Table`, `View`, `StoredProcedure`, `TableFunction`, `ScalarFunction`, `Function` (scalar + table), `TableTrigger`, `SysObject`, `DatabaseTrigger`, `Type` (user-defined alias/table types), `Login`, `ServerRole`, `DatabaseUser`, `DatabaseRole`. **Privacy:** the security types return principal names (logins and users often identify people) and role membership to the calling agent and its LLM provider; passwords, hashes and SIDs are never returned. Optional `partialName` does a `LIKE` filter on name and `schema.name`. For `SysObject`, optional `sysObjectType` filters by `sys.objects.type` (`U`, `V`, `P`, `FN`, …). |
 | **describe_table** | Full table metadata: columns (type, nullability, descriptions), indexes, constraints, foreign keys, triggers. Preferred over ad-hoc `sys.*` queries for one table. |
-| **describe_view** | View metadata, column list, and full T-SQL definition. |
+| **describe_view** | View metadata, column list, indexes (`name`, `type`, `isUnique`, `keys`), and full T-SQL definition. |
+| **script_object** | Ready-to-run T-SQL DDL for one object: `Table`, `View`, `Index` (with `parent`), `ForeignKey`, `TableTrigger`, `StoredProcedure`, `TableFunction`, `ScalarFunction`, `DatabaseTrigger`, `Type`, `Login`, `ServerRole`, `DatabaseUser`, `DatabaseRole`. Returns `{ objectType, schema, name, form, ddl, warnings }`; `form` is `Create`, `CreateOrAlter` (SQL Server 2016 SP1+) or `Alter` for programmable objects. Passwords, hashes and SIDs are never scripted (placeholders instead); unsupported features (partitioning, compression, XML/columnstore indexes, encrypted modules, ...) are listed in `warnings`. Principal names are returned (see privacy note above). Read-only. |
 | **get_object** | Stored procedure, function, or trigger: parameters (where applicable) + definition. `objectType`: `StoredProcedure`, `Function`, or `Trigger`. Trigger names accept `name`, `schema.name`, or `schema.table.name`. |
 | **read_data** | **All** read-only `SELECT` / `WITH … SELECT` queries. Use for user tables, `sys.*`, `INFORMATION_SCHEMA`, and DMVs. |
 | **get_server_info** | Server version/edition, hardware DMVs (with graceful degradation), and user-database counts. |

@@ -25,7 +25,8 @@ internal sealed record DatabaseUserMeta(
     string? LoginName,
     string? DefaultSchema,
     bool WithoutLogin,
-    IReadOnlyList<string> Roles);
+    IReadOnlyList<string> Roles,
+    bool HasDatabasePassword = false);
 
 internal sealed record DatabaseRoleMeta(
     string Name,
@@ -135,6 +136,13 @@ internal static class SecurityDdlRenderer
         var list = new List<string>();
         warnings = list;
 
+        if (IsBuiltInUser(u.Name))
+        {
+            var message = Sql.CommentSafe($"{u.Name} is a built-in principal and is not scripted.");
+            list.Add(message);
+            return "-- " + message;
+        }
+
         if (u.Type is 'C' or 'K')
         {
             return Warn(list, $"{u.Name} is mapped to a certificate/asymmetric key and is not scripted.");
@@ -146,7 +154,19 @@ internal static class SecurityDdlRenderer
         }
 
         var sb = new StringBuilder($"CREATE USER {Sql.Q(u.Name)}");
-        if (u.WithoutLogin || (u.Type == 'S' && u.LoginName is null))
+        if (u.HasDatabasePassword)
+        {
+            // Contained-database user (authentication_type = DATABASE): the password lives in the database, not in a login.
+            var safe = Sql.CommentSafe($"{u.Name} is a contained-database user with a password; the password is not scripted - set it before running.");
+            list.Add(safe);
+            sb.Insert(0, "-- WARNING: " + safe + Sep);
+            sb.Append(" WITH PASSWORD = ").Append(PasswordPlaceholder);
+            if (u.DefaultSchema is not null)
+            {
+                sb.Append(", DEFAULT_SCHEMA = ").Append(Sql.Q(u.DefaultSchema));
+            }
+        }
+        else if (u.WithoutLogin || (u.Type == 'S' && u.LoginName is null))
         {
             if (!u.WithoutLogin)
             {
@@ -160,7 +180,7 @@ internal static class SecurityDdlRenderer
             sb.Append(" FOR LOGIN ").Append(Sql.Q(u.LoginName));
         }
 
-        if (u.DefaultSchema is not null)
+        if (!u.HasDatabasePassword && u.DefaultSchema is not null)
         {
             sb.Append(" WITH DEFAULT_SCHEMA = ").Append(Sql.Q(u.DefaultSchema));
         }
@@ -199,6 +219,10 @@ internal static class SecurityDdlRenderer
 
         return stmts.Count > 0 ? string.Join(Sep, stmts) : NothingToScript(r.Name);
     }
+
+    /// <summary>dbo, guest, sys and INFORMATION_SCHEMA exist in every database and cannot be created.</summary>
+    private static bool IsBuiltInUser(string name) =>
+        name.ToUpperInvariant() is "DBO" or "GUEST" or "SYS" or "INFORMATION_SCHEMA";
 
     /// <summary>The built-in <c>public</c> role (database principal_id 0, server principal_id 2) always exists and is never created.</summary>
     private static bool IsPublic(string roleName) => string.Equals(roleName, "public", StringComparison.OrdinalIgnoreCase);

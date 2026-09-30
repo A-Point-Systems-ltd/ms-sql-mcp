@@ -172,14 +172,16 @@ internal static class CatalogReader
         return new ServerRoleMeta(rows[0].Name, version.Major < 11 || rows[0].Fixed, members);
     }
 
-    public static async Task<DatabaseUserMeta?> ReadDatabaseUserAsync(SqlConnection conn, string name, CancellationToken ct)
+    public static async Task<DatabaseUserMeta?> ReadDatabaseUserAsync(SqlConnection conn, string name, SqlServerVersion version, CancellationToken ct)
     {
-        var rows = await QueryAsync(conn, """
-            SELECT dp.name, dp.type, sp.name AS login_name, dp.default_schema_name, CASE WHEN dp.sid IS NULL OR (dp.type = 'S' AND DATALENGTH(dp.sid) = 28) THEN 1 ELSE 0 END AS without_login
+        // authentication_type (2 = DATABASE, contained users) exists from 11.0; 2008 R2 lacks the column.
+        var authColumn = version.Major >= 11 ? "dp.authentication_type" : "0";
+        var rows = await QueryAsync(conn, $"""
+            SELECT dp.name, dp.type, sp.name AS login_name, dp.default_schema_name, CASE WHEN dp.sid IS NULL OR (dp.type = 'S' AND DATALENGTH(dp.sid) = 28) THEN 1 ELSE 0 END AS without_login, {authColumn} AS auth_type
             FROM sys.database_principals dp LEFT JOIN sys.server_principals sp ON sp.sid = dp.sid
             WHERE dp.name = @Name AND dp.type IN ('S','U','G','E','X','C','K');
             """, c => AddName(c, "@Name", name),
-            r => (Name: r.GetString(0), Type: r.GetString(1)[0], Login: Str(r, 2), Schema: Str(r, 3), WithoutLogin: r.GetInt32(4) == 1),
+            r => (Name: r.GetString(0), Type: r.GetString(1)[0], Login: Str(r, 2), Schema: Str(r, 3), WithoutLogin: r.GetInt32(4) == 1, Auth: Convert.ToInt32(r.GetValue(5), System.Globalization.CultureInfo.InvariantCulture)),
             ct).ConfigureAwait(false);
         if (rows.Count == 0)
         {
@@ -191,7 +193,7 @@ internal static class CatalogReader
             JOIN sys.database_principals p ON p.principal_id = m.member_principal_id WHERE p.name = @Name ORDER BY r.name;
             """, name, ct).ConfigureAwait(false);
         var u = rows[0];
-        return new DatabaseUserMeta(u.Name, u.Type, u.Login, u.Schema, u.WithoutLogin, roles);
+        return new DatabaseUserMeta(u.Name, u.Type, u.Login, u.Schema, u.WithoutLogin, roles, u.Auth == 2);
     }
 
     public static async Task<DatabaseRoleMeta?> ReadDatabaseRoleAsync(SqlConnection conn, string name, CancellationToken ct)
