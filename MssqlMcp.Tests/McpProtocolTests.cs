@@ -16,7 +16,7 @@ public sealed class McpProtocolTests
     [
         ToolNames.ListObjects, ToolNames.DescribeTable, ToolNames.DescribeView, ToolNames.GetObject,
         ToolNames.ReadData, ToolNames.GetServerInfo, ToolNames.GetInsight, ToolNames.ListInsights,
-        ToolNames.GetInsightHistory, ToolNames.InsightsCheck,
+        ToolNames.GetInsightHistory, ToolNames.InsightsCheck, ToolNames.ListConnections,
     ];
 
     private static readonly string[] DestructiveTools =

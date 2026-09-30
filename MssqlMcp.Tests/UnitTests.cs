@@ -16,13 +16,15 @@ namespace MssqlMcp.Tests
         {
             TestConnectionString.EnsureInitialized();
             _tableName = $"TestTable_{Guid.NewGuid():N}";
-            var connectionFactory = TestConnectionString.CreateFactory();
+            var registry = TestConnectionString.CreateRegistry();
+            var connectionFactory = TestConnectionString.CreateFactory(registry);
             var loggerMock = new Mock<ILogger<Tools>>();
             _tools = new Tools(
                 connectionFactory,
                 NoOpInsightsLayerService.Instance,
                 NoOpInsightDdlProcessingQueue.Instance,
-                loggerMock.Object);
+                loggerMock.Object,
+                registry);
         }
 
         public void Dispose()

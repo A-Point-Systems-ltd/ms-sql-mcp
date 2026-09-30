@@ -17,6 +17,24 @@ internal static class ConnectionRoutingFilter
     // Relaxed escaping keeps apostrophes in names readable for the LLM (default would emit 0027).
     private static readonly JsonSerializerOptions ErrorJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
+    /// <summary>Extracts the 'connection' value. Absent or JSON null means "not given"; any other non-string kind is an error.</summary>
+    public static string? ReadConnectionArgument(JsonElement? raw, out string? connectionArg)
+    {
+        connectionArg = null;
+        switch (raw?.ValueKind)
+        {
+            case null:
+            case JsonValueKind.Undefined:
+            case JsonValueKind.Null:
+                return null;
+            case JsonValueKind.String:
+                connectionArg = raw.Value.GetString();
+                return null;
+            default:
+                return $"'{ArgumentName}' must be a string (a name from {ToolNames.ListConnections}).";
+        }
+    }
+
     public static string? Route(ConnectionRegistry registry, string toolName, string? connectionArg, out ConnectionProfile? profile)
     {
         profile = null;
@@ -50,15 +68,10 @@ internal static class ConnectionRoutingFilter
             }
 
             var registry = context.Services!.GetRequiredService<ConnectionRegistry>();
-            string? connectionArg = null;
-            if (context.Params?.Arguments is { } args
-                && args.TryGetValue(ArgumentName, out var el)
-                && el.ValueKind == JsonValueKind.String)
-            {
-                connectionArg = el.GetString();
-            }
-
-            var error = Route(registry, toolName, connectionArg, out var profile);
+            JsonElement? rawArg = context.Params?.Arguments is { } args && args.TryGetValue(ArgumentName, out var el) ? el : null;
+            var error = ReadConnectionArgument(rawArg, out var connectionArg);
+            ConnectionProfile? profile = null;
+            error ??= Route(registry, toolName, connectionArg, out profile);
             if (error is not null)
             {
                 return new CallToolResult

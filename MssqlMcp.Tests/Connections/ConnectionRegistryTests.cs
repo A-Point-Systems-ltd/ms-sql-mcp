@@ -80,6 +80,89 @@ public sealed class ConnectionRegistryTests
     }
 
     [Fact]
+    public void Register_never_replaces_a_configured_profile_or_changes_its_source()
+    {
+        var reg = new ConnectionRegistry([P("a"), P("b")]);
+        reg.Close("a");
+        var stored = reg.Register(new ConnectionProfile("A", "Server=evil", false, false, ConnectionSource.Adhoc));
+
+        Assert.Equal(ConnectionSource.Configured, stored.Source);
+        Assert.Equal("srv-a", reg.List().Single(s => s.Name == "a").DataSource);
+        Assert.Equal(ConnectionSource.Configured, reg.Find("a")!.Source);
+        Assert.True(reg.IsOpen("a"));
+        Assert.Equal(2, reg.Count);
+    }
+
+    [Fact]
+    public void Close_returns_true_even_when_the_connection_string_is_malformed()
+    {
+        var reg = new ConnectionRegistry([P("a"), new ConnectionProfile("bad", "this is ;; not = a connection string", false, false, ConnectionSource.Adhoc)]);
+        Assert.True(reg.Close("bad"));
+        Assert.Null(reg.Find("bad"));
+
+        var reg2 = new ConnectionRegistry([P("a"), new ConnectionProfile("bad", "this is ;; not = a connection string", false, false, ConnectionSource.Configured)]);
+        Assert.True(reg2.Close("bad"));
+        Assert.False(reg2.IsOpen("bad"));
+    }
+
+    [Fact]
+    public void Empty_registry_resolve_and_try_resolve_single_do_not_throw_unexpectedly()
+    {
+        var reg = new ConnectionRegistry([]);
+        Assert.Null(reg.TryResolveSingle());
+        Assert.Contains("No connection is configured", Assert.Throws<ConnectionResolutionException>(() => reg.Resolve(null)).Message);
+        Assert.Empty(reg.List());
+    }
+
+    [Fact]
+    public void Concurrent_register_close_resolve_and_list_stay_consistent()
+    {
+        var reg = new ConnectionRegistry([P("main")]);
+        var errors = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+
+        Parallel.For(0, 400, i =>
+        {
+            var name = $"t{i % 8}";
+            try
+            {
+                switch (i % 4)
+                {
+                    case 0:
+                        _ = reg.Register(P(name) with { Source = ConnectionSource.Adhoc });
+                        break;
+                    case 1:
+                        _ = reg.Close(name);
+                        break;
+                    case 2:
+                        _ = reg.List();
+                        _ = reg.DescribeAll();
+                        _ = reg.TryResolveSingle();
+                        break;
+                    default:
+                        try
+                        {
+                            _ = reg.Resolve(i % 8 == 3 ? null : "main");
+                        }
+                        catch (ConnectionResolutionException)
+                        {
+                            // expected while several connections are registered
+                        }
+
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Enqueue(ex);
+            }
+        });
+
+        Assert.Empty(errors);
+        Assert.Equal(reg.Count, reg.List().Count);
+        Assert.True(reg.IsOpen("main"));
+    }
+
+    [Fact]
     public async Task Current_connection_flows_across_awaits_and_resets_after_scope()
     {
         var profile = P("x");

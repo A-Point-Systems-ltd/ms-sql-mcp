@@ -15,13 +15,15 @@ namespace MssqlMcp.Tests
         public GetServerInfoTests()
         {
             TestConnectionString.EnsureInitialized();
-            var connectionFactory = TestConnectionString.CreateFactory();
+            var registry = TestConnectionString.CreateRegistry();
+            var connectionFactory = TestConnectionString.CreateFactory(registry);
             var loggerMock = new Mock<ILogger<Tools>>();
             _tools = new Tools(
                 connectionFactory,
                 NoOpInsightsLayerService.Instance,
                 NoOpInsightDdlProcessingQueue.Instance,
-                loggerMock.Object);
+                loggerMock.Object,
+                registry);
         }
 
         [Fact]

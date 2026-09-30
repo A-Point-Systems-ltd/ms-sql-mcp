@@ -108,8 +108,10 @@ internal static partial class ConnectionConfigLoader
             getEnv(m.Groups[1].Value)
             ?? throw new InvalidOperationException($"Connection '{profileName}' references ${{env:{m.Groups[1].Value}}} but that environment variable is not set."));
 
-    [GeneratedRegex(@"^[A-Za-z0-9_.\-]{1,64}$")]
+    [GeneratedRegex(@"^[A-Za-z0-9_.\-]{1,64}\z")]
     private static partial Regex NameRegex();
+
+    public static bool IsValidName(string? name) => name is not null && NameRegex().IsMatch(name);
 
     [GeneratedRegex(@"\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}")]
     private static partial Regex EnvPlaceholderRegex();

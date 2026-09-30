@@ -52,6 +52,34 @@ public sealed class ConnectionRoutingFilterTests
         Assert.Equal("ro", p!.Name);
     }
 
+    [Theory]
+    [InlineData("123")]
+    [InlineData("true")]
+    [InlineData("{\"a\":1}")]
+    [InlineData("[\"rw\"]")]
+    public void Non_string_connection_argument_is_an_error(string json)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var error = ConnectionRoutingFilter.ReadConnectionArgument(doc.RootElement.Clone(), out var value);
+        Assert.Equal("'connection' must be a string (a name from list_connections).", error);
+        Assert.Null(value);
+    }
+
+    [Fact]
+    public void String_null_and_absent_connection_argument_are_accepted()
+    {
+        using var str = System.Text.Json.JsonDocument.Parse("\"rw\"");
+        Assert.Null(ConnectionRoutingFilter.ReadConnectionArgument(str.RootElement.Clone(), out var value));
+        Assert.Equal("rw", value);
+
+        using var nul = System.Text.Json.JsonDocument.Parse("null");
+        Assert.Null(ConnectionRoutingFilter.ReadConnectionArgument(nul.RootElement.Clone(), out value));
+        Assert.Null(value);
+
+        Assert.Null(ConnectionRoutingFilter.ReadConnectionArgument(null, out value));
+        Assert.Null(value);
+    }
+
     [Fact]
     public void Unknown_connection_returns_error_not_exception()
     {

@@ -76,23 +76,31 @@ internal class Program
         foreach (var profile in profiles)
         {
             log.Append($"Connection '{profile.Name}'{(profile.ReadOnly ? " [read-only]" : "")}: {ConnectionStringMasker.Mask(profile.ConnectionString)}");
+        }
+
+        if (legacyMode)
+        {
+            // Unchanged legacy behavior: original connection string and timeout, fail fast.
             try
             {
-                await using var test = new SqlConnection(profile.ConnectionString);
+                await using var test = new SqlConnection(profiles[0].ConnectionString);
                 await test.OpenAsync();
-                log.Append($"Connection '{profile.Name}' test SUCCESSFUL - Server: {test.DataSource}, Database: {test.Database}");
+                log.Append($"SQL Server connection test SUCCESSFUL - Server: {test.DataSource}, Database: {test.Database}");
             }
             catch (Exception ex)
             {
-                var msg = $"Connection '{profile.Name}' test FAILED: {ex.Message}";
+                var msg = $"FATAL: SQL Server connection test FAILED: {ex.Message}";
                 Console.Error.WriteLine(msg);
                 log.Append(msg);
-                if (legacyMode)
-                {
-                    Environment.ExitCode = 1;
-                    return;
-                }
+                log.Append($"Stack: {ex.StackTrace}");
+                Environment.ExitCode = 1;
+                return;
             }
+        }
+        else
+        {
+            // Probe all targets at once with a short timeout so unreachable ones cannot delay MCP initialize by N x 15 s.
+            await Task.WhenAll(profiles.Select(p => ProbeAsync(p, log)));
         }
 
         log.Append(registry.ConnectionArgumentRequired
@@ -164,6 +172,24 @@ internal class Program
         finally
         {
             log.Append($"Process exiting with code: {Environment.ExitCode}");
+        }
+    }
+
+    /// <summary>Startup reachability check for one multi-connection profile. Logs the outcome and never throws.</summary>
+    private static async Task ProbeAsync(ConnectionProfile profile, StartupLog log)
+    {
+        try
+        {
+            var probe = new SqlConnectionStringBuilder(profile.ConnectionString) { ConnectTimeout = 5 };
+            await using var test = new SqlConnection(probe.ConnectionString);
+            await test.OpenAsync();
+            log.Append($"Connection '{profile.Name}' test SUCCESSFUL - Server: {test.DataSource}, Database: {test.Database}");
+        }
+        catch (Exception ex)
+        {
+            var msg = $"Connection '{profile.Name}' test FAILED: {ex.Message}";
+            Console.Error.WriteLine(msg);
+            log.Append(msg);
         }
     }
 

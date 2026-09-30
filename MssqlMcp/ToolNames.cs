@@ -28,15 +28,18 @@ public static class ToolNames
     public const string InstallInsightsLayer = "install_insights_layer";
     public const string InsightsCheck = "insights_check";
     public const string RebuildBaselineInsights = "rebuild_baseline_insights";
-    /// <summary>Not in <see cref="All"/> until the connection-management tools exist.</summary>
+    // Connection-management tools (no 'connection' argument of their own).
     public const string ListConnections = "list_connections";
+    public const string OpenConnection = "open_connection";
+    public const string CloseConnection = "close_connection";
 
-    /// <summary>All 19 tool names, in the order documented in README.md.</summary>
+    /// <summary>All 22 tool names, in the order documented in README.md.</summary>
     public static readonly IReadOnlyList<string> All =
     [
         ListObjects, DescribeTable, DescribeView, GetObject, ReadData, ExecuteSql, InsertData, UpdateData,
         CreateTable, DropTable, GetServerInfo, GetInsight, UpsertInsight, ListInsights, GetInsightHistory,
         RefreshInsights, InstallInsightsLayer, InsightsCheck, RebuildBaselineInsights,
+        ListConnections, OpenConnection, CloseConnection,
     ];
 
     /// <summary>Tools refused on a read-only connection profile.</summary>
@@ -47,5 +50,8 @@ public static class ToolNames
     };
 
     /// <summary>Tools that manage connections themselves and therefore take no 'connection' argument.</summary>
-    public static readonly IReadOnlySet<string> ConnectionManagementTools = new HashSet<string>(StringComparer.Ordinal);
+    public static readonly IReadOnlySet<string> ConnectionManagementTools = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ListConnections, OpenConnection, CloseConnection,
+    };
 }
