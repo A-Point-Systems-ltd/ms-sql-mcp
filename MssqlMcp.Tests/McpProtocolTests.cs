@@ -57,7 +57,35 @@ public sealed class McpProtocolTests
         Assert.Contains("\"success\":false", text, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<McpClient> StartClientAsync()
+    [SkippableFact]
+    public async Task Multi_connection_requires_argument_routes_and_enforces_read_only()
+    {
+        await using var client = await StartClientAsync(multiConnection: true);
+
+        var missing = await client.CallToolAsync(ToolNames.ReadData, new Dictionary<string, object?> { ["sql"] = "SELECT 1 AS x" });
+        Assert.Contains("'connection' argument is required", Text(missing), StringComparison.Ordinal);
+
+        var ok = await client.CallToolAsync(ToolNames.ReadData, new Dictionary<string, object?> { ["sql"] = "SELECT DB_NAME() AS db", ["connection"] = "ro" });
+        Assert.Contains("\"success\":true", Text(ok), StringComparison.OrdinalIgnoreCase);
+
+        var refused = await client.CallToolAsync(ToolNames.ExecuteSql, new Dictionary<string, object?> { ["sql"] = "CREATE TABLE dbo.never_created (id int)", ["connection"] = "ro" });
+        Assert.Contains("read-only", Text(refused), StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("MUST pass the 'connection' argument", client.ServerInstructions ?? string.Empty, StringComparison.Ordinal);
+
+        var tools = await client.ListToolsAsync();
+        Assert.All(tools.Where(t => !ToolNames.ConnectionManagementTools.Contains(t.Name)), t =>
+        {
+            var schema = t.ProtocolTool.InputSchema.GetRawText();
+            Assert.Contains("\"connection\"", schema, StringComparison.Ordinal);
+            Assert.Contains("REQUIRED whenever the server has more than one connection", schema, StringComparison.Ordinal);
+        });
+    }
+
+    private static string Text(ModelContextProtocol.Protocol.CallToolResult r) =>
+        string.Concat(r.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().Select(c => c.Text));
+
+    private static async Task<McpClient> StartClientAsync(bool multiConnection = false)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -69,7 +97,14 @@ public sealed class McpProtocolTests
             Command = exe!,
             EnvironmentVariables = new Dictionary<string, string?>
             {
-                ["CONNECTION_STRING"] = Environment.GetEnvironmentVariable("CONNECTION_STRING"),
+                ["CONNECTION_STRING"] = multiConnection ? null : Environment.GetEnvironmentVariable("CONNECTION_STRING"),
+                ["MSSQL_CONNECTIONS"] = multiConnection
+                    ? System.Text.Json.JsonSerializer.Serialize(new object[]
+                    {
+                        new { name = "main", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING") },
+                        new { name = "ro", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING"), readOnly = true },
+                    })
+                    : null,
                 ["USE_INSIGHTS_LAYER"] = "false",
                 ["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log"),
             },

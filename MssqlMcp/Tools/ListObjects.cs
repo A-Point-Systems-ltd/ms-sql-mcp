@@ -14,11 +14,12 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Lists database objects by logical type via one tool. Supported objectType values: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject. Optional partialName filters with a LIKE search on object name and schema.name. For objectType='SysObject', optional sysObjectType filters by sys.objects type code (e.g., 'U','V','P','FN').")]
+        Description("Lists database objects by logical type via one tool. Supported objectType values: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject. Optional partialName filters with a LIKE search on object name and schema.name. For objectType='SysObject', optional sysObjectType filters by sys.objects type code (e.g., 'U','V','P','FN')." + MultiConnectionNote)]
     public async Task<DbOperationResult> ListObjects(
         [Description("Logical object type to list: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, or SysObject.")] string objectType,
         [Description("Optional partial name filter (substring match). Matches object name and qualified schema.name (e.g. 'Doc' matches dbo.Documents). Pass null for no filter.")] string? partialName = null,
         [Description("Optional sys.objects type code used only when objectType='SysObject' (e.g., 'U','V','P','FN','IF','TF','TR'). Pass null to list all user-defined sys.objects.")] string? sysObjectType = null,
+        [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(objectType))

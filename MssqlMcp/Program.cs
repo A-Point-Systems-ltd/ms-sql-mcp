@@ -48,46 +48,56 @@ internal class Program
             consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
         });
 
-        // Validate connection string exists
-        var connStr = Environment.GetEnvironmentVariable("CONNECTION_STRING");
-        if (string.IsNullOrEmpty(connStr))
-        {
-            var errorMsg = "FATAL: CONNECTION_STRING environment variable is not set!";
-            Console.Error.WriteLine(errorMsg);
-            log.Append(errorMsg);
-            Environment.ExitCode = 1;
-            return;
-        }
-
-        log.Append($"Connection String: {ConnectionStringMasker.Mask(connStr)}");
-
-        var registry = new ConnectionRegistry(ConnectionConfigLoader.Load(Environment.GetEnvironmentVariable, File.ReadAllText));
-
-        // Test SQL connection before starting MCP server
+        IReadOnlyList<ConnectionProfile> profiles;
         try
         {
-            log.Append("Testing SQL Server connection...");
-            ISqlConnectionFactory testFactory = new SqlConnectionFactory(registry);
-            await using var testConnection = await testFactory.GetOpenConnectionAsync(CancellationToken.None);
-            var successMsg = $"SQL Server connection test SUCCESSFUL - Server: {testConnection.DataSource}, Database: {testConnection.Database}";
-            Console.Error.WriteLine(successMsg);
-            log.Append(successMsg);
+            profiles = ConnectionConfigLoader.Load(Environment.GetEnvironmentVariable, File.ReadAllText);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-            var errorMsg = $"FATAL: SQL Server connection test FAILED: {ex.Message}";
-            var detailMsg = $"Connection String (masked): {ConnectionStringMasker.Mask(connStr)}";
-
-            Console.Error.WriteLine(errorMsg);
-            Console.Error.WriteLine(detailMsg);
-
-            log.Append(errorMsg);
-            log.Append(detailMsg);
-            log.Append($"Stack trace: {ex.StackTrace}");
-
+            Console.Error.WriteLine($"FATAL: invalid connection configuration: {ex.Message}");
+            log.Append($"FATAL: invalid connection configuration: {ex.Message}");
             Environment.ExitCode = 1;
             return;
         }
+
+        var adhocAllowed = string.Equals(Environment.GetEnvironmentVariable("MSSQL_ALLOW_ADHOC_CONNECTIONS"), "true", StringComparison.OrdinalIgnoreCase);
+        if (profiles.Count == 0 && !adhocAllowed)
+        {
+            const string errorMsg = "FATAL: no connection configured. Set CONNECTION_STRING, MSSQL_CONNECTIONS or MSSQL_CONNECTIONS_FILE (or MSSQL_ALLOW_ADHOC_CONNECTIONS=true).";
+            Console.Error.WriteLine(errorMsg);
+            log.Append(errorMsg);
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var legacyMode = profiles.Count == 1 && profiles[0].Source == ConnectionSource.Legacy;
+        var registry = new ConnectionRegistry(profiles);
+        foreach (var profile in profiles)
+        {
+            log.Append($"Connection '{profile.Name}'{(profile.ReadOnly ? " [read-only]" : "")}: {ConnectionStringMasker.Mask(profile.ConnectionString)}");
+            try
+            {
+                await using var test = new SqlConnection(profile.ConnectionString);
+                await test.OpenAsync();
+                log.Append($"Connection '{profile.Name}' test SUCCESSFUL - Server: {test.DataSource}, Database: {test.Database}");
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Connection '{profile.Name}' test FAILED: {ex.Message}";
+                Console.Error.WriteLine(msg);
+                log.Append(msg);
+                if (legacyMode)
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
+            }
+        }
+
+        log.Append(registry.ConnectionArgumentRequired
+            ? $"{registry.Count} connections: tools require the 'connection' argument."
+            : "Single connection: the 'connection' argument is optional.");
 
         log.Append("Starting MCP server initialization...");
 
@@ -110,8 +120,9 @@ internal class Program
 
         // The SDK creates a Tools instance per call via ActivatorUtilities, so Tools must stay stateless.
         _ = builder.Services
-            .AddMcpServer()
+            .AddMcpServer(options => options.ServerInstructions = ServerInstructions.Build(registry))
             .WithStdioServerTransport()
+            .WithRequestFilters(filters => filters.AddCallToolFilter(ConnectionRoutingFilter.Create))
             .WithToolsFromAssembly();
 
         log.Append("Building host...");

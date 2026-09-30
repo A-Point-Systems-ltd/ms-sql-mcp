@@ -23,6 +23,12 @@ public partial class Tools(
     private readonly IInsightDdlProcessingQueue _insightDdlProcessingQueue = insightDdlProcessingQueue;
     private readonly ILogger<Tools> _logger = logger;
 
+    internal const string ConnectionParamDescription =
+        "Name of the database connection to run against (see " + ToolNames.ListConnections + "). REQUIRED whenever the server has more than one connection - " +
+        "there is no default connection, and omitting it returns an error listing the valid names. May be omitted only when exactly one connection exists.";
+
+    internal const string MultiConnectionNote = " With more than one connection, pass 'connection' (see " + ToolNames.ListConnections + ").";
+
     /// <summary>
     /// Best-effort: attaches cached AI insight metadata to introspection tool payloads.
     /// </summary>

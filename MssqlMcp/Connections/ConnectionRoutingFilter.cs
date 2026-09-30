@@ -1,0 +1,76 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
+
+namespace Mssql.McpServer.Connections;
+
+/// <summary>
+/// The single place where a tool call is bound to a connection: reads the 'connection' argument, applies the
+/// "mandatory when more than one" rule and the read-only gate, and runs the tool inside a CurrentConnection scope.
+/// </summary>
+internal static class ConnectionRoutingFilter
+{
+    public const string ArgumentName = "connection";
+
+    // Relaxed escaping keeps apostrophes in names readable for the LLM (default would emit 0027).
+    private static readonly JsonSerializerOptions ErrorJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    public static string? Route(ConnectionRegistry registry, string toolName, string? connectionArg, out ConnectionProfile? profile)
+    {
+        profile = null;
+        try
+        {
+            profile = registry.Resolve(connectionArg);
+        }
+        catch (ConnectionResolutionException ex)
+        {
+            return ex.Message;
+        }
+
+        if (profile.ReadOnly && ToolNames.WriteTools.Contains(toolName))
+        {
+            var name = profile.Name;
+            profile = null;
+            return $"Connection '{name}' is read-only; {toolName} is not allowed on it. Use a read/write connection or {ToolNames.ReadData} for queries.";
+        }
+
+        return null;
+    }
+
+    public static McpRequestHandler<CallToolRequestParams, CallToolResult> Create(
+        McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>
+        async (context, cancellationToken) =>
+        {
+            var toolName = context.Params?.Name ?? string.Empty;
+            if (ToolNames.ConnectionManagementTools.Contains(toolName))
+            {
+                return await next(context, cancellationToken).ConfigureAwait(false);
+            }
+
+            var registry = context.Services!.GetRequiredService<ConnectionRegistry>();
+            string? connectionArg = null;
+            if (context.Params?.Arguments is { } args
+                && args.TryGetValue(ArgumentName, out var el)
+                && el.ValueKind == JsonValueKind.String)
+            {
+                connectionArg = el.GetString();
+            }
+
+            var error = Route(registry, toolName, connectionArg, out var profile);
+            if (error is not null)
+            {
+                return new CallToolResult
+                {
+                    IsError = true,
+                    Content = [new TextContentBlock { Text = JsonSerializer.Serialize(new { success = false, error }, ErrorJson) }],
+                };
+            }
+
+            using (CurrentConnection.Use(profile!))
+            {
+                return await next(context, cancellationToken).ConfigureAwait(false);
+            }
+        };
+}
