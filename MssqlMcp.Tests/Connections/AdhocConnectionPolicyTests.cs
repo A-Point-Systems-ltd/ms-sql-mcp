@@ -36,6 +36,17 @@ public sealed class AdhocConnectionPolicyTests
         Assert.Contains(keyword, AdhocConnectionPolicy.Validate(cs, true, all));
     }
 
+    [Theory]
+    [InlineData("Failover Partner=evil")]
+    [InlineData("failover partner = evil,1433")]
+    public void Failover_partner_is_always_refused_even_for_an_allowed_host(string keyword)
+    {
+        var all = Env((AdhocConnectionPolicy.AllowIntegratedAuthVariable, "true"), (AdhocConnectionPolicy.AllowWriteVariable, "true"),
+            (AdhocConnectionPolicy.AllowedHostsVariable, "db1"));
+        Assert.Contains("Failover Partner", AdhocConnectionPolicy.Validate($"{SqlAuth};{keyword}", true, all));
+        Assert.Null(AdhocConnectionPolicy.Validate(SqlAuth, true, all));
+    }
+
     [Fact]
     public void Unparsable_string_is_refused_without_echo()
     {

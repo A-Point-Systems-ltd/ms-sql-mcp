@@ -270,6 +270,17 @@ public sealed class TableDdlRendererTests
     }
 
     [Fact]
+    public void Lob_filegroup_is_emitted_as_textimage_on_after_the_table_filegroup()
+    {
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { FileGroup = "DATA", LobFileGroup = "LOB]1" }, includeDependents: false);
+        Assert.Contains("\r\n) ON [DATA] TEXTIMAGE_ON [LOB]]1];", ddl);
+
+        var lobOnly = TableDdlRenderer.RenderTable(Orders() with { LobFileGroup = "LOB" }, includeDependents: false);
+        Assert.Contains("\r\n) TEXTIMAGE_ON [LOB];", lobOnly);
+        Assert.DoesNotContain("TEXTIMAGE_ON", TableDdlRenderer.RenderTable(Orders(), includeDependents: true));
+    }
+
+    [Fact]
     public void Default_options_add_nothing()
     {
         var ddl = TableDdlRenderer.RenderTable(Orders(), includeDependents: true);

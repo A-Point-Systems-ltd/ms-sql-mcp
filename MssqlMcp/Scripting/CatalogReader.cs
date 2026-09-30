@@ -77,8 +77,23 @@ internal static class CatalogReader
             WHERE i.object_id = @Id AND i.index_id IN (0, 1);
             """, c => AddId(c, objectId), r => Str(r, 0), ct).ConfigureAwait(false);
 
+        // LOB data (max types, text/ntext/image, xml) lands on the table's filegroup unless TEXTIMAGE_ON says otherwise;
+        // lob_data_space_id is 0 when the table has no LOB columns.
+        var lob = await QueryAsync(conn, """
+            SELECT lob.name, lob.type, (SELECT d.name FROM sys.data_spaces d WHERE d.is_default = 1 AND d.type = 'FG')
+            FROM sys.tables t JOIN sys.data_spaces lob ON lob.data_space_id = t.lob_data_space_id
+            WHERE t.object_id = @Id;
+            """, c => AddId(c, objectId), r => (Name: r.GetString(0), Type: Str(r, 1), Default: Str(r, 2)), ct).ConfigureAwait(false);
+        var tableFileGroup = fileGroup.FirstOrDefault();
+        string? lobFileGroup = null;
+        if (lob.Count == 1 && lob[0].Type == "FG"
+            && !string.Equals(lob[0].Name, tableFileGroup ?? lob[0].Default, StringComparison.OrdinalIgnoreCase))
+        {
+            lobFileGroup = lob[0].Name;
+        }
+
         return new TableMeta(schema, name, collation.FirstOrDefault(), description.FirstOrDefault(), columns, indexes, checks, foreignKeys, warnings,
-            fileGroup.FirstOrDefault());
+            tableFileGroup, lobFileGroup);
     }
 
     /// <summary>Select expression over <c>ds</c> (sys.data_spaces): the filegroup name when it is not the database default, else NULL.</summary>

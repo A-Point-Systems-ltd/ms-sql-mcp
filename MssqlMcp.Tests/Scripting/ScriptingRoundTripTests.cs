@@ -121,6 +121,12 @@ public sealed class ScriptingRoundTripTests
                 CONSTRAINT CK_R CHECK NOT FOR REPLICATION (Code > 0)) ON [FG2]
             GO
             CREATE UNIQUE NONCLUSTERED INDEX UX_R_Code ON dbo.R (Code) WITH (IGNORE_DUP_KEY = ON) ON [FG2]
+            GO
+            CREATE TABLE dbo.L1 (Id int NOT NULL, Body nvarchar(max) NULL) ON [PRIMARY] TEXTIMAGE_ON [FG2]
+            GO
+            CREATE TABLE dbo.L2 (Id int NOT NULL, Doc xml NULL) ON [FG2] TEXTIMAGE_ON [PRIMARY]
+            GO
+            CREATE TABLE dbo.L3 (Id int NOT NULL, Body varbinary(max) NULL) ON [FG2]
             """);
         const string Probe = """
             SELECT CONCAT(
@@ -147,6 +153,35 @@ public sealed class ScriptingRoundTripTests
         await ExecBatchesAsync(cs, table.Ddl);
         Assert.Equal(before, await ProbeAsync());
         Assert.Equal(table.Ddl, (await ScriptAsync(cs, "Table", "dbo.R")).Ddl);
+
+        // LOB placement: only a LOB filegroup different from where LOB data would land by default is scripted.
+        const string LobProbe = """
+            SELECT STUFF((SELECT ',' + t.name + '=' + ds.name FROM sys.tables t JOIN sys.data_spaces ds ON ds.data_space_id = t.lob_data_space_id
+                          WHERE t.name IN (N'L1', N'L2', N'L3') ORDER BY t.name FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '');
+            """;
+        async Task<string> LobAsync()
+        {
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync();
+            await using var cmd = new SqlCommand(LobProbe, conn);
+            return (string)(await cmd.ExecuteScalarAsync())!;
+        }
+
+        var lobBefore = await LobAsync();
+        Assert.Equal("L1=FG2,L2=PRIMARY,L3=FG2", lobBefore);
+        var l1 = await ScriptAsync(cs, "Table", "dbo.L1");
+        var l2 = await ScriptAsync(cs, "Table", "dbo.L2");
+        var l3 = await ScriptAsync(cs, "Table", "dbo.L3");
+        Assert.Contains(") TEXTIMAGE_ON [FG2];", l1.Ddl);
+        Assert.Contains(") ON [FG2] TEXTIMAGE_ON [PRIMARY];", l2.Ddl);
+        Assert.Contains(") ON [FG2];", l3.Ddl);
+        await ExecBatchesAsync(cs, "DROP TABLE dbo.L1\nGO\nDROP TABLE dbo.L2\nGO\nDROP TABLE dbo.L3");
+        foreach (var s in new[] { l1, l2, l3 })
+        {
+            await ExecBatchesAsync(cs, s.Ddl);
+        }
+
+        Assert.Equal(lobBefore, await LobAsync());
     }
 
     [SkippableFact]

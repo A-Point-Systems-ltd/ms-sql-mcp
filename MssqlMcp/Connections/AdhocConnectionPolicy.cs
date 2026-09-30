@@ -37,6 +37,12 @@ internal static class AdhocConnectionPolicy
             return "User Instance is not allowed in ad-hoc connections.";
         }
 
+        // A failover partner is a second target host that the host allowlist (Data Source only) would not see.
+        if (!string.IsNullOrWhiteSpace(builder.FailoverPartner))
+        {
+            return "Failover Partner is not allowed in ad-hoc connections.";
+        }
+
         if (UsesServerIdentity(builder) && !IsTrue(getEnv(AllowIntegratedAuthVariable)))
         {
             return "Ad-hoc connections may not use Integrated Security / Trusted_Connection or Active Directory authentication " +

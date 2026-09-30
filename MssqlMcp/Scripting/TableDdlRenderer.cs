@@ -159,7 +159,9 @@ internal static class TableDdlRenderer
         lines.AddRange(t.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint).Select(i => $"\tCONSTRAINT {Sql.Q(i.Name)} {KeyClause(i)}"));
         lines.AddRange(inlineChecks.Select(c => $"\tCONSTRAINT {Sql.Q(c.Name)} {CheckClause(c)}"));
         sb.Append("CREATE TABLE ").Append(table).Append("(\r\n").Append(string.Join(",\r\n", lines)).Append("\r\n)")
-            .Append(OnFileGroup(t.FileGroup)).Append(';');
+            .Append(OnFileGroup(t.FileGroup))
+            .Append(t.LobFileGroup is null ? "" : $" TEXTIMAGE_ON {Sql.Q(t.LobFileGroup)}")
+            .Append(';');
 
         if (!includeDependents)
         {

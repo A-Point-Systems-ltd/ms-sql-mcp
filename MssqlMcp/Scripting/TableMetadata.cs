@@ -32,4 +32,4 @@ internal sealed record TableMeta(
     string Schema, string Name, string? DatabaseCollation, string? Description,
     IReadOnlyList<ColumnMeta> Columns, IReadOnlyList<IndexMeta> Indexes, IReadOnlyList<CheckMeta> Checks,
     IReadOnlyList<ForeignKeyMeta> ForeignKeys, IReadOnlyList<string> Warnings,
-    string? FileGroup = null);
+    string? FileGroup = null, string? LobFileGroup = null);

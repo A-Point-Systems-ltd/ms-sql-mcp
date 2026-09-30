@@ -284,7 +284,7 @@ The connection string is parsed before anything is sent, and the operator contro
 | `Integrated Security` / `Trusted_Connection` / `Authentication=Active Directory*` | refused | `MSSQL_ADHOC_ALLOW_INTEGRATED_AUTH=true` |
 | `readOnly=false` | refused | `MSSQL_ADHOC_ALLOW_WRITE=true` |
 | Any host | allowed | `MSSQL_ADHOC_ALLOWED_HOSTS=host1,host2` limits it |
-| `AttachDBFilename`, `User Instance` | always refused | none |
+| `AttachDBFilename`, `User Instance`, `Failover Partner` | always refused | none |
 
 An unparsable string is refused without echoing it. When the connection test fails, the agent only gets `Connection test failed for '<name>'.` (so the tool cannot be used to probe the network); the detail is written to the server log with the password masked. Re-opening an ad-hoc name with a new connection string replaces the entry and clears the old entry's connection pool.
 
