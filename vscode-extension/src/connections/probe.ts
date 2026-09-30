@@ -23,6 +23,7 @@ export async function probeConnection(
   const target = { ...profile, open: true };
   if (missingPasswords([target], passwords).length) throw new Error(missingPasswordMessage(profile.name));
 
+  if (signal?.aborted) throw signal.reason;
   const client = new McpStdioClient(exe.path, {
     MSSQL_CONNECTIONS: buildServerConnections([target], passwords, { forceReadOnly: true, insights: false }),
     USE_INSIGHTS_LAYER: 'false',
@@ -30,7 +31,6 @@ export async function probeConnection(
   }, log);
   // Aborting disposes the client, which fails the in-flight request and kills the process.
   const onAbort = () => client.dispose();
-  if (signal?.aborted) throw signal.reason;
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
     await client.initialize();

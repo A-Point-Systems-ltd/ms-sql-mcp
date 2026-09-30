@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { registerConnectionCommands } from './connections/connectionCommands';
 import { ConnectionStore } from './connections/store';
+import { PROVIDER_ID } from './constants';
 import { Logger } from './logger';
+import { MssqlMcpServerProvider } from './mcpProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel('MSSQL-MCP');
@@ -13,6 +15,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const store = new ConnectionStore(context.globalState, context.secrets);
   registerConnectionCommands(context, store, log);
+  const provider = new MssqlMcpServerProvider(context, store);
+  context.subscriptions.push(
+    provider,
+    vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
+    store.onDidChange(() => provider.refresh()),
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('msSqlMcp')) provider.refresh();
+    }),
+  );
   log.info('activate', 'MSSQL-MCP activated');
 }
 

@@ -114,7 +114,11 @@ async function runWizard(store: ConnectionStore, existing?: ConnectionProfile): 
   let encrypt: ConnectionProfile['encrypt'] = existing?.encrypt ?? 'mandatory';
   let trustServerCertificate = existing?.trustServerCertificate ?? true;
   if (auth !== 'raw') {
-    const current = ENCRYPTION_OPTIONS.find(o => o.encrypt === encrypt && o.trust === trustServerCertificate) ?? ENCRYPTION_OPTIONS[1];
+    const match = ENCRYPTION_OPTIONS.find(o => o.encrypt === encrypt && o.trust === trustServerCertificate);
+    // An edited profile with a combo outside the four options keeps it unless the user picks another.
+    const current = match ?? (existing
+      ? { label: `Keep current (${encrypt}, trust=${trustServerCertificate})`, detail: 'Leave the encryption settings unchanged.', encrypt, trust: trustServerCertificate }
+      : ENCRYPTION_OPTIONS[1]);
     const enc = await vscode.window.showQuickPick(
       [current, ...ENCRYPTION_OPTIONS.filter(o => o !== current)].map(o => ({ label: o.label, detail: o.detail, opt: o })),
       { title, placeHolder: 'Encryption' });
