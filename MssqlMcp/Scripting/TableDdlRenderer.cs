@@ -92,20 +92,35 @@ internal static class TableDdlRenderer
     /// Renders CREATE TABLE. With <paramref name="includeDependents"/> false every CHECK is inlined (trust state is lost);
     /// with true, enabled-but-untrusted CHECKs are added after the table WITH NOCHECK so enforcement is preserved.
     /// </summary>
-    public static string RenderTable(TableMeta t, bool includeDependents)
+    public static string RenderTable(TableMeta t, bool includeDependents) => RenderTable(t, includeDependents, out _);
+
+    /// <summary>
+    /// Same as <see cref="RenderTable(TableMeta, bool)"/>; <paramref name="warnings"/> receives every warning the script
+    /// carries as a comment (table-level, alias collation, constraint and index warnings), comment-safe.
+    /// </summary>
+    public static string RenderTable(TableMeta t, bool includeDependents, out IReadOnlyList<string> warnings)
     {
+        var list = new List<string>();
+        warnings = list;
         var table = Sql.Qualified(t.Schema, t.Name);
         var sb = new StringBuilder("SET ANSI_NULLS ON\r\nGO\r\nSET QUOTED_IDENTIFIER ON\r\nGO\r\n");
+        void TopWarning(string w)
+        {
+            var safe = Sql.CommentSafe(w);
+            list.Add(safe);
+            sb.Append("-- WARNING: ").Append(safe).Append("\r\n");
+        }
+
         foreach (var w in t.Warnings)
         {
-            sb.Append("-- WARNING: ").Append(Sql.CommentSafe(w)).Append("\r\n");
+            TopWarning(w);
         }
 
         // COLLATE is invalid on alias-typed columns (Msg 452), so a differing collation can only be reported.
         foreach (var c in t.Columns.Where(c => !c.IsComputed && c.UserTypeSchema is not null && c.Collation is not null
             && !string.Equals(c.Collation, t.DatabaseCollation, StringComparison.OrdinalIgnoreCase)))
         {
-            sb.Append("-- WARNING: ").Append(Sql.CommentSafe($"column {Sql.Q(c.Name)} uses alias type {Sql.Qualified(c.UserTypeSchema!, c.TypeName)} with collation {c.Collation}; alias-typed columns take the database collation and this cannot be reproduced.")).Append("\r\n");
+            TopWarning($"column {Sql.Q(c.Name)} uses alias type {Sql.Qualified(c.UserTypeSchema!, c.TypeName)} with collation {c.Collation}; alias-typed columns take the database collation and this cannot be reproduced.");
         }
 
         foreach (var i in t.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint))
@@ -113,7 +128,7 @@ internal static class TableDdlRenderer
             var cw = ConstraintWarning(i);
             if (cw is not null)
             {
-                sb.Append("-- WARNING: ").Append(Sql.CommentSafe(cw)).Append("\r\n");
+                TopWarning(cw);
             }
         }
 
@@ -132,7 +147,11 @@ internal static class TableDdlRenderer
         var plain = t.Indexes.Where(i => !i.IsPrimaryKey && !i.IsUniqueConstraint).ToList();
         foreach (var ix in plain)
         {
-            sb.Append(Go).Append(RenderIndexCore(t.Schema, t.Name, ix, out _));
+            sb.Append(Go).Append(RenderIndexCore(t.Schema, t.Name, ix, out var indexWarning));
+            if (indexWarning is not null)
+            {
+                list.Add(Sql.CommentSafe(indexWarning));
+            }
         }
 
         foreach (var fk in t.ForeignKeys)

@@ -101,8 +101,12 @@ internal static class SecurityDdlRenderer
         return string.Join(Sep, stmts);
     }
 
-    public static string RenderServerRole(ServerRoleMeta r, SqlServerVersion v)
+    public static string RenderServerRole(ServerRoleMeta r, SqlServerVersion v) => RenderServerRole(r, v, out _);
+
+    public static string RenderServerRole(ServerRoleMeta r, SqlServerVersion v, out IReadOnlyList<string> warnings)
     {
+        var list = new List<string>();
+        warnings = list;
         var stmts = new List<string>();
         if (!r.IsFixed)
         {
@@ -112,8 +116,7 @@ internal static class SecurityDdlRenderer
             }
             else
             {
-                stmts.Add("-- WARNING: " + Sql.CommentSafe($"user-defined server roles require SQL Server 2012 or later; {r.Name} is not scripted."));
-                return stmts[0];
+                return Warn(list, $"user-defined server roles require SQL Server 2012 or later; {r.Name} is not scripted.");
             }
         }
 
@@ -147,7 +150,7 @@ internal static class SecurityDdlRenderer
         {
             if (!u.WithoutLogin)
             {
-                list.Add(Sql.CommentSafe($"user {Sql.Q(u.Name)} has no matching login; scripted as CREATE USER {Sql.Q(u.Name)} WITHOUT LOGIN"));
+                sb.Insert(0, Warn(list, $"user {Sql.Q(u.Name)} has no matching login; scripted as CREATE USER {Sql.Q(u.Name)} WITHOUT LOGIN") + Sep);
             }
 
             sb.Append(" WITHOUT LOGIN");

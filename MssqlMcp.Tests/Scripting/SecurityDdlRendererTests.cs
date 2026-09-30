@@ -101,8 +101,9 @@ public sealed class SecurityDdlRendererTests
         Assert.Contains("CREATE SERVER ROLE [ops];", v11);
         Assert.Contains("ALTER SERVER ROLE [ops] ADD MEMBER [app];", v11);
 
-        var old = SecurityDdlRenderer.RenderServerRole(user, V2008);
+        var old = SecurityDdlRenderer.RenderServerRole(user, V2008, out var oldWarnings);
         Assert.StartsWith("-- WARNING", old);
+        Assert.Single(oldWarnings);
         Assert.DoesNotContain("CREATE SERVER ROLE", old);
 
         var oldFixed = SecurityDdlRenderer.RenderServerRole(new("dbcreator", true, ["app"]), V2008);
@@ -141,7 +142,7 @@ public sealed class SecurityDdlRendererTests
     public void Sql_user_without_login_info_is_scripted_without_login_with_warning()
     {
         var ddl = SecurityDdlRenderer.RenderDatabaseUser(new("x", 'S', null, null, false, []), V2019, out var w);
-        Assert.Equal("CREATE USER [x] WITHOUT LOGIN;", ddl);
+        Assert.Equal("-- WARNING: user [x] has no matching login; scripted as CREATE USER [x] WITHOUT LOGIN\r\nCREATE USER [x] WITHOUT LOGIN;", ddl);
         Assert.Equal("user [x] has no matching login; scripted as CREATE USER [x] WITHOUT LOGIN", Assert.Single(w));
 
         SecurityDdlRenderer.RenderDatabaseUser(new("svc", 'S', null, "dbo", true, []), V2019, out var w2);

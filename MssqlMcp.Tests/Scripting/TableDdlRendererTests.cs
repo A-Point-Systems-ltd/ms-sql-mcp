@@ -158,6 +158,24 @@ public sealed class TableDdlRendererTests
     }
 
     [Fact]
+    public void Render_table_returns_every_warning_it_comments()
+    {
+        var pk = new IndexMeta("PK_D", 1, true, true, false, null, true, [new("Id", false, false)]);
+        var xml = new IndexMeta("IX_Xml", 3, false, false, false, null, false, [new("Sku", false, false)]);
+        var alias = Col("Phone", "Phone", 20) with { UserTypeSchema = "dbo", Collation = "Latin1_General_BIN" };
+        var t = Orders() with { Columns = [.. Orders().Columns, alias], Indexes = [pk, xml], Warnings = ["table is partitioned"] };
+
+        var ddl = TableDdlRenderer.RenderTable(t, includeDependents: true, out var warnings);
+
+        Assert.Equal(4, warnings.Count);
+        Assert.Equal("table is partitioned", warnings[0]);
+        Assert.Contains(warnings, w => w.Contains("alias type [dbo].[Phone]", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("constraint [PK_D] is disabled", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("IX_Xml is a XML index", StringComparison.Ordinal));
+        Assert.All(warnings, w => Assert.Contains("-- WARNING: " + w, ddl));
+    }
+
+    [Fact]
     public void Constraint_with_unexpected_index_type_is_warned_not_mislabelled()
     {
         var pk = new IndexMeta("PK_H", 7, true, true, false, null, false, [new("Id", false, false)]);
