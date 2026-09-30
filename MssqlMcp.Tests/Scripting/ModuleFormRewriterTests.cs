@@ -16,17 +16,24 @@ public sealed class ModuleFormRewriterTests
     [InlineData("CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1", DdlForm.Alter, "ALTER PROCEDURE dbo.p AS SELECT 1")]
     [InlineData("ALTER TRIGGER dbo.t ON dbo.x AFTER INSERT AS SELECT 1", DdlForm.CreateOrAlter, "CREATE OR ALTER TRIGGER dbo.t ON dbo.x AFTER INSERT AS SELECT 1")]
     [InlineData("CREATE PROCEDURE dbo.p AS SELECT 'CREATE'", DdlForm.Create, "CREATE PROCEDURE dbo.p AS SELECT 'CREATE'")]
+    [InlineData("ALTER PROCEDURE dbo.p AS SELECT 1", DdlForm.Create, "CREATE PROCEDURE dbo.p AS SELECT 1")]
+    [InlineData("CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1", DdlForm.Create, "CREATE PROCEDURE dbo.p AS SELECT 1")]
+    [InlineData("CREATE PROCEDURE dbo.p AS SELECT 'CREATE'", DdlForm.Alter, "ALTER PROCEDURE dbo.p AS SELECT 'CREATE'")]
     public void Rewrites_only_the_leading_keyword(string definition, DdlForm form, string expected)
     {
         Assert.Equal(expected, ModuleFormRewriter.Rewrite(definition, form, quotedIdentifier: true, out var warning));
         Assert.Null(warning);
     }
 
-    [Fact]
-    public void Quoted_identifier_off_definition_is_tokenized_with_matching_setting()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Quoted_identifier_setting_does_not_change_leading_keyword_rewrite(bool quotedIdentifier)
     {
-        const string def = "CREATE PROCEDURE dbo.p AS SELECT \"literal\"";
-        Assert.StartsWith("ALTER PROCEDURE", ModuleFormRewriter.Rewrite(def, DdlForm.Alter, quotedIdentifier: false, out _));
+        const string def = "CREATE PROCEDURE dbo.p AS SELECT \"literal\", 'CREATE'";
+        Assert.Equal("ALTER PROCEDURE dbo.p AS SELECT \"literal\", 'CREATE'",
+            ModuleFormRewriter.Rewrite(def, DdlForm.Alter, quotedIdentifier, out var warning));
+        Assert.Null(warning);
     }
 
     [Fact]
