@@ -200,9 +200,13 @@ public partial class Tools
     internal static readonly string[] ProcedureObjectTypes = ["P", "PC", "X", "RF"]; // same set as sys.procedures
     internal static readonly string[] FunctionObjectTypes = ["FN", "TF", "IF", "FT"];
     internal static readonly string[] TriggerObjectTypes = ["TR", "TA"];
+    internal static readonly string[] TableFunctionObjectTypes = ["IF", "TF", "FT"];
+    internal static readonly string[] ScalarFunctionObjectTypes = ["FN", "FS"];
+    internal static readonly string[] ForeignKeyObjectTypes = ["F"];
 
     private static readonly HashSet<string> ResolvableObjectTypes = new(
-        [.. TableObjectTypes, .. ViewObjectTypes, .. ProcedureObjectTypes, .. FunctionObjectTypes, .. TriggerObjectTypes],
+        [.. TableObjectTypes, .. ViewObjectTypes, .. ProcedureObjectTypes, .. FunctionObjectTypes, .. TriggerObjectTypes,
+         .. TableFunctionObjectTypes, .. ScalarFunctionObjectTypes, .. ForeignKeyObjectTypes],
         StringComparer.Ordinal);
 
     /// <summary>
