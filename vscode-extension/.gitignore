@@ -1,0 +1,9 @@
+node_modules/
+out/
+bin/
+*.vsix
+
+# Local secrets - never commit, never package
+.env
+.env.*
+!.env.example
