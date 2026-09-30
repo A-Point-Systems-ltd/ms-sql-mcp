@@ -14,20 +14,22 @@ description: >-
 
 This skill standardizes how an agent uses the MSSQL MCP server in this repo. It covers safe introspection, the AI Insights layer, the DDL audit log, and how to call tools whose generated MCP schemas list nullable arguments as `required`.
 
+MCP wire tool names are **snake_case** (ModelContextProtocol SDK 2.x default). Use those names when calling tools.
+
 ## Quick orientation
 
-- Server: .NET 9 stdio MCP server (`MssqlMcp.exe`)
+- Server: .NET 10 stdio MCP server (`MssqlMcp.exe`)
 - Connection: `CONNECTION_STRING` env var (Windows auth or SQL auth)
 - Insights layer: enabled by default, use mcp.json param `USE_INSIGHTS_LAYER=false` to disable. When enabled:
   - Introspection tools attach `insight` + `insightFreshness` to responses.
   - Auto-population is enabled by default (`INSIGHTS_AUTOPOPULATE=true`) and controls the full auto flow: baseline creation, baseline refresh during scans, and enrichment directives.
-  - Write tools (`CreateTable`, `DropTable`, `InsertData`, `UpdateData`, `ExecuteSQL`) queue a background DDL/fingerprint reconciliation.
+  - Write tools (`create_table`, `drop_table`, `insert_data`, `update_data`, `execute_sql`) queue a background DDL/fingerprint reconciliation.
 
 ## STOP — Mandatory enrichment protocol (MCP-Insight-Enrichment-v1)
 
 This is the most important section in this skill. Read it before doing anything else.
 
-After EVERY call to `DescribeTable`, `DescribeView`, or `GetObject`, check the response for ANY of these signals:
+After EVERY call to `describe_table`, `describe_view`, or `get_object`, check the response for ANY of these signals:
 
 - top-level `_agentDirective` string is present
 - top-level `pendingEnrichments` array is non-empty
@@ -36,8 +38,8 @@ After EVERY call to `DescribeTable`, `DescribeView`, or `GetObject`, check the r
 
 If ANY of those are present, you are under an unfulfilled tool-call obligation. You MUST:
 
-1. **Before writing any user-facing text**, call `UpsertInsight` for the introspected object using `insightEnrichment.nextAction.args`. Replace every `<fill in: ...>` placeholder using the metadata that came back in the same response (columns, FKs, indexes, definition, etc.). Do NOT pass `llmModel="auto-mechanical"` and do NOT pass `confidence <= 0.30` — those are placeholder values; the whole point of this call is to upgrade them.
-2. **For each entry in `insightEnrichment.relatedObjectsToIntrospect`**, call the matching introspection tool (`DescribeTable` / `DescribeView` / `GetObject` with the appropriate `objectType`) and repeat the loop. Related objects that you never introspect will have no insight row at all — that is a worse outcome than a stale baseline.
+1. **Before writing any user-facing text**, call `upsert_insight` for the introspected object using `insightEnrichment.nextAction.args`. Replace every `<fill in: ...>` placeholder using the metadata that came back in the same response (columns, FKs, indexes, definition, etc.). Do NOT pass `llmModel="auto-mechanical"` and do NOT pass `confidence <= 0.30` — those are placeholder values; the whole point of this call is to upgrade them.
+2. **For each entry in `insightEnrichment.relatedObjectsToIntrospect`**, call the matching introspection tool (`describe_table` / `describe_view` / `get_object` with the appropriate `objectType`) and repeat the loop. Related objects that you never introspect will have no insight row at all — that is a worse outcome than a stale baseline.
 3. Only AFTER step 1 and step 2 have completed for every pending enrichment, write your final answer to the user.
 
 Why this is non-negotiable: auto-mechanical baselines exist solely so the cache has *something* for the next agent. They are confidence 0.30 placeholders with `LlmModel="auto-mechanical"`. If you skip this loop, the cache stays at 0.30 indefinitely, and every future agent re-investigates the same objects from scratch.
@@ -47,18 +49,18 @@ Why this is non-negotiable: auto-mechanical baselines exist solely so the cache 
 User: "describe `Documents` and its related tables".
 
 ```
-- [ ] 1. DescribeTable(name="Documents")
+- [ ] 1. describe_table(name="Documents")
        → response has _agentDirective + insightEnrichment.required=true
        → insightEnrichment.relatedObjectsToIntrospect = ["[dbo].[Buildings]","[dbo].[TableMoneySub]","[dbo].[UnitContacts]","[dbo].[Units]"]
-- [ ] 2. UpsertInsight(<filled args for dbo.Documents>)   ← REQUIRED, before answering
-- [ ] 3. DescribeTable(name="dbo.Buildings")              ← because it was in relatedObjectsToIntrospect
-       → if baseline-only: UpsertInsight(<filled args>)
-- [ ] 4. DescribeTable(name="dbo.TableMoneySub")
-       → UpsertInsight(<filled args>) if baseline-only
+- [ ] 2. upsert_insight(<filled args for dbo.Documents>)   ← REQUIRED, before answering
+- [ ] 3. describe_table(name="dbo.Buildings")              ← because it was in relatedObjectsToIntrospect
+       → if baseline-only: upsert_insight(<filled args>)
+- [ ] 4. describe_table(name="dbo.TableMoneySub")
+       → upsert_insight(<filled args>) if baseline-only
        → if its relatedObjectsToIntrospect lists dbo.UnitsFeesItems, introspect+upsert that too
-- [ ] 5. DescribeTable(name="dbo.UnitContacts")           ← Fresh insight already; no upsert needed
-- [ ] 6. DescribeTable(name="dbo.Units")
-       → UpsertInsight(<filled args>) if baseline-only
+- [ ] 5. describe_table(name="dbo.UnitContacts")           ← Fresh insight already; no upsert needed
+- [ ] 6. describe_table(name="dbo.Units")
+       → upsert_insight(<filled args>) if baseline-only
 - [ ] 7. Now write the final answer to the user.
 ```
 
@@ -67,25 +69,25 @@ Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leavi
 ## Tool taxonomy (use this to pick the right tool)
 
 ### Read-only inspection
-- `ListObjects` (by `objectType`: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject)
-- `DescribeTable`, `DescribeView`, `GetObject` (StoredProcedure / Function / Trigger)
-- `ReadData` — **all** read-only `SELECT` queries (including `sys.*`, `INFORMATION_SCHEMA`, DMVs). ExecuteSQL rejects SELECT.
+- `list_objects` (by `objectType`: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject)
+- `describe_table`, `describe_view`, `get_object` (StoredProcedure / Function / Trigger)
+- `read_data` — **all** read-only `SELECT` queries (including `sys.*`, `INFORMATION_SCHEMA`, DMVs). `execute_sql` rejects SELECT.
 
 ### Server metadata
-- `GetServerInfo` — version, edition, hardware, DB counts. Some fields may be `null` with a `hardware.warning` string when permissions/version restrict DMVs.
+- `get_server_info` — version, edition, hardware, DB counts. Some fields may be `null` with a `hardware.warning` string when permissions/version restrict DMVs.
 
 ### Writes / DDL
-- `CreateTable`, `DropTable`, `InsertData`, `UpdateData`
-- `ExecuteSQL` — DDL/DML only (no SELECT). Destructive — confirm first.
+- `create_table`, `drop_table`, `insert_data`, `update_data`
+- `execute_sql` — DDL/DML only (no SELECT). Destructive — confirm first.
 
 ### AI Insights layer
-- `InsightsCheck` — status of `AIInsights` schema, `DDL_AuditLog` table, `DDL_Audit` trigger, watermark.
-- `InstallInsightsLayer` — idempotent install (schema, tables, audit log + DB-level DDL trigger). Needs DDL trigger permission.
-- `GetInsight` — read one cached insight; returns `{ insight, insightFreshness }`.
-- `UpsertInsight` — write/update an insight (UPDATE-then-INSERT semantics).
-- `ListInsights` — recent rows from `AIInsights.SchemaInsights`.
-- `GetInsightHistory` — archived rows from `AIInsights.InsightHistory`.
-- `RefreshInsights` — process DDL backlog / fingerprint drift; return recent summaries.
+- `insights_check` — status of `AIInsights` schema, `DDL_AuditLog` table, `DDL_Audit` trigger, watermark.
+- `install_insights_layer` — idempotent install (schema, tables, audit log + DB-level DDL trigger). Needs DDL trigger permission.
+- `get_insight` — read one cached insight; returns `{ insight, insightFreshness }`.
+- `upsert_insight` — write/update an insight (UPDATE-then-INSERT semantics).
+- `list_insights` — recent rows from `AIInsights.SchemaInsights`.
+- `get_insight_history` — archived rows from `AIInsights.InsightHistory`.
+- `refresh_insights` — process DDL backlog / fingerprint drift; return recent summaries.
 
 ## Standard workflows
 
@@ -94,11 +96,11 @@ Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leavi
 Copy this checklist and track progress:
 
 ```
-- [ ] 1. GetServerInfo (note version)
-- [ ] 2. InsightsCheck (verify layer state)
-- [ ] 3. InstallInsightsLayer (only if missing or trigger disabled)
-- [ ] 4. ListObjects(objectType = "Table") (broad orientation)
-- [ ] 5. (Optional) ReadData with sys.foreign_keys for relationship graph
+- [ ] 1. get_server_info (note version)
+- [ ] 2. insights_check (verify layer state)
+- [ ] 3. install_insights_layer (only if missing or trigger disabled)
+- [ ] 4. list_objects(objectType = "Table") (broad orientation)
+- [ ] 5. (Optional) read_data with sys.foreign_keys for relationship graph
 ```
 
 ### Workflow B — investigate a specific table
@@ -106,13 +108,13 @@ Copy this checklist and track progress:
 Example: user asks "investigate `SomeTable` and related tables".
 
 ```
-- [ ] 1. DescribeTable(name = "SomeTable")
+- [ ] 1. describe_table(name = "SomeTable")
        Read: columns, indexes, constraints, foreignKeys, triggers, insight, insightFreshness
-- [ ] 2. ReadData: discover inbound + outbound FKs in one query (template below)
-- [ ] 3. For each related table → DescribeTable(name = "<schema>.<name>")
-- [ ] 4. ReadData: row counts + lifecycle/quality probes
-- [ ] 5. If `insightEnrichment.required=true` (or `_agentDirective` / `pendingEnrichments` present), UpsertInsight using `insightEnrichment.nextAction.args` BEFORE answering — for the focal table AND for every entry in `insightEnrichment.relatedObjectsToIntrospect`
-- [ ] 6. ListInsights(schemaName = "dbo", objectType = "Table") to verify population (no auto-mechanical rows should remain for objects you touched)
+- [ ] 2. read_data: discover inbound + outbound FKs in one query (template below)
+- [ ] 3. For each related table → describe_table(name = "<schema>.<name>")
+- [ ] 4. read_data: row counts + lifecycle/quality probes
+- [ ] 5. If `insightEnrichment.required=true` (or `_agentDirective` / `pendingEnrichments` present), upsert_insight using `insightEnrichment.nextAction.args` BEFORE answering — for the focal table AND for every entry in `insightEnrichment.relatedObjectsToIntrospect`
+- [ ] 6. list_insights(schemaName = "dbo", objectType = "Table") to verify population (no auto-mechanical rows should remain for objects you touched)
 ```
 
 Bidirectional FK discovery template:
@@ -136,9 +138,9 @@ ORDER BY FromTable, ToTable;
 ### Workflow C — refresh state after schema changes
 
 ```
-- [ ] 1. RefreshInsights (advances watermark, archives stale insights)
-- [ ] 2. InsightsCheck (verify lastProcessedAuditId close to MAX(DDL_AuditLog.ID))
-- [ ] 3. GetInsightHistory(...) if the user wants to see what was archived
+- [ ] 1. refresh_insights (advances watermark, archives stale insights)
+- [ ] 2. insights_check (verify lastProcessedAuditId close to MAX(DDL_AuditLog.ID))
+- [ ] 3. get_insight_history(...) if the user wants to see what was archived
 ```
 
 ## Calling conventions (IMPORTANT)
@@ -149,7 +151,7 @@ The C# server's MCP schema generator lists every annotated parameter — includi
 - For `take`, always pass an integer (1..2000); the doc default (100) is informational only.
 - For `objectType` defaults, pass the literal `"Table"` even though it's defaulted.
 
-### `UpsertInsight` template
+### `upsert_insight` template
 
 ```json
 {
@@ -171,11 +173,11 @@ The C# server's MCP schema generator lists every annotated parameter — includi
 Rules:
 - `columnName` = null → table/object-level insight; non-null → column-level insight.
 - `relatedObjects` is a JSON string (the column type is text). Use compact JSON like `"[\"A\",\"B\"]"`.
-- Re-running `UpsertInsight` on the same `(objectType, schema, name, column)` updates and bumps `Version`.
+- Re-running `upsert_insight` on the same `(objectType, schema, name, column)` updates and bumps `Version`.
 
-### `GetInsight` / `ListInsights` shape
+### `get_insight` / `list_insights` shape
 
-`GetInsight` returns:
+`get_insight` returns:
 
 ```json
 { "insight": { ... } | null, "insightFreshness": "<state>" }
@@ -186,7 +188,7 @@ Rules:
 | Value | Meaning |
 |---|---|
 | `LayerDisabled` | `USE_INSIGHTS_LAYER` was set to `false`/`0`/`off`/`disabled` — do not rely on insights. |
-| `Absent` | No cached insight yet. Consider `UpsertInsight` after investigation. |
+| `Absent` | No cached insight yet. Consider `upsert_insight` after investigation. |
 | `Fresh` | Insight present and fingerprint matches the live schema. Use it. |
 | `StaleArchived` | Live object missing or fingerprint changed; row was archived. Re-investigate, then upsert. |
 | `AccessDenied` | Cannot verify staleness (permissions). Insight still returned; mark as advisory. |
@@ -194,19 +196,19 @@ Rules:
 
 ## Safety rules
 
-- Treat `ExecuteSQL` and `DropTable` as destructive. Confirm intent before running.
-- Use `ReadData` for **every** `SELECT` (including `sys.*`). `ExecuteSQL` rejects SELECT at validation time.
-- Never embed user-provided values directly into `ReadData` SQL. Build the literal yourself; do not echo unsanitized inputs.
-- When `DescribeTable` returns `insightFreshness: "StaleArchived"`, do NOT trust the previous insight; re-investigate.
+- Treat `execute_sql` and `drop_table` as destructive. Confirm intent before running.
+- Use `read_data` for **every** `SELECT` (including `sys.*`). `execute_sql` rejects SELECT at validation time.
+- Never embed user-provided values directly into `read_data` SQL. Build the literal yourself; do not echo unsanitized inputs.
+- When `describe_table` returns `insightFreshness: "StaleArchived"`, do NOT trust the previous insight; re-investigate.
 
 ## Anti-patterns
 
-- Looping `ReadData` per column to mimic `DescribeTable` — use `DescribeTable` once.
-- Calling `RefreshInsights` after every `UpsertInsight`. Run it once per investigation session or after known DDL.
-- Asking the user for `objectType` when the context already implies it (e.g. you just called `DescribeTable` → `objectType = "Table"`).
+- Looping `read_data` per column to mimic `describe_table` — use `describe_table` once.
+- Calling `refresh_insights` after every `upsert_insight`. Run it once per investigation session or after known DDL.
+- Asking the user for `objectType` when the context already implies it (e.g. you just called `describe_table` → `objectType = "Table"`).
 - Passing `take` larger than what you'll actually inspect — keep responses small.
-- Ignoring `_agentDirective` / `pendingEnrichments` / `insightEnrichment.required=true` and answering without first calling `UpsertInsight`. This is a protocol violation, not a style preference.
-- Calling `UpsertInsight` with `llmModel="auto-mechanical"` or `confidence<=0.30`. That is what you are supposed to be *replacing*.
+- Ignoring `_agentDirective` / `pendingEnrichments` / `insightEnrichment.required=true` and answering without first calling `upsert_insight`. This is a protocol violation, not a style preference.
+- Calling `upsert_insight` with `llmModel="auto-mechanical"` or `confidence<=0.30`. That is what you are supposed to be *replacing*.
 - Skipping `insightEnrichment.relatedObjectsToIntrospect`. Related objects with zero insight rows are worse than baseline-only.
 
 ## Verification snippet
@@ -214,11 +216,11 @@ Rules:
 After populating insights, verify with:
 
 ```
-InsightsCheck()
-ListInsights({ "schemaName": "dbo", "objectType": "Table", "take": 50 })
+insights_check()
+list_insights({ "schemaName": "dbo", "objectType": "Table", "take": 50 })
 ```
 
-Expected: `schemaInsightsCount` ≥ number of upserts; rows appear in `ListInsights` sorted by `LastAnalyzed DESC`.
+Expected: `schemaInsightsCount` ≥ number of upserts; rows appear in `list_insights` sorted by `LastAnalyzed DESC`.
 
 ## Additional references
 

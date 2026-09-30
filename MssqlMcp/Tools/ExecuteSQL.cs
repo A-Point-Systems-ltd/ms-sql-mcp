@@ -2,8 +2,6 @@
 // Licensed under the MIT license.
 
 using System.ComponentModel;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 namespace Mssql.McpServer;
@@ -11,34 +9,14 @@ namespace Mssql.McpServer;
 public partial class Tools
 {
     [McpServerTool(
+        Name = ToolNames.ExecuteSql,
         Title = "Execute SQL",
         ReadOnly = false,
         Idempotent = false,
         Destructive = true),
-        Description("Executes DDL/DML only (INSERT, UPDATE, DELETE, MERGE, CREATE, ALTER, DROP, TRUNCATE, EXEC, etc.). SELECT and other read-only queries are rejected — use ReadData for every SELECT, including sys.* and INFORMATION_SCHEMA. Marked DESTRUCTIVE: confirm intent before running. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), successful execution queues background DDL/fingerprint reconciliation. Prefer CreateTable/DropTable/InsertData/UpdateData for typed operations when possible.")]
-    public async Task<DbOperationResult> ExecuteSQL(
-        [Description("A single non-SELECT T-SQL statement (DDL or DML). SELECT/WITH-read queries are rejected — use ReadData instead. Multi-batch scripts separated by 'GO' are not supported.")] string sql)
-    {
-        if (!SqlStatementClassifier.TryValidateExecutable(sql, out var validationError))
-        {
-            return new DbOperationResult(success: false, error: validationError);
-        }
-
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
-        try
-        {
-            using (conn)
-            {
-                using var cmd = new SqlCommand(sql, conn);
-                int rowsAffected = await cmd.ExecuteNonQueryAsync();
-                QueueInsightDdlProcessing();
-                return new DbOperationResult(success: true, rowsAffected: rowsAffected);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ExecuteSQL failed: {Message}", ex.Message);
-            return new DbOperationResult(success: false, error: ex.Message);
-        }
-    }
+        Description("Executes a single DDL/DML statement (INSERT, UPDATE, DELETE, MERGE, CREATE, ALTER, DROP, TRUNCATE, EXEC, GRANT/REVOKE/DENY, BACKUP/RESTORE, SELECT ... INTO). SELECT and other read-only queries are rejected - use " + ToolNames.ReadData + " for every SELECT, including sys.* and INFORMATION_SCHEMA. Marked DESTRUCTIVE: confirm intent before running. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), a background DDL/fingerprint reconciliation is queued after success. Prefer " + ToolNames.CreateTable + "/" + ToolNames.DropTable + "/" + ToolNames.InsertData + "/" + ToolNames.UpdateData + " for typed operations when possible.")]
+    public Task<DbOperationResult> ExecuteSQL(
+        [Description("A single non-SELECT T-SQL statement (DDL or DML). A CREATE PROCEDURE/FUNCTION/TRIGGER body counts as one statement. SELECT/WITH-read queries are rejected - use " + ToolNames.ReadData + " instead. Multi-statement scripts and 'GO' batches are not supported.")] string sql,
+        CancellationToken cancellationToken = default) =>
+        ExecuteWriteAsync(sql, SqlStatementKind.Any, ToolNames.ExecuteSql, includeRowsAffected: true, cancellationToken);
 }

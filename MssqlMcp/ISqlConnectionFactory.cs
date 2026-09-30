@@ -10,5 +10,8 @@ namespace Mssql.McpServer;
 /// </summary>
 public interface ISqlConnectionFactory
 {
-    Task<SqlConnection> GetOpenConnectionAsync();
+    Task<SqlConnection> GetOpenConnectionAsync() => GetOpenConnectionAsync(CancellationToken.None);
+
+    /// <summary>Opens a pooled connection; the caller owns and disposes it.</summary>
+    Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken);
 }

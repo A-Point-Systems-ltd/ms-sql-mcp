@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.Data;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
@@ -61,13 +60,13 @@ public partial class Tools(
                 var schema = string.IsNullOrWhiteSpace(schemaName) ? "dbo" : schemaName!.Trim();
                 var qualified = $"{schema}.{objectName}";
                 result["_agentDirective"] =
-                    $"MANDATORY: Call UpsertInsight for {qualified} (and any relatedObjectsToIntrospect) BEFORE producing your final answer. "
+                    $"MANDATORY: Call {ToolNames.UpsertInsight} for {qualified} (and any relatedObjectsToIntrospect) BEFORE producing your final answer. "
                     + "The args template is in insightEnrichment.nextAction.args. Skipping this is a MCP-Insight-Enrichment-v1 protocol violation.";
                 result["pendingEnrichments"] = new[]
                 {
                     new
                     {
-                        tool = "UpsertInsight",
+                        tool = ToolNames.UpsertInsight,
                         target = qualified,
                         objectType,
                         reason = "auto-mechanical baseline (confidence 0.30); enrich to upgrade cached insight."
@@ -76,7 +75,7 @@ public partial class Tools(
                 result["insightEnrichment"] = BuildInsightEnrichmentDirective(insight);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Insight enrichment skipped for {ObjectType} {Schema}.{Object}", objectType, schemaName, objectName);
         }
@@ -135,20 +134,20 @@ public partial class Tools(
             priority = "MUST",
             protocol = "MCP-Insight-Enrichment-v1",
             reason = $"Auto-mechanical baseline only (model='{insight.LlmModel}', confidence={insight.Confidence:0.00}). Cache will not help the next agent until you upgrade it.",
-            contract = $"You MUST call UpsertInsight for {qualified} using nextAction.args (with every '<fill in: ...>' placeholder replaced) BEFORE producing your final answer to the user. This is a tool-call protocol obligation, not a suggestion.",
+            contract = $"You MUST call {ToolNames.UpsertInsight} for {qualified} using nextAction.args (with every '<fill in: ...>' placeholder replaced) BEFORE producing your final answer to the user. This is a tool-call protocol obligation, not a suggestion.",
             consequenceOfSkipping = "Next agent inherits a placeholder insight and wastes tokens reinvestigating this object. Cache stays at confidence 0.30 indefinitely.",
             instructions = new[]
             {
                 "1. Replace every '<fill in: ...>' placeholder in nextAction.args using the metadata you just received in this response.",
-                "2. Call UpsertInsight with the completed args. Do NOT reuse llmModel='auto-mechanical' and do NOT pass confidence<=0.30 — those values indicate a placeholder, not a real authored insight.",
-                "3. For each entry in relatedObjectsToIntrospect, call the matching introspection tool (DescribeTable / DescribeView / GetObject) and complete the same enrichment loop for it.",
+                $"2. Call {ToolNames.UpsertInsight} with the completed args. Do NOT reuse llmModel='auto-mechanical' and do NOT pass confidence<=0.30 - those values indicate a placeholder, not a real authored insight.",
+                $"3. For each entry in relatedObjectsToIntrospect, call the matching introspection tool ({ToolNames.DescribeTable} / {ToolNames.DescribeView} / {ToolNames.GetObject}) and complete the same enrichment loop for it.",
                 "4. Only AFTER every enrichment call, produce the final user-facing answer."
             },
             completionCriteria = $"AIInsights.SchemaInsights row for {qualified} updated with LLMModel != 'auto-mechanical' and Confidence > 0.30.",
             relatedObjectsToIntrospect = related,
             nextAction = new
             {
-                tool = "UpsertInsight",
+                tool = ToolNames.UpsertInsight,
                 args = new Dictionary<string, object?>
                 {
                     ["objectType"] = insight.ObjectType,
@@ -225,19 +224,37 @@ public partial class Tools(
         cmd.Parameters.AddWithValue("@NamePattern", pattern is null ? DBNull.Value : pattern);
     }
 
-    // Helper to convert DataTable to a serializable list
-    private static List<Dictionary<string, object>> DataTableToList(DataTable table)
+    /// <summary>
+    /// Shared body of the write tools: validates the statement shape, runs it, and queues insight reconciliation.
+    /// Every failure (including connection failures) becomes a <see cref="DbOperationResult"/> so the agent sees
+    /// the real reason instead of the SDK's generic "An error occurred invoking" message.
+    /// </summary>
+    private async Task<DbOperationResult> ExecuteWriteAsync(
+        string sql,
+        SqlStatementKind kind,
+        string toolName,
+        bool includeRowsAffected,
+        CancellationToken cancellationToken)
     {
-        var result = new List<Dictionary<string, object>>();
-        foreach (DataRow row in table.Rows)
+        if (!SqlStatementClassifier.TryValidateWrite(sql, kind, out var validationError))
         {
-            var dict = new Dictionary<string, object>();
-            foreach (DataColumn col in table.Columns)
-            {
-                dict[col.ColumnName] = row[col];
-            }
-            result.Add(dict);
+            return new DbOperationResult(success: false, error: validationError);
         }
-        return result;
+
+        try
+        {
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = new SqlCommand(sql, conn);
+            var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            QueueInsightDdlProcessing();
+            return includeRowsAffected
+                ? new DbOperationResult(success: true, rowsAffected: rows)
+                : new DbOperationResult(success: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "{Tool} failed: {Message}", toolName, ex.Message);
+            return new DbOperationResult(success: false, error: ex.Message);
+        }
     }
 }

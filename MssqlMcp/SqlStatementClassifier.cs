@@ -1,207 +1,234 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.Text.RegularExpressions;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 
 namespace Mssql.McpServer;
 
 /// <summary>
-/// Classifies T-SQL for routing between ReadData (read-only queries) and ExecuteSQL (DDL/DML).
+/// The statement shape a write tool accepts. <see cref="Any"/> is <c>execute_sql</c>'s DDL/DML allowlist.
 /// </summary>
-internal static partial class SqlStatementClassifier
+public enum SqlStatementKind
+{
+    Any,
+    Insert,
+    Update,
+    CreateTable,
+    DropTable,
+}
+
+/// <summary>
+/// Classifies T-SQL for routing between <c>read_data</c> (read-only queries) and the write tools.
+/// Uses the ScriptDom parser rather than regexes: T-SQL needs no ';' between statements and comment
+/// markers may appear inside string literals, so only a real parse can prove "exactly one statement".
+/// </summary>
+internal static class SqlStatementClassifier
 {
     public const string ReadDataRejectedMessage =
-        "ReadData accepts only read-only SELECT queries (including WITH ... SELECT). Use ExecuteSQL for DDL/DML and SELECT ... INTO.";
+        $"{ToolNames.ReadData} accepts only a single read-only SELECT query (including WITH ... SELECT). Use {ToolNames.ExecuteSql} for DDL/DML and SELECT ... INTO.";
 
     public const string ExecuteSqlSelectRejectedMessage =
-        "ExecuteSQL does not allow SELECT or other read-only queries. Use ReadData for all SELECT statements, including sys.*, INFORMATION_SCHEMA, and DMVs.";
+        $"{ToolNames.ExecuteSql} does not allow SELECT or other read-only queries. Use {ToolNames.ReadData} for all SELECT statements, including sys.*, INFORMATION_SCHEMA, and DMVs.";
 
-    private static readonly string[] ExecutableFirstKeywords =
-    [
-        "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP",
-        "TRUNCATE", "EXEC", "EXECUTE", "GRANT", "REVOKE", "DENY", "BACKUP", "RESTORE"
-    ];
-
-    private static readonly string[] MutatingKeywordsAfterWith =
-    [
-        "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP",
-        "TRUNCATE", "EXEC", "EXECUTE"
-    ];
+    public const string MultipleStatementsMessage =
+        "Only a single T-SQL statement is allowed (no batch separators or multiple statements).";
 
     public static bool IsReadOnlyQuery(string sql) =>
         TryValidateReadOnly(sql, out _);
 
     public static bool TryValidateReadOnly(string sql, out string? error)
     {
-        error = null;
-        if (!TryPrepare(sql, out var normalized, out error))
+        if (!TryParseSingleStatement(sql, out var statement, out error))
         {
             return false;
         }
 
-        if (!TryGetFirstKeyword(normalized, out var firstKeyword))
+        if (statement is not SelectStatement select)
         {
-            error = "Could not determine the SQL statement type.";
+            error = ReadDataRejectedMessage;
             return false;
         }
 
-        if (firstKeyword == "SELECT")
+        if (select.Into is not null)
         {
-            if (ContainsSelectInto(normalized))
-            {
-                error = "SELECT ... INTO is not allowed in ReadData. Use ExecuteSQL.";
-                return false;
-            }
-
-            return true;
+            error = $"SELECT ... INTO is not allowed in {ToolNames.ReadData}. Use {ToolNames.ExecuteSql}.";
+            return false;
         }
 
-        if (firstKeyword == "WITH")
+        var visitor = new ExternalDataAccessVisitor();
+        select.Accept(visitor);
+        if (visitor.Offender is not null)
         {
-            if (ContainsMutatingKeyword(normalized))
-            {
-                error = ReadDataRejectedMessage;
-                return false;
-            }
-
-            if (!ContainsSelectKeyword(normalized))
-            {
-                error = "WITH queries in ReadData must culminate in a SELECT.";
-                return false;
-            }
-
-            return true;
+            error = $"{visitor.Offender} is not allowed in {ToolNames.ReadData} (it can reach outside this database).";
+            return false;
         }
 
-        error = ReadDataRejectedMessage;
-        return false;
+        return true;
     }
 
-    public static bool TryValidateExecutable(string sql, out string? error)
+    public static bool TryValidateExecutable(string sql, out string? error) =>
+        TryValidateWrite(sql, SqlStatementKind.Any, out error);
+
+    /// <summary>
+    /// Validates that <paramref name="sql"/> is exactly one statement of the shape the calling tool promises,
+    /// so e.g. <c>insert_data("DROP TABLE x")</c> is rejected instead of executed.
+    /// </summary>
+    public static bool TryValidateWrite(string sql, SqlStatementKind kind, out string? error)
     {
-        error = null;
-        if (!TryPrepare(sql, out var normalized, out error))
+        if (!TryParseSingleStatement(sql, out var statement, out error))
         {
             return false;
         }
 
-        if (IsReadOnlyQuery(sql))
+        if (statement is SelectStatement { Into: null })
         {
             error = ExecuteSqlSelectRejectedMessage;
             return false;
         }
 
-        if (!TryGetFirstKeyword(normalized, out var firstKeyword))
+        var ok = kind switch
         {
-            error = "Could not determine the SQL statement type.";
+            // INSERT ... EXEC runs arbitrary SQL, so it is only allowed through execute_sql.
+            SqlStatementKind.Insert => statement is InsertStatement { InsertSpecification.InsertSource: not ExecuteInsertSource },
+            SqlStatementKind.Update => statement is UpdateStatement,
+            SqlStatementKind.CreateTable => statement is CreateTableStatement,
+            SqlStatementKind.DropTable => statement is DropTableStatement,
+            _ => IsAllowedExecutable(statement),
+        };
+
+        if (ok && kind is SqlStatementKind.Insert or SqlStatementKind.Update)
+        {
+            var visitor = new ExternalDataAccessVisitor();
+            statement.Accept(visitor);
+            if (visitor.Offender is not null)
+            {
+                error = $"{visitor.Offender} is not allowed in typed write tools. Use {ToolNames.ExecuteSql}.";
+                return false;
+            }
+        }
+
+        if (!ok && statement is InsertStatement { InsertSpecification.InsertSource: ExecuteInsertSource })
+        {
+            error = $"INSERT ... EXEC runs arbitrary SQL and is not allowed in {ToolNames.InsertData}. Use {ToolNames.ExecuteSql}.";
             return false;
         }
 
-        if (firstKeyword is "SELECT" or "WITH")
+        if (!ok)
         {
-            error = ExecuteSqlSelectRejectedMessage;
-            return false;
+            error = kind == SqlStatementKind.Any
+                ? $"Unsupported statement type '{DescribeStatement(statement)}' for {ToolNames.ExecuteSql}."
+                : $"Expected a single {ExpectedKeyword(kind)} statement but got '{DescribeStatement(statement)}'. Use {ToolNames.ExecuteSql} for other statement types.";
         }
 
-        if (ExecutableFirstKeywords.Contains(firstKeyword, StringComparer.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        error = $"Unsupported or unrecognized statement type '{firstKeyword}'. Use ReadData for SELECT queries.";
-        return false;
+        return ok;
     }
 
-    private static bool TryPrepare(string sql, out string normalized, out string? error)
+    private static bool IsAllowedExecutable(TSqlStatement statement)
     {
+        switch (statement)
+        {
+            case InsertStatement or UpdateStatement or DeleteStatement or MergeStatement
+                or TruncateTableStatement or ExecuteStatement or SelectStatement { Into: not null }
+                or GrantStatement or RevokeStatement or DenyStatement:
+                return true;
+
+            // Guarded DDL such as "IF OBJECT_ID(N'dbo.t') IS NOT NULL DROP TABLE dbo.t": every branch must itself be allowed.
+            case IfStatement ifStatement:
+                return IsAllowedExecutable(ifStatement.ThenStatement)
+                    && (ifStatement.ElseStatement is null || IsAllowedExecutable(ifStatement.ElseStatement));
+
+            case BeginEndBlockStatement block:
+                return block.StatementList.Statements.Count > 0
+                    && block.StatementList.Statements.All(IsAllowedExecutable);
+        }
+
+        var name = statement.GetType().Name;
+        return name.StartsWith("Create", StringComparison.Ordinal)
+            || name.StartsWith("Alter", StringComparison.Ordinal)
+            || name.StartsWith("Drop", StringComparison.Ordinal)
+            || name.StartsWith("Backup", StringComparison.Ordinal)
+            || name.StartsWith("Restore", StringComparison.Ordinal);
+    }
+
+    private static bool TryParseSingleStatement(string sql, out TSqlStatement statement, out string? error)
+    {
+        statement = null!;
         error = null;
         if (string.IsNullOrWhiteSpace(sql))
         {
-            normalized = string.Empty;
             error = "SQL is required.";
             return false;
         }
 
-        normalized = StripComments(sql).Trim();
-        if (normalized.Length == 0)
+        var parser = new TSql170Parser(initialQuotedIdentifiers: true);
+        using var reader = new StringReader(sql);
+        var fragment = parser.Parse(reader, out var errors);
+        if (errors.Count > 0)
+        {
+            var first = errors[0];
+            error = $"T-SQL syntax error at line {first.Line}, column {first.Column}: {first.Message}";
+            return false;
+        }
+
+        if (fragment is not TSqlScript script)
+        {
+            error = "Could not determine the SQL statement type.";
+            return false;
+        }
+
+        var statements = script.Batches.SelectMany(static b => b.Statements).ToList();
+        if (statements.Count == 0)
         {
             error = "SQL is required.";
             return false;
         }
 
-        if (ContainsMultipleStatements(normalized))
+        if (script.Batches.Count > 1 || statements.Count > 1)
         {
-            error = "Only a single T-SQL statement is allowed (no batch separators or multiple statements).";
+            error = MultipleStatementsMessage;
             return false;
         }
 
+        statement = statements[0];
         return true;
     }
 
-    private static bool ContainsMultipleStatements(string sql)
+    private static string DescribeStatement(TSqlStatement statement)
     {
-        var trimmed = sql.TrimEnd();
-        if (trimmed.EndsWith(';'))
-        {
-            trimmed = trimmed[..^1].TrimEnd();
-        }
-
-        return trimmed.Contains(';');
+        var name = statement.GetType().Name;
+        return name.EndsWith("Statement", StringComparison.Ordinal) ? name[..^"Statement".Length] : name;
     }
 
-    private static bool TryGetFirstKeyword(string normalized, out string keyword)
+    private static string ExpectedKeyword(SqlStatementKind kind) => kind switch
     {
-        keyword = string.Empty;
-        var match = FirstKeywordRegex().Match(normalized);
-        if (!match.Success)
-        {
-            return false;
-        }
+        SqlStatementKind.Insert => "INSERT",
+        SqlStatementKind.Update => "UPDATE",
+        SqlStatementKind.CreateTable => "CREATE TABLE",
+        SqlStatementKind.DropTable => "DROP TABLE",
+        _ => "DDL/DML",
+    };
 
-        keyword = match.Groups[1].Value.ToUpperInvariant();
-        return true;
-    }
-
-    private static bool ContainsSelectInto(string sql) =>
-        SelectIntoRegex().IsMatch(sql);
-
-    private static bool ContainsSelectKeyword(string sql) =>
-        SelectKeywordRegex().IsMatch(sql);
-
-    private static bool ContainsMutatingKeyword(string sql)
+    /// <summary>Flags rowset functions that read from linked servers, files or remote sources.</summary>
+    private sealed class ExternalDataAccessVisitor : TSqlFragmentVisitor
     {
-        foreach (var word in MutatingKeywordsAfterWith)
+        public string? Offender { get; private set; }
+
+        public override void Visit(OpenQueryTableReference node) => Offender ??= "OPENQUERY";
+
+        public override void Visit(OpenRowsetTableReference node) => Offender ??= "OPENROWSET";
+
+        public override void Visit(InternalOpenRowset node) => Offender ??= "OPENROWSET";
+
+        public override void Visit(BulkOpenRowset node) => Offender ??= "OPENROWSET(BULK ...)";
+
+        public override void Visit(AdHocTableReference node) => Offender ??= "OPENDATASOURCE";
+
+        public override void Visit(SchemaObjectName node)
         {
-            if (MutatingKeywordRegex(word).IsMatch(sql))
+            if (node.ServerIdentifier is not null)
             {
-                return true;
+                Offender ??= $"Linked-server reference '{node.ServerIdentifier.Value}'";
             }
         }
-
-        return false;
     }
-
-    private static string StripComments(string sql)
-    {
-        var withoutBlock = BlockCommentRegex().Replace(sql, " ");
-        return LineCommentRegex().Replace(withoutBlock, " ");
-    }
-
-    [GeneratedRegex(@"\b(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|EXEC|EXECUTE|GRANT|REVOKE|DENY|BACKUP|RESTORE)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex FirstKeywordRegex();
-
-    [GeneratedRegex(@"\bSELECT\b[\s\S]*?\bINTO\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SelectIntoRegex();
-
-    [GeneratedRegex(@"\bSELECT\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SelectKeywordRegex();
-
-    [GeneratedRegex(@"/\*.*?\*/", RegexOptions.Singleline)]
-    private static partial Regex BlockCommentRegex();
-
-    [GeneratedRegex(@"--[^\r\n]*")]
-    private static partial Regex LineCommentRegex();
-
-    private static Regex MutatingKeywordRegex(string word) =>
-        new($@"\b{Regex.Escape(word)}\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 }

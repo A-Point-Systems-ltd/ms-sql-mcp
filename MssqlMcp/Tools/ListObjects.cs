@@ -9,6 +9,7 @@ namespace Mssql.McpServer;
 public partial class Tools
 {
     [McpServerTool(
+        Name = ToolNames.ListObjects,
         Title = "List Objects",
         ReadOnly = true,
         Idempotent = true,
@@ -17,7 +18,8 @@ public partial class Tools
     public async Task<DbOperationResult> ListObjects(
         [Description("Logical object type to list: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, or SysObject.")] string objectType,
         [Description("Optional partial name filter (substring match). Matches object name and qualified schema.name (e.g. 'Doc' matches dbo.Documents). Pass null for no filter.")] string? partialName = null,
-        [Description("Optional sys.objects type code used only when objectType='SysObject' (e.g., 'U','V','P','FN','IF','TF','TR'). Pass null to list all user-defined sys.objects.")] string? sysObjectType = null)
+        [Description("Optional sys.objects type code used only when objectType='SysObject' (e.g., 'U','V','P','FN','IF','TF','TR'). Pass null to list all user-defined sys.objects.")] string? sysObjectType = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(objectType))
         {
@@ -27,14 +29,14 @@ public partial class Tools
         var normalized = NormalizeObjectType(objectType);
         return normalized switch
         {
-            "table" => await ListTables(partialName),
-            "view" => await ListViews(partialName),
-            "storedprocedure" => await ListStoredProcedures(partialName),
-            "tablefunction" => await ListTableFunctions(partialName),
-            "scalarfunction" => await ListScalarFunctions(partialName),
-            "function" => await ListAllFunctions(partialName),
-            "tabletrigger" => await ListTableTriggers(partialName),
-            "sysobject" => await ListSysObjects(sysObjectType, partialName),
+            "table" => await ListTables(partialName, cancellationToken).ConfigureAwait(false),
+            "view" => await ListViews(partialName, cancellationToken).ConfigureAwait(false),
+            "storedprocedure" => await ListStoredProcedures(partialName, cancellationToken).ConfigureAwait(false),
+            "tablefunction" => await ListTableFunctions(partialName, cancellationToken).ConfigureAwait(false),
+            "scalarfunction" => await ListScalarFunctions(partialName, cancellationToken).ConfigureAwait(false),
+            "function" => await ListAllFunctions(partialName, cancellationToken).ConfigureAwait(false),
+            "tabletrigger" => await ListTableTriggers(partialName, cancellationToken).ConfigureAwait(false),
+            "sysobject" => await ListSysObjects(sysObjectType, partialName, cancellationToken).ConfigureAwait(false),
             _ => new DbOperationResult(
                 success: false,
                 error: "Unsupported objectType. Use one of: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject.")
@@ -66,15 +68,15 @@ public partial class Tools
         };
     }
 
-    private async Task<DbOperationResult> ListAllFunctions(string? partialName)
+    private async Task<DbOperationResult> ListAllFunctions(string? partialName, CancellationToken cancellationToken)
     {
-        var scalarResult = await ListScalarFunctions(partialName);
+        var scalarResult = await ListScalarFunctions(partialName, cancellationToken).ConfigureAwait(false);
         if (!scalarResult.Success)
         {
             return scalarResult;
         }
 
-        var tableResult = await ListTableFunctions(partialName);
+        var tableResult = await ListTableFunctions(partialName, cancellationToken).ConfigureAwait(false);
         if (!tableResult.Success)
         {
             return tableResult;

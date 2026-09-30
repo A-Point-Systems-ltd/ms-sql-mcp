@@ -38,9 +38,12 @@ public interface IInsightsLayerService
     Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Processes new <c>dbo.DDL_AuditLog</c> rows (when present) and archives affected insights; otherwise scans fingerprints.
+    /// Processes new <c>dbo.DDL_AuditLog</c> rows (when present) and archives affected insights; when no audit
+    /// rows were processed, runs a rotating fingerprint scan instead. Runs are serialized per database with
+    /// <c>sp_getapplock</c>; a run that finds the lock held returns without doing anything.
     /// </summary>
-    Task ProcessDdlChangesAsync(CancellationToken cancellationToken = default);
+    /// <returns>False when another process held the processing lock and this run was skipped; true otherwise.</returns>
+    Task<bool> ProcessDdlChangesAsync(CancellationToken cancellationToken = default);
 
     Task<DbOperationResult> ListInsightsAsync(string? schemaName, string? objectType, int take, CancellationToken cancellationToken = default);
 
@@ -49,6 +52,8 @@ public interface IInsightsLayerService
     /// <summary>
     /// Runs <see cref="ProcessDdlChangesAsync"/> and returns recent insight summaries.
     /// <c>topQueryPatterns</c> is kept in the response shape for compatibility and currently returns an empty list.
+    /// <c>ddlProcessing</c> reports the reconciliation outcome: <c>completed</c>, <c>skipped_busy</c> (another run
+    /// held the lock), <c>not_installed</c>, or <c>failed</c>.
     /// </summary>
     Task<DbOperationResult> RefreshInsightsAsync(CancellationToken cancellationToken = default);
 }

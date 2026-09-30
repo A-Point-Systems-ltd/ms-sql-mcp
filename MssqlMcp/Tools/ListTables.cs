@@ -17,27 +17,26 @@ public partial class Tools
                 OR (TABLE_SCHEMA + '.' + TABLE_NAME) LIKE @NamePattern)
         ORDER BY TABLE_SCHEMA, TABLE_NAME";
 
-    private async Task<DbOperationResult> ListTables(string? partialName = null)
+    private async Task<DbOperationResult> ListTables(string? partialName = null, CancellationToken cancellationToken = default)
     {
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             {
-                using var cmd = new SqlCommand(ListTablesQuery, conn);
+                await using var cmd = new SqlCommand(ListTablesQuery, conn);
                 AddNamePatternParameter(cmd, partialName);
                 var tables = new List<string>();
-                using var reader = await cmd.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     tables.Add($"{reader.GetString(0)}.{reader.GetString(1)}");
                 }
                 return new DbOperationResult(success: true, data: tables);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "ListTables failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} (ListTables) failed: {Message}", ToolNames.ListObjects, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

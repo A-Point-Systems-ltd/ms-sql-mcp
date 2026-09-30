@@ -5,7 +5,9 @@ Publish
 PublishStandalone
 publish.bat
 .roo
-documentation
-docs
-audit
+documentation/
+docs/
+audit/
 אופן שימוש.url
+.cursor/
+.vscode/

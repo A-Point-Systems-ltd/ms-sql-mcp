@@ -1,6 +1,7 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -19,102 +20,28 @@ internal class Program
     /// <param name="args">Command-line arguments.</param>
     private static async Task Main(string[] args)
     {
-        // Setup log file path - allow user to specify via environment variable
-        var customLogPath = Environment.GetEnvironmentVariable("LOG_FILE_PATH");
-        string logFilePath;
-        bool useCustomPath = false;
-        
-        if (!string.IsNullOrEmpty(customLogPath))
-        {
-            // User specified a custom log file path
-            try
-            {
-                // If it's a directory path, append filename; otherwise use as-is
-                if (Directory.Exists(customLogPath) || customLogPath.EndsWith(Path.DirectorySeparatorChar) || customLogPath.EndsWith(Path.AltDirectorySeparatorChar))
-                {
-                    logFilePath = Path.Combine(customLogPath, $"mssql-mcp-{DateTime.Now:yyyy-MM-dd-HHmmss}.log");
-                }
-                else
-                {
-                    logFilePath = customLogPath;
-                }
-                
-                // Ensure directory exists
-                var logDir = Path.GetDirectoryName(logFilePath);
-                if (!string.IsNullOrEmpty(logDir))
-                {
-                    Directory.CreateDirectory(logDir);
-                }
-                
-                useCustomPath = true;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Warning: Invalid LOG_FILE_PATH '{customLogPath}': {ex.Message}");
-                Console.Error.WriteLine("Falling back to default log location.");
-                logFilePath = string.Empty; // Will be set below
-            }
-        }
-        else
-        {
-            logFilePath = string.Empty; // Will be set below
-        }
-        
-        if (!useCustomPath || string.IsNullOrEmpty(logFilePath))
-        {
-            // Use default log location
-            var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MssqlMcp",
-                "Logs");
-            Directory.CreateDirectory(logDirectory);
-            logFilePath = Path.Combine(logDirectory, $"mssql-mcp-{DateTime.Now:yyyy-MM-dd-HHmmss}.log");
-        }
+        var log = new StartupLog(ResolveLogFilePath());
 
-        // Write startup information to log file
-        try
-        {
-            var startupInfo = new List<string>
-            {
-                "=".PadRight(80, '='),
-                $"MSSQL MCP Server Starting - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-                "=".PadRight(80, '='),
-                $"Process ID: {Process.GetCurrentProcess().Id}",
-                $"Working Directory: {Environment.CurrentDirectory}",
-                $"Log File: {logFilePath}",
-                $"App Base Directory: {AppContext.BaseDirectory}",
-                $".NET Version: {Environment.Version}",
-                $"OS Version: {Environment.OSVersion}",
-                $"Machine Name: {Environment.MachineName}",
-                $"User: {Environment.UserName}",
-                $"Command Line Args: {string.Join(" ", args)}",
-                ""
-            };
-
-            // Log connection string (masked)
-            var connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
-            if (!string.IsNullOrEmpty(connectionString))
-            {
-                var maskedConnStr = MaskConnectionString(connectionString);
-                startupInfo.Add($"Connection String: {maskedConnStr}");
-            }
-            else
-            {
-                startupInfo.Add("Connection String: NOT SET - This will cause connection failures!");
-            }
-
-            startupInfo.Add("");
-            File.WriteAllLines(logFilePath, startupInfo);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Failed to create log file: {ex.Message}");
-        }
+        log.Header(
+        [
+            "=".PadRight(80, '='),
+            $"MSSQL MCP Server Starting - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+            "=".PadRight(80, '='),
+            $"Process ID: {Environment.ProcessId}",
+            $"Working Directory: {Environment.CurrentDirectory}",
+            $"Log File: {log.FilePath}",
+            $"App Base Directory: {AppContext.BaseDirectory}",
+            $".NET Version: {Environment.Version}",
+            $"OS Version: {Environment.OSVersion}",
+            $"Machine Name: {Environment.MachineName}",
+            $"User: {Environment.UserName}",
+            $"Command Line Args: {string.Join(" ", args)}",
+        ]);
 
         // Create the application host builder
         var builder = Host.CreateApplicationBuilder(args);
 
-        // Configure console logging with Trace level
+        // stdout carries the MCP protocol, so every log line must go to stderr.
         _ = builder.Logging.AddConsole(consoleLogOptions =>
         {
             consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
@@ -126,43 +53,41 @@ internal class Program
         {
             var errorMsg = "FATAL: CONNECTION_STRING environment variable is not set!";
             Console.Error.WriteLine(errorMsg);
-            File.AppendAllText(logFilePath, $"\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {errorMsg}\n");
+            log.Append(errorMsg);
             Environment.ExitCode = 1;
             return;
         }
 
-        File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Connection string validated (length: {connStr.Length})\n");
+        log.Append($"Connection String: {MaskConnectionString(connStr)}");
 
         // Test SQL connection before starting MCP server
         try
         {
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Testing SQL Server connection...\n");
-            var testFactory = new SqlConnectionFactory();
-            using var testConnection = await testFactory.GetOpenConnectionAsync();
+            log.Append("Testing SQL Server connection...");
+            ISqlConnectionFactory testFactory = new SqlConnectionFactory();
+            await using var testConnection = await testFactory.GetOpenConnectionAsync(CancellationToken.None);
             var successMsg = $"SQL Server connection test SUCCESSFUL - Server: {testConnection.DataSource}, Database: {testConnection.Database}";
             Console.Error.WriteLine(successMsg);
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {successMsg}\n");
+            log.Append(successMsg);
         }
         catch (Exception ex)
         {
             var errorMsg = $"FATAL: SQL Server connection test FAILED: {ex.Message}";
             var detailMsg = $"Connection String (masked): {MaskConnectionString(connStr)}";
-            var stackMsg = $"Stack trace: {ex.StackTrace}";
-            
+
             Console.Error.WriteLine(errorMsg);
             Console.Error.WriteLine(detailMsg);
-            
-            File.AppendAllText(logFilePath, $"\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {errorMsg}\n");
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {detailMsg}\n");
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {stackMsg}\n");
-            
+
+            log.Append(errorMsg);
+            log.Append(detailMsg);
+            log.Append($"Stack trace: {ex.StackTrace}");
+
             Environment.ExitCode = 1;
             return;
         }
 
-        File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Starting MCP server initialization...\n");
+        log.Append("Starting MCP server initialization...");
 
-        // Register ISqlConnectionFactory and Tools for DI
         _ = builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
         if (InsightsLayerEnvironment.IsInsightsLayerEnabled)
         {
@@ -179,20 +104,15 @@ internal class Program
             _ = builder.Services.AddSingleton<IInsightDdlProcessingQueue>(NoOpInsightDdlProcessingQueue.Instance);
         }
 
-        _ = builder.Services.AddSingleton<Tools>();
-
-        // Register MCP server and tools (instance-based)
+        // The SDK creates a Tools instance per call via ActivatorUtilities, so Tools must stay stateless.
         _ = builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithToolsFromAssembly();
 
-        File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Building host...\n");
-
-        // Build the host
+        log.Append("Building host...");
         var host = builder.Build();
-
-        File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Host built successfully, MCP server starting...\n");
+        log.Append("Host built successfully, MCP server starting...");
 
         // Setup cancellation token for graceful shutdown (Ctrl+C or SIGTERM)
         using var cts = new CancellationTokenSource();
@@ -204,12 +124,9 @@ internal class Program
 
         try
         {
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - MCP server is now running and accepting connections\n");
-            
-            // Run the host with cancellation support
+            log.Append("MCP server is now running and accepting connections");
             await host.RunAsync(cts.Token);
-            
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - MCP server shut down gracefully\n");
+            log.Append("MCP server shut down gracefully");
         }
         catch (Exception ex)
         {
@@ -223,56 +140,125 @@ internal class Program
                 Console.Error.WriteLine($"Unhandled exception: {ex}");
             }
 
-            File.AppendAllText(logFilePath, $"\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} - FATAL ERROR: {ex.Message}\n");
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Stack: {ex.StackTrace}\n");
+            log.Append($"FATAL ERROR: {ex.Message}");
+            log.Append($"Stack: {ex.StackTrace}");
 
             // Set a non-zero exit code
             Environment.ExitCode = 1;
         }
         finally
         {
-            File.AppendAllText(logFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - Process exiting with code: {Environment.ExitCode}\n");
+            log.Append($"Process exiting with code: {Environment.ExitCode}");
         }
     }
 
     /// <summary>
-    /// Masks sensitive information in connection strings for logging
+    /// <c>LOG_FILE_PATH</c> may be a file or a directory; falls back to %LOCALAPPDATA%\MssqlMcp\Logs.
     /// </summary>
-    private static string MaskConnectionString(string connectionString)
+    private static string ResolveLogFilePath()
+    {
+        var fileName = $"mssql-mcp-{DateTime.Now:yyyy-MM-dd-HHmmss}.log";
+        var customLogPath = Environment.GetEnvironmentVariable("LOG_FILE_PATH");
+        if (!string.IsNullOrEmpty(customLogPath))
+        {
+            try
+            {
+                var isDirectory = Directory.Exists(customLogPath)
+                    || customLogPath.EndsWith(Path.DirectorySeparatorChar)
+                    || customLogPath.EndsWith(Path.AltDirectorySeparatorChar);
+                var path = isDirectory ? Path.Combine(customLogPath, fileName) : customLogPath;
+                var logDir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(logDir))
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+
+                return path;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Warning: Invalid LOG_FILE_PATH '{customLogPath}': {ex.Message}");
+                Console.Error.WriteLine("Falling back to default log location.");
+            }
+        }
+
+        var logDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MssqlMcp",
+            "Logs");
+        try
+        {
+            Directory.CreateDirectory(logDirectory);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: cannot create log directory '{logDirectory}': {ex.Message}");
+        }
+
+        return Path.Combine(logDirectory, fileName);
+    }
+
+    /// <summary>
+    /// Masks secrets in a connection string for logging. Parses with <see cref="SqlConnectionStringBuilder"/>
+    /// so quoted values containing ';' cannot leak; unparsable strings are never echoed.
+    /// </summary>
+    internal static string MaskConnectionString(string connectionString)
     {
         if (string.IsNullOrEmpty(connectionString))
         {
             return string.Empty;
         }
 
-        var parts = connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries);
-        var maskedParts = new List<string>();
-
-        foreach (var part in parts)
+        try
         {
-            var keyValue = part.Split('=', 2);
-            if (keyValue.Length == 2)
+            var builder = new SqlConnectionStringBuilder(connectionString);
+            if (!string.IsNullOrEmpty(builder.Password))
             {
-                var key = keyValue[0].Trim();
-                var value = keyValue[1].Trim();
+                builder.Password = "***MASKED***";
+            }
 
-                // Mask password-related fields
-                if (key.Contains("password", StringComparison.OrdinalIgnoreCase) ||
-                    key.Contains("pwd", StringComparison.OrdinalIgnoreCase))
-                {
-                    maskedParts.Add($"{key}=***MASKED***");
-                }
-                else
-                {
-                    maskedParts.Add(part);
-                }
-            }
-            else
-            {
-                maskedParts.Add(part);
-            }
+            return builder.ConnectionString;
+        }
+        catch (Exception)
+        {
+            return "<unparsable connection string - not logged>";
+        }
+    }
+}
+
+/// <summary>
+/// Best-effort startup/shutdown log. Several server instances may share one LOG_FILE_PATH, so writes append
+/// with shared access, carry the PID, and never throw: a locked or read-only log must not kill the server.
+/// </summary>
+internal sealed class StartupLog(string filePath)
+{
+    private readonly int _pid = Environment.ProcessId;
+
+    public string FilePath { get; } = filePath;
+
+    public void Header(IEnumerable<string> lines)
+    {
+        foreach (var line in lines)
+        {
+            Write(line);
         }
 
-        return string.Join("; ", maskedParts);
+        Write(string.Empty);
+    }
+
+    public void Append(string message) => Write($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{_pid}] - {message}");
+
+    private void Write(string line)
+    {
+        try
+        {
+            using var stream = new FileStream(FilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            using var writer = new StreamWriter(stream);
+            writer.WriteLine(line);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            Console.Error.WriteLine($"[log unavailable: {ex.Message}] {line}");
+        }
     }
 }

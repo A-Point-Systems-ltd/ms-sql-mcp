@@ -13,15 +13,17 @@ namespace Mssql.McpServer;
 public partial class Tools
 {
     [McpServerTool(
+        Name = ToolNames.RebuildBaselineInsights,
         Title = "Rebuild Baseline Insights",
         ReadOnly = false,
         Idempotent = true,
         Destructive = false),
-        Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has at least a baseline insight row. Rows authored with llmModel='auto-mechanical' will still require enrichment (see enrichmentSuggested/insightEnrichment in Describe*/Get* responses).")]
+        Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has at least a baseline insight row. Rows authored with llmModel='auto-mechanical' will still require enrichment (see enrichmentSuggested/insightEnrichment in " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " responses).")]
     public async Task<DbOperationResult> RebuildBaselineInsights(
         [Description("Optional schema filter. Pass null for all schemas.")] string? schemaName = null,
         [Description("Optional object type filter: 'Table' | 'View' | 'Procedure' | 'Function'. Pass null for all supported types. Triggers are not covered by baseline scans.")] string? objectType = null,
-        [Description("Maximum objects to scan (1..2000).")] int take = 200)
+        [Description("Maximum objects to scan (1..2000).")] int take = 200,
+        CancellationToken cancellationToken = default)
     {
         if (!_insightsLayer.IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled)
         {
@@ -72,10 +74,9 @@ public partial class Tools
             ORDER BY s.name, o.name;
             """;
 
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             {
                 var targets = new List<(string Type, string Schema, string Name)>();
                 await using (var cmd = new SqlCommand(sql, conn))
@@ -83,8 +84,8 @@ public partial class Tools
                     cmd.Parameters.AddWithValue("@Take", take);
                     cmd.Parameters.AddWithValue("@SchemaName", wantedSchema is null ? DBNull.Value : wantedSchema);
                     cmd.Parameters.AddWithValue("@ObjectType", wantedType is null ? DBNull.Value : wantedType);
-                    await using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
-                    while (await reader.ReadAsync().ConfigureAwait(false))
+                    await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
                         if (reader.IsDBNull(0))
                         {
@@ -101,12 +102,12 @@ public partial class Tools
                     try
                     {
                         var (before, beforeFreshness) = await _insightsLayer
-                            .GetInsightForObjectAsync(target.Type, target.Schema, target.Name)
+                            .GetInsightForObjectAsync(target.Type, target.Schema, target.Name, cancellationToken)
                             .ConfigureAwait(false);
                         var hadBefore = before is not null || beforeFreshness is InsightFreshness.AccessDenied or InsightFreshness.DefinitionUnavailable;
 
                         var (_, afterFreshness) = await _insightsLayer
-                            .EnsureBaselineForObjectAsync(target.Type, target.Schema, target.Name)
+                            .EnsureBaselineForObjectAsync(target.Type, target.Schema, target.Name, cancellationToken)
                             .ConfigureAwait(false);
                         if (!hadBefore && afterFreshness != InsightFreshness.Absent)
                         {
@@ -117,7 +118,7 @@ public partial class Tools
                             skipped++;
                         }
                     }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         errors.Add($"{target.Type} {target.Schema}.{target.Name}: {ex.Message}");
                     }
@@ -126,9 +127,9 @@ public partial class Tools
 
             return new DbOperationResult(success: true, data: new { scanned, created, skipped, errors });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "RebuildBaselineInsights failed.");
+            _logger.LogError(ex, "{Tool} failed: {Message}", ToolNames.RebuildBaselineInsights, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

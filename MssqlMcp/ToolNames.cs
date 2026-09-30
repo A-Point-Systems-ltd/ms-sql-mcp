@@ -1,0 +1,39 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT license.
+
+namespace Mssql.McpServer;
+
+/// <summary>
+/// Wire names of every MCP tool. Pinned explicitly so an SDK naming-policy change cannot silently
+/// rename tools, and so every agent-facing message references the name the client actually sees.
+/// </summary>
+public static class ToolNames
+{
+    public const string ListObjects = "list_objects";
+    public const string DescribeTable = "describe_table";
+    public const string DescribeView = "describe_view";
+    public const string GetObject = "get_object";
+    public const string ReadData = "read_data";
+    public const string ExecuteSql = "execute_sql";
+    public const string InsertData = "insert_data";
+    public const string UpdateData = "update_data";
+    public const string CreateTable = "create_table";
+    public const string DropTable = "drop_table";
+    public const string GetServerInfo = "get_server_info";
+    public const string GetInsight = "get_insight";
+    public const string UpsertInsight = "upsert_insight";
+    public const string ListInsights = "list_insights";
+    public const string GetInsightHistory = "get_insight_history";
+    public const string RefreshInsights = "refresh_insights";
+    public const string InstallInsightsLayer = "install_insights_layer";
+    public const string InsightsCheck = "insights_check";
+    public const string RebuildBaselineInsights = "rebuild_baseline_insights";
+
+    /// <summary>All 19 tool names, in the order documented in README.md.</summary>
+    public static readonly IReadOnlyList<string> All =
+    [
+        ListObjects, DescribeTable, DescribeView, GetObject, ReadData, ExecuteSql, InsertData, UpdateData,
+        CreateTable, DropTable, GetServerInfo, GetInsight, UpsertInsight, ListInsights, GetInsightHistory,
+        RefreshInsights, InstallInsightsLayer, InsightsCheck, RebuildBaselineInsights,
+    ];
+}
