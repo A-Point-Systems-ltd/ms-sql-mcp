@@ -63,7 +63,10 @@ internal static class SecurityDdlRenderer
         {
             head = $"CREATE LOGIN {Sql.Q(l.Name)} WITH PASSWORD = {PasswordPlaceholder}";
             AddLoginOptions(options, l);
-            if (l.CheckPolicy is { } cp)
+            // SQL Server rejects CHECK_EXPIRATION = ON unless CHECK_POLICY is ON.
+            bool? policy = l.CheckExpiration == true ? true : l.CheckPolicy;
+
+            if (policy is { } cp)
             {
                 options.Add("CHECK_POLICY = " + (cp ? "ON" : "OFF"));
             }
@@ -109,7 +112,7 @@ internal static class SecurityDdlRenderer
             }
             else
             {
-                stmts.Add($"-- WARNING: user-defined server roles require SQL Server 2012 or later; {r.Name} is not scripted.");
+                stmts.Add("-- WARNING: " + Sql.CommentSafe($"user-defined server roles require SQL Server 2012 or later; {r.Name} is not scripted."));
                 return stmts[0];
             }
         }
@@ -140,8 +143,13 @@ internal static class SecurityDdlRenderer
         }
 
         var sb = new StringBuilder($"CREATE USER {Sql.Q(u.Name)}");
-        if (u.WithoutLogin)
+        if (u.WithoutLogin || (u.Type == 'S' && u.LoginName is null))
         {
+            if (!u.WithoutLogin)
+            {
+                list.Add(Sql.CommentSafe($"user {Sql.Q(u.Name)} has no matching login; scripted as CREATE USER {Sql.Q(u.Name)} WITHOUT LOGIN"));
+            }
+
             sb.Append(" WITHOUT LOGIN");
         }
         else if (u.LoginName is not null)
@@ -209,7 +217,8 @@ internal static class SecurityDdlRenderer
 
     private static string Warn(List<string> warnings, string message)
     {
-        warnings.Add(message);
-        return "-- WARNING: " + message;
+        var safe = Sql.CommentSafe(message);
+        warnings.Add(safe);
+        return "-- WARNING: " + safe;
     }
 }
