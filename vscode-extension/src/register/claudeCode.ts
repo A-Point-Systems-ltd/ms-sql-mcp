@@ -34,10 +34,10 @@ export function powershellCommand(entry: McpEntry, prefix = 'claude'): string {
 
 /** Resolve the first `claude` launcher on PATH (honouring PATHEXT). */
 export function findClaude(env: NodeJS.ProcessEnv = process.env, exists: (p: string) => boolean = fs.existsSync): string | undefined {
-  const exts = (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const exts = (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.toLowerCase()).filter(e => ['.exe', '.com', '.cmd', '.bat'].includes(e));
   for (const dir of (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean)) {
     for (const ext of exts) {
-      const candidate = path.join(dir.replace(/^"|"$/g, ''), `claude${ext.toLowerCase()}`);
+      const candidate = path.join(dir.replace(/^"|"$/g, ''), `claude${ext}`);
       if (exists(candidate)) return candidate;
     }
   }

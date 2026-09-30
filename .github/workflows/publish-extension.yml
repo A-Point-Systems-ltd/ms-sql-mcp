@@ -1,0 +1,98 @@
+name: Publish VS Code Extension
+
+# Manual trigger. Builds the server exe in this workflow, bundles it into the
+# extension and publishes to the VS Code Marketplace and Open VSX.
+# Required repo secrets (set by the owner): VSCE_PAT, OVSX_PAT (publisher "apoint").
+# Marketplace versions are irreversible: dryRun defaults to true (package only).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Package only - do not publish to the marketplaces."
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: vscode-extension
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Server tests
+        working-directory: .
+        run: dotnet test MssqlMcp.sln -c Release
+
+      - name: Publish server (single-file exe)
+        working-directory: .
+        run: dotnet publish MssqlMcp/MssqlMcp.csproj -c Release -p:PublishProfile=ReleaseSingleFile "-p:PublishDir=${{ runner.temp }}/exe/"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check versions are in sync
+        run: npm run check:version
+
+      - name: Stage exe (SHA-256 recorded and verified)
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'exe/MssqlMcp.exe'
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          Write-Host "MssqlMcp.exe sha256: $hash"
+          node scripts/stage-exe.mjs $exe --sha256 $hash
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Read extension version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = node -p "require('./package.json').version"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "vsix=ms-sql-mcp-win32-x64-$v.vsix" >> $env:GITHUB_OUTPUT
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Package (win32-x64)
+        run: npx vsce package --target win32-x64 -o "${{ steps.ver.outputs.vsix }}"
+
+      - name: Upload VSIX as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ms-sql-mcp-vsix
+          path: vscode-extension/${{ steps.ver.outputs.vsix }}
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ inputs.dryRun == false }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --packagePath "${{ steps.ver.outputs.vsix }}" -p "$env:VSCE_PAT"
+
+      - name: Publish to Open VSX
+        if: ${{ inputs.dryRun == false }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish "${{ steps.ver.outputs.vsix }}" -p "$env:OVSX_PAT"
+
+      - name: Create GitHub release
+        if: ${{ inputs.dryRun == false }}
+        run: gh release create "ext-v${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.vsix }}" --title "Extension v${{ steps.ver.outputs.version }}" --generate-notes

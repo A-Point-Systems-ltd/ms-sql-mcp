@@ -245,6 +245,19 @@ Path to a file containing the same JSON array. Connection strings may contain `$
 ]
 ```
 
+**Quoting.** A placeholder can sit unquoted or inside double quotes:
+
+```text
+Password=${env:CRM_PASSWORD}      (unquoted: value substituted raw)
+Password="${env:CRM_PASSWORD}"    (quoted: any " in the value is doubled to "")
+```
+
+Use the quoted form for passwords. An unquoted value is inserted as is, so a password containing `;`, `=`, `"` or leading/trailing spaces breaks the connection string. When the placeholder is enclosed in double quotes, the server doubles every `"` in the substituted value, which is the ADO.NET escape rule, so the value is read back exactly as stored.
+
+Inside a JSON string the quotes must be escaped: `"connectionString": "Server=sql01;Database=Crm;User Id=mcp_reader;Password=\"${env:CRM_PASSWORD}\""`.
+
+> **Unreleased:** quoted placeholders (`Password="${env:X}"`) are escaped as described above; unquoted placeholders behave as before.
+
 ### 4. The rule: when is `connection` required?
 
 - **Exactly one registered connection:** `connection` is optional.
