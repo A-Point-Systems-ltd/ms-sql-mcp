@@ -36,12 +36,21 @@ export class ExplorerClient implements vscode.Disposable {
    * Throws Error(server error text) when the tool reports success=false.
    */
   async call<T = unknown>(connection: string, tool: string, args: Record<string, unknown>): Promise<T> {
+    const payload = await this.callResult(connection, tool, args);
+    const data = pick(payload, 'data');
+    return (data !== undefined ? data : payload) as T;
+  }
+
+  /**
+   * Like call(), but returns the whole tool payload ({success, data, truncated?, maxRows?, ...}),
+   * for results whose top-level fields matter (read_data truncation).
+   */
+  async callResult(connection: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
     // A pending debounced reset means the running process has a stale profile set: apply it first.
     if (this.timer) this.reset();
     const client = await this.ensure();
-    const payload = await client.callTool(tool, { ...args, connection });
-    const data = pick(payload, 'data');
-    return (data !== undefined ? data : payload) as T;
+    this.log.debug('explorer', `${tool} connection='${connection}'`);
+    return client.callTool(tool, { ...args, connection });
   }
 
   /** Restarts the process (lazily) so it picks up the current profile set. */

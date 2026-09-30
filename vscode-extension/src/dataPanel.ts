@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
-import { DataTable } from './dataTable';
+import { GridTable, rowCountLabel } from './dataTable';
 
 let panel: vscode.WebviewPanel | undefined;
 
-/** Show query/table results in a reusable, read-only webview grid. */
-export function showDataPreview(objectName: string, connection: string, table: DataTable): void {
+/**
+ * Show rows in a reusable, read-only webview grid. Local only: rows can hold client personal data,
+ * so the panel never sends them anywhere (no export, no network - see the CSP).
+ */
+export function showDataPreview(objectName: string, connection: string, table: GridTable, truncated: boolean): void {
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'msSqlMcp.dataView',
@@ -17,7 +20,7 @@ export function showDataPreview(objectName: string, connection: string, table: D
     });
   }
   panel.title = `Data: ${objectName} (${connection})`;
-  panel.webview.html = renderHtml(panel.webview, objectName, table);
+  panel.webview.html = renderHtml(objectName, table, truncated);
   panel.reveal(panel.viewColumn ?? vscode.ViewColumn.Active);
 }
 
@@ -26,32 +29,34 @@ export function disposeDataPanel(): void {
   panel = undefined;
 }
 
-function renderHtml(webview: vscode.Webview, objectName: string, table: DataTable): string {
+function renderHtml(objectName: string, table: GridTable, truncated: boolean): string {
   const nonce = makeNonce();
-  const { columns, rows, truncated, limit } = table;
+  const { columns, data } = table;
 
   const head = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
-  const body = rows
+  const body = data
     .map((row) => {
-      const cells = columns
-        .map((col) => {
-          const value = row[col];
+      const cells = row
+        .map((value) => {
           if (value === null || value === undefined) {
             return '<td class="null">NULL</td>';
           }
           const numeric = typeof value === 'number' || typeof value === 'bigint';
-          return `<td class="${numeric ? 'num' : ''}">${escapeHtml(String(value))}</td>`;
+          const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+          return `<td class="${numeric ? 'num' : ''}">${escapeHtml(text)}</td>`;
         })
         .join('');
       return `<tr>${cells}</tr>`;
     })
     .join('');
 
-  const countLabel = truncated
-    ? `first ${rows.length.toLocaleString()} rows (limit ${limit.toLocaleString()})`
-    : `${rows.length.toLocaleString()} row${rows.length === 1 ? '' : 's'}`;
-
-  const empty = rows.length === 0 ? '<p class="empty">No rows returned.</p>' : '';
+  const countLabel = rowCountLabel(data.length, truncated);
+  // Zero rows: no header (read_data returns no column names without rows; they are in the DDL).
+  const grid = data.length === 0 ? '' : `<table>
+      <thead><tr>${head}</tr></thead>
+      <tbody id="body">${body}</tbody>
+    </table>`;
+  const columnsLabel = data.length === 0 ? '' : ` · ${columns.length} column${columns.length === 1 ? '' : 's'}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -85,24 +90,19 @@ function renderHtml(webview: vscode.Webview, objectName: string, table: DataTabl
                  color:var(--vscode-list-activeSelectionForeground)}
   td.num{text-align:right;font-variant-numeric:tabular-nums}
   td.null{color:var(--vscode-descriptionForeground);font-style:italic}
-  .empty{padding:18px 14px;color:var(--vscode-descriptionForeground)}
   .hidden{display:none}
 </style>
 </head>
 <body>
   <div class="bar">
     <span class="name">${escapeHtml(objectName)}</span>
-    <span class="meta">${escapeHtml(countLabel)} · ${columns.length} column${columns.length === 1 ? '' : 's'} · read-only</span>
+    <span class="meta">${escapeHtml(countLabel)}${columnsLabel} · read-only</span>
     <input id="filter" type="text" placeholder="Filter rows…" aria-label="Filter rows">
     <span class="meta" id="shown"></span>
   </div>
   <div class="scroll">
-    <table>
-      <thead><tr>${head}</tr></thead>
-      <tbody id="body">${body}</tbody>
-    </table>
+    ${grid}
   </div>
-  ${empty}
 <script nonce="${nonce}">
   (function () {
     var input = document.getElementById('filter');

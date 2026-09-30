@@ -2,28 +2,49 @@
 
 import { pick } from './client/parse';
 
-export interface DataTable {
+/** A grid: column names plus one value array per row, in column order. */
+export interface GridTable {
   columns: string[];
-  rows: Record<string, unknown>[];
-  /** True when the server likely had more rows than the requested limit. */
-  truncated: boolean;
-  limit: number;
+  data: unknown[][];
 }
 
-/** Parse a read_data payload (Columns[] + Data[]) into a renderable table. */
-export function parseDataTable(payload: unknown, limit: number): DataTable {
-  const columnDefs = pick(payload, 'columns');
-  let columns = Array.isArray(columnDefs)
-    ? columnDefs.map((c) => String(pick(c, 'name') ?? '')).filter((n) => n.length > 0)
-    : [];
+/** The parts of a read_data result the data view needs. */
+export interface ReadDataResult {
+  rows: Record<string, unknown>[];
+  /** True when the server cut the result at `maxRows` (DbOperationResult.Truncated). */
+  truncated: boolean;
+  maxRows?: number;
+}
 
-  const data = pick(payload, 'data');
-  const rows = (Array.isArray(data) ? data : []).map((r) =>
-    r && typeof r === 'object' ? (r as Record<string, unknown>) : {},
-  );
+const isRow = (r: unknown): r is Record<string, unknown> => !!r && typeof r === 'object' && !Array.isArray(r);
 
-  if (columns.length === 0 && rows.length > 0) {
-    columns = Object.keys(rows[0]);
+/**
+ * Row objects (read_data `data`) -> columns + data. Column order is the first row's key order;
+ * keys that only appear in later rows are appended, and missing values become null.
+ */
+export function rowsToTable(rows: Record<string, unknown>[]): GridTable {
+  const columns: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        columns.push(key);
+      }
+    }
   }
-  return { columns, rows, truncated: rows.length >= limit, limit };
+  return { columns, data: rows.map(row => columns.map(c => (Object.prototype.hasOwnProperty.call(row, c) ? row[c] : null))) };
+}
+
+/** Full read_data payload ({success, data, truncated?, maxRows?}, any casing) -> rows + truncation info. */
+export function parseReadData(payload: unknown): ReadDataResult {
+  const data = pick(payload, 'data');
+  const rows = (Array.isArray(data) ? data : []).filter(isRow);
+  const maxRows = pick(payload, 'maxRows');
+  return { rows, truncated: pick(payload, 'truncated') === true, maxRows: typeof maxRows === 'number' ? maxRows : undefined };
+}
+
+export function rowCountLabel(count: number, truncated: boolean): string {
+  const n = count.toLocaleString('en-US');
+  return truncated ? `first ${n} rows (truncated)` : `${n} row${count === 1 ? '' : 's'}`;
 }

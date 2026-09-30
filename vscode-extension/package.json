@@ -183,6 +183,16 @@
           "when": "viewItem =~ /^msSqlMcp\\.conn/",
           "group": "2@2"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "msSqlMcp.dataView",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.showDdl",
+          "when": "false"
+        }
       ]
     },
     "configuration": {
