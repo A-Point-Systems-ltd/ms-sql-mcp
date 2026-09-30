@@ -58,7 +58,7 @@
         "msSqlMcp.insights": { "type": "boolean", "default": true, "description": "Enable the AI Insights layer for the agent-facing server (USE_INSIGHTS_LAYER). The object explorer never uses it." },
         "msSqlMcp.allowAdhocConnections": { "type": "boolean", "default": false, "description": "Let agents open ad-hoc connections with open_connection (MSSQL_ALLOW_ADHOC_CONNECTIONS)." },
         "msSqlMcp.dataViewRows": { "type": "number", "default": 500, "minimum": 1, "maximum": 10000, "description": "Rows loaded by Data View." },
-        "msSqlMcp.logLevel": { "type": "string", "enum": ["off", "error", "warn", "info", "debug", "trace"], "description": "Log verbosity. When unset: error in Production, debug in Development." }
+        "msSqlMcp.logLevel": { "type": "string", "enum": ["off", "error", "warn", "info", "debug", "trace"], "description": "Log verbosity. When unset: error in a normal (Production) install, debug when running in Development or Test mode." }
       }
     }
   },

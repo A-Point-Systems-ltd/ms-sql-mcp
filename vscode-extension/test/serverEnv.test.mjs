@@ -15,3 +15,17 @@ test('flags are carried and can be forced for the explorer', () => {
   assert.equal(x.readOnly, true);
   assert.equal(x.insights, false);
 });
+
+test('sql profiles without a stored password are skipped and reported', async () => {
+  const { missingPasswords } = await import('../out/connections/serverEnv.js');
+  const profiles = [p('w'), p('s1', { auth: 'sql', user: 'u' }), p('s2', { auth: 'sql', user: 'u' }), p('s3', { auth: 'sql', user: 'u', open: false })];
+  const pw = new Map([['s2', 'x']]);
+  assert.deepEqual(JSON.parse(buildServerConnections(profiles, pw)).map(x => x.name), ['w', 's2']);
+  assert.deepEqual(missingPasswords(profiles, pw), ['s1']);
+});
+
+test('an empty-string password counts as stored', async () => {
+  const { missingPasswords } = await import('../out/connections/serverEnv.js');
+  const profiles = [p('s', { auth: 'sql', user: 'u' })];
+  assert.deepEqual(missingPasswords(profiles, new Map([['s', '']])), []);
+});
