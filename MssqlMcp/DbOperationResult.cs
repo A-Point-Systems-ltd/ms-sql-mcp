@@ -27,4 +27,12 @@ public class DbOperationResult(bool success, string? error = null, int? rowsAffe
     /// Gets any data returned by the operation, such as query results.
     /// </summary>
     public object? Data { get; } = data;
+
+    /// <summary>
+    /// True when a row cap cut the result set short (<c>read_data</c>); null (omitted on the wire) otherwise.
+    /// </summary>
+    public bool? Truncated { get; init; }
+
+    /// <summary>The row cap that was applied when <see cref="Truncated"/> is true.</summary>
+    public int? MaxRows { get; init; }
 }

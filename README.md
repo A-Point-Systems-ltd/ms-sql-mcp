@@ -140,7 +140,9 @@ When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the serv
 
 ## MCP tools reference
 
-The server exposes **19 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (ModelContextProtocol SDK 2.x default). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
+The server exposes **19 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
+
+> **Breaking change (.NET 10 / MCP SDK 2.x upgrade):** tool names changed from PascalCase (`ReadData`, `ExecuteSQL`, …) to snake_case (`read_data`, `execute_sql`, …). Update client tool allow-lists, auto-approve rules and saved prompts that reference the old names.
 
 ### Read-only inspection
 
@@ -182,10 +184,11 @@ When `USE_INSIGHTS_LAYER=false`, insight-specific tools return errors or empty s
 
 ### Read vs execute routing
 
-`SqlStatementClassifier` enforces a strict split:
+`SqlStatementClassifier` parses every statement with the T-SQL parser (`Microsoft.SqlServer.TransactSql.ScriptDom`) and enforces a strict split. Every tool accepts **exactly one statement**; T-SQL needs no `;` between statements, so text such as `SELECT 1 WAITFOR DELAY '…'` counts as two statements and is rejected.
 
-- **read_data** — `SELECT` and read-only `WITH … SELECT` only. `SELECT … INTO` is rejected.
-- **execute_sql** — everything else that mutates schema or data. Any `SELECT` is rejected with a message pointing to `read_data`.
+- **read_data** — a single `SELECT` / `WITH … SELECT`. `SELECT … INTO`, `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE` and linked-server (4-part) names are rejected. The query runs inside a transaction that is always rolled back. At most `maxRows` rows are returned (default 500, max 10000). `data` is always the row array; when more rows exist the response also carries top-level `truncated: true` and `maxRows`.
+- **insert_data / update_data / create_table / drop_table** — only the matching statement type (`INSERT`, `UPDATE`, `CREATE TABLE`, `DROP TABLE`) is accepted, so `insert_data("DROP TABLE x")` is refused.
+- **execute_sql** — single DDL/DML statements (including `SELECT … INTO`; a `CREATE PROCEDURE` body counts as one statement). Any plain `SELECT` is rejected with a message pointing to `read_data`. `SET`, `DECLARE`, `USE`, `WAITFOR` and `SHUTDOWN` are rejected as unsupported.
 
 This keeps destructive operations behind an explicitly flagged tool and prevents accidental full-table reads through the write path.
 
@@ -198,6 +201,8 @@ The AI Insights layer caches LLM-authored (or server-generated baseline) summari
 - **`AIInsights` schema** — `SchemaInsights`, `InsightHistory`, `DdlChangeWatermark`, and related objects (embedded SQL in `InsightsLayer/SqlScripts/`).
 - **`dbo.DDL_AuditLog`** — captures DDL events via a database-level trigger.
 - **`DDL_Audit` trigger** — requires `ALTER ANY DATABASE DDL TRIGGER` (or `ddl_admin` / `sysadmin`).
+  - The trigger is **database-wide**: it fires for DDL from every application, not just this server, and runs **as the caller**. A login that may run DDL but lacks `INSERT` on `dbo.DDL_AuditLog` has its DDL **rolled back** — grant `INSERT ON dbo.DDL_AuditLog` to such logins before installing on a shared database. `install_insights_layer` is marked destructive for this reason.
+  - An existing `DDL_Audit` trigger is never replaced, so databases installed by an earlier version keep their original trigger definition. Legacy `AIInsights` tables from older schema versions are dropped only when empty.
 
 Install is idempotent; re-running is safe.
 

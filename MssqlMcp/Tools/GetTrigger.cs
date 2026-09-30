@@ -8,17 +8,9 @@ namespace Mssql.McpServer;
 
 public partial class Tools
 {
-    private async Task<DbOperationResult> GetTrigger(string name)
-    {
-        var parsed = TriggerQualifiedName.Parse(name);
-        if (string.IsNullOrWhiteSpace(parsed.Name))
-        {
-            return new DbOperationResult(success: false, error: "Trigger name is required.");
-        }
-
-        const string TriggerInfoQuery = @"SELECT
+    private const string GetTriggerInfoQuery = @"SELECT
             s.name AS [schema],
-            OBJECT_NAME(tr.parent_id) AS table_name,
+            o.name AS table_name,
             tr.name,
             tr.create_date,
             tr.modify_date,
@@ -38,79 +30,60 @@ public partial class Tools
             ON ep.major_id = tr.object_id
             AND ep.minor_id = 0
             AND ep.name = 'MS_Description'
-        WHERE tr.name = @ObjectName
-            AND tr.parent_class = 1
-            AND (@SchemaName IS NULL OR s.name = @SchemaName)
-            AND (@TableName IS NULL OR OBJECT_NAME(tr.parent_id) = @TableName)";
+        WHERE tr.object_id = @ObjectId
+            AND tr.parent_class = 1";
 
-        const string DefinitionQuery = @"SELECT OBJECT_DEFINITION(tr.object_id) AS definition
-        FROM sys.triggers tr
-        INNER JOIN sys.objects o ON tr.parent_id = o.object_id
-        INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
-        WHERE tr.name = @ObjectName
-            AND tr.parent_class = 1
-            AND (@SchemaName IS NULL OR s.name = @SchemaName)
-            AND (@TableName IS NULL OR OBJECT_NAME(tr.parent_id) = @TableName)";
+    private async Task<DbOperationResult> GetTrigger(string name, CancellationToken cancellationToken)
+    {
+        // Triggers read three parts as schema.table.trigger (not database.schema.name).
+        if (!ObjectNameParser.TryParseTrigger(name, out var parts, out var parseError))
+        {
+            return new DbOperationResult(success: false, error: parseError);
+        }
 
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var resolved = await ResolveObjectAsync(conn, parts, TriggerObjectTypes, cancellationToken).ConfigureAwait(false);
+            if (resolved is not { } trigger)
             {
-                var result = new Dictionary<string, object?>();
-
-                using (var cmd = new SqlCommand(TriggerInfoQuery, conn))
-                {
-                    AddTriggerLookupParameters(cmd, parsed);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
-                    {
-                        result["trigger"] = new
-                        {
-                            schema = reader["schema"],
-                            table_name = reader["table_name"],
-                            name = reader["name"],
-                            create_date = reader["create_date"],
-                            modify_date = reader["modify_date"],
-                            is_disabled = (bool)reader["is_disabled"],
-                            is_instead_of_trigger = (bool)reader["is_instead_of_trigger"],
-                            description = reader["description"] is DBNull ? null : reader["description"],
-                            trigger_events = reader["trigger_events"] is DBNull ? null : reader["trigger_events"]
-                        };
-                    }
-                    else
-                    {
-                        return new DbOperationResult(
-                            success: false,
-                            error: $"Trigger '{parsed.DisplayName}' not found.");
-                    }
-                }
-
-                using (var cmd = new SqlCommand(DefinitionQuery, conn))
-                {
-                    AddTriggerLookupParameters(cmd, parsed);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
-                    {
-                        result["definition"] = reader["definition"] is DBNull ? null : reader["definition"];
-                    }
-                }
-
-                await TryAttachInsightAsync(result, "Trigger", parsed.Schema, parsed.Name).ConfigureAwait(false);
-                return new DbOperationResult(success: true, data: result);
+                return new DbOperationResult(success: false, error: ObjectNotFoundMessage("Trigger", name, parts));
             }
+
+            var result = new Dictionary<string, object?>();
+
+            await using (var cmd = new SqlCommand(GetTriggerInfoQuery, conn))
+            {
+                AddObjectIdParameter(cmd, trigger.ObjectId);
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    return new DbOperationResult(success: false, error: ObjectNotFoundMessage("Trigger", name, parts));
+                }
+
+                result["trigger"] = new
+                {
+                    schema = reader["schema"],
+                    table_name = reader["table_name"],
+                    name = reader["name"],
+                    create_date = reader["create_date"],
+                    modify_date = reader["modify_date"],
+                    is_disabled = (bool)reader["is_disabled"],
+                    is_instead_of_trigger = (bool)reader["is_instead_of_trigger"],
+                    description = reader["description"] is DBNull ? null : reader["description"],
+                    trigger_events = reader["trigger_events"] is DBNull ? null : reader["trigger_events"]
+                };
+            }
+
+            result["definition"] = await ReadObjectDefinitionAsync(conn, trigger.ObjectId, cancellationToken).ConfigureAwait(false);
+
+            await TryAttachInsightAsync(result, "Trigger", trigger.Schema, trigger.Name, cancellationToken).ConfigureAwait(false);
+            return new DbOperationResult(success: true, data: result);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "GetTrigger failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} (Trigger) failed: {Message}", ToolNames.GetObject, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
-    }
-
-    private static void AddTriggerLookupParameters(SqlCommand cmd, TriggerQualifiedName parsed)
-    {
-        cmd.Parameters.AddWithValue("@ObjectName", parsed.Name);
-        cmd.Parameters.AddWithValue("@SchemaName", parsed.Schema is null ? DBNull.Value : parsed.Schema);
-        cmd.Parameters.AddWithValue("@TableName", parsed.TableName is null ? DBNull.Value : parsed.TableName);
     }
 }

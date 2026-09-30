@@ -10,6 +10,7 @@ namespace Mssql.McpServer;
 public partial class Tools
 {
     [McpServerTool(
+        Name = ToolNames.GetInsightHistory,
         Title = "Get Insight History",
         ReadOnly = true,
         Idempotent = true,
@@ -18,8 +19,9 @@ public partial class Tools
     public async Task<DbOperationResult> GetInsightHistory(
         [Description("Schema filter. Pass null for no filter.")] string? schemaName = null,
         [Description("Object name filter (exact match, no wildcards). Pass null for no filter.")] string? objectName = null,
-        [Description("Maximum rows to return. Clamped server-side to 1..2000.")] int take = 100)
+        [Description("Maximum rows to return. Clamped server-side to 1..2000.")] int take = 100,
+        CancellationToken cancellationToken = default)
     {
-        return await _insightsLayer.GetHistoryAsync(schemaName, objectName, take).ConfigureAwait(false);
+        return await _insightsLayer.GetHistoryAsync(schemaName, objectName, take, cancellationToken).ConfigureAwait(false);
     }
 }

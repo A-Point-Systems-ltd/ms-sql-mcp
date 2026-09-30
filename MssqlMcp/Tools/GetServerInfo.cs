@@ -47,25 +47,25 @@ public partial class Tools
         WHERE database_id > 4"; // Exclude system databases for counts
 
     [McpServerTool(
+        Name = ToolNames.GetServerInfo,
         Title = "Get Server Info",
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
         Description("Returns SQL Server metadata in three sections: 'server' (ProductVersion/ProductLevel/Edition/EngineEdition/ServerName/MachineName/InstanceName/IsClustered/IsFullTextInstalled/IsIntegratedSecurityOnly/Collation/@@VERSION), 'hardware' (cpuCount, hyperthreadRatio, physicalMemoryMB, virtualMemoryMB, sqlServerStartTime, optional 'warning' string), and 'databases' (totalDatabases/onlineDatabases/offlineDatabases excluding system DBs). Compatible with SQL Server 2008 R2 through 2022 and Azure SQL. When VIEW SERVER STATE is restricted or a DMV column does not exist on the target version, hardware fields are returned as null and 'hardware.warning' explains why; the call still succeeds.")]
-    public async Task<DbOperationResult> GetServerInfo()
+    public async Task<DbOperationResult> GetServerInfo(CancellationToken cancellationToken = default)
     {
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             {
                 var result = new Dictionary<string, object>();
 
                 // Query 1: Server Properties
-                using (var cmd = new SqlCommand(ServerPropertiesQuery, conn))
+                await using (var cmd = new SqlCommand(ServerPropertiesQuery, conn))
                 {
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
+                    await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
                         result["server"] = new
                         {
@@ -98,37 +98,37 @@ public partial class Tools
 
                 try
                 {
-                    using var cmd = new SqlCommand(HardwareInfoQuery, conn);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
+                    await using var cmd = new SqlCommand(HardwareInfoQuery, conn);
+                    await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
                         cpuCount = reader["CPUCount"] is DBNull ? null : reader["CPUCount"];
                         hyperthreadRatio = reader["HyperthreadRatio"] is DBNull ? null : reader["HyperthreadRatio"];
                         sqlServerStartTime = reader["SQLServerStartTime"] is DBNull ? null : reader["SQLServerStartTime"];
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     hardwareWarning = $"sys.dm_os_sys_info unavailable: {ex.Message}";
-                    _logger.LogWarning(ex, "GetServerInfo: unable to read sys.dm_os_sys_info.");
+                    _logger.LogWarning(ex, "{Tool}: unable to read sys.dm_os_sys_info.", ToolNames.GetServerInfo);
                 }
 
                 try
                 {
-                    using var cmd = new SqlCommand(ProcessMemoryQuery, conn);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
+                    await using var cmd = new SqlCommand(ProcessMemoryQuery, conn);
+                    await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
                         physicalMemoryMB = reader["PhysicalMemoryMB"] is DBNull ? null : reader["PhysicalMemoryMB"];
                         virtualMemoryMB = reader["VirtualMemoryMB"] is DBNull ? null : reader["VirtualMemoryMB"];
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     hardwareWarning = hardwareWarning is null
                         ? $"sys.dm_os_process_memory unavailable: {ex.Message}"
                         : $"{hardwareWarning}; sys.dm_os_process_memory unavailable: {ex.Message}";
-                    _logger.LogWarning(ex, "GetServerInfo: unable to read sys.dm_os_process_memory.");
+                    _logger.LogWarning(ex, "{Tool}: unable to read sys.dm_os_process_memory.", ToolNames.GetServerInfo);
                 }
 
                 result["hardware"] = new
@@ -142,10 +142,10 @@ public partial class Tools
                 };
 
                 // Query 3: Database Statistics
-                using (var cmd = new SqlCommand(DatabaseStatsQuery, conn))
+                await using (var cmd = new SqlCommand(DatabaseStatsQuery, conn))
                 {
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
+                    await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
                         result["databases"] = new
                         {
@@ -159,9 +159,9 @@ public partial class Tools
                 return new DbOperationResult(success: true, data: result);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "GetServerInfo failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} failed: {Message}", ToolNames.GetServerInfo, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

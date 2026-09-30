@@ -206,7 +206,7 @@ namespace MssqlMcp.Tests
             var result = await _tools.ReadData("UPDATE dbo.NonExistent SET x = 1") as DbOperationResult;
             Assert.NotNull(result);
             Assert.False(result.Success);
-            Assert.Contains("ReadData", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ToolNames.ReadData, result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
@@ -215,7 +215,7 @@ namespace MssqlMcp.Tests
             var result = await _tools.ExecuteSQL("SELECT 1") as DbOperationResult;
             Assert.NotNull(result);
             Assert.False(result.Success);
-            Assert.Contains("ReadData", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ToolNames.ReadData, result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]

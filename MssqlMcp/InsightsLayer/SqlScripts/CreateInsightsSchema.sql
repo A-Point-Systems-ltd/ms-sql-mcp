@@ -70,6 +70,7 @@ IF EXISTS (
 )
 BEGIN
     DECLARE @dfName SYSNAME;
+    DECLARE @dropSql NVARCHAR(400);
     SELECT @dfName = dc.name
     FROM sys.default_constraints dc
     JOIN sys.columns c ON c.default_object_id = dc.object_id
@@ -77,7 +78,11 @@ BEGIN
       AND c.name = N'LastAnalyzed';
 
     IF @dfName IS NOT NULL
-        EXEC(N'ALTER TABLE AIInsights.SchemaInsights DROP CONSTRAINT ' + QUOTENAME(@dfName));
+    BEGIN
+        -- EXEC() accepts only literals and variables, so the statement is built first.
+        SET @dropSql = N'ALTER TABLE AIInsights.SchemaInsights DROP CONSTRAINT ' + QUOTENAME(@dfName);
+        EXEC(@dropSql);
+    END
 
     ALTER TABLE AIInsights.SchemaInsights
         ADD CONSTRAINT DF_SchemaInsights_LastAnalyzed DEFAULT (GETDATE()) FOR LastAnalyzed;
@@ -91,21 +96,21 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SchemaInsights_LastAn
     CREATE INDEX IX_SchemaInsights_LastAnalyzed ON AIInsights.SchemaInsights(LastAnalyzed DESC);
 GO
 
-/* ---- Remove legacy/non-active tables from earlier schema versions ---- */
+/* ---- Remove legacy/non-active tables from earlier schema versions (only when empty and unreferenced by a foreign key: never destroy data, never fail install) ---- */
 IF OBJECT_ID('AIInsights.InsightFeedback', 'U') IS NOT NULL
-    DROP TABLE AIInsights.InsightFeedback;
+    EXEC(N'IF NOT EXISTS (SELECT 1 FROM AIInsights.InsightFeedback) AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE referenced_object_id = OBJECT_ID(N''AIInsights.InsightFeedback'')) DROP TABLE AIInsights.InsightFeedback;');
 GO
 IF OBJECT_ID('AIInsights.AnalysisSessions', 'U') IS NOT NULL
-    DROP TABLE AIInsights.AnalysisSessions;
+    EXEC(N'IF NOT EXISTS (SELECT 1 FROM AIInsights.AnalysisSessions) AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE referenced_object_id = OBJECT_ID(N''AIInsights.AnalysisSessions'')) DROP TABLE AIInsights.AnalysisSessions;');
 GO
 IF OBJECT_ID('AIInsights.BusinessRules', 'U') IS NOT NULL
-    DROP TABLE AIInsights.BusinessRules;
+    EXEC(N'IF NOT EXISTS (SELECT 1 FROM AIInsights.BusinessRules) AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE referenced_object_id = OBJECT_ID(N''AIInsights.BusinessRules'')) DROP TABLE AIInsights.BusinessRules;');
 GO
 IF OBJECT_ID('AIInsights.DataQualityInsights', 'U') IS NOT NULL
-    DROP TABLE AIInsights.DataQualityInsights;
+    EXEC(N'IF NOT EXISTS (SELECT 1 FROM AIInsights.DataQualityInsights) AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE referenced_object_id = OBJECT_ID(N''AIInsights.DataQualityInsights'')) DROP TABLE AIInsights.DataQualityInsights;');
 GO
 IF OBJECT_ID('AIInsights.QueryPatterns', 'U') IS NOT NULL
-    DROP TABLE AIInsights.QueryPatterns;
+    EXEC(N'IF NOT EXISTS (SELECT 1 FROM AIInsights.QueryPatterns) AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE referenced_object_id = OBJECT_ID(N''AIInsights.QueryPatterns'')) DROP TABLE AIInsights.QueryPatterns;');
 GO
 
 IF OBJECT_ID('AIInsights.InsightHistory', 'U') IS NULL

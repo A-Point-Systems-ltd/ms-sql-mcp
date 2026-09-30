@@ -56,68 +56,75 @@ public sealed class InsightsLayerService(
             };
         }
 
-        await using var conn = await _connectionFactory.GetOpenConnectionAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT
-                CASE WHEN EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'AIInsights') THEN 1 ELSE 0 END,
-                CASE WHEN OBJECT_ID(N'dbo.DDL_AuditLog', N'U') IS NOT NULL THEN 1 ELSE 0 END,
-                CASE WHEN EXISTS (SELECT 1 FROM sys.triggers WHERE name = N'DDL_Audit' AND parent_class = 0 AND is_disabled = 0) THEN 1 ELSE 0 END,
-                (SELECT COUNT(*) FROM AIInsights.SchemaInsights),
-                ISNULL((SELECT LastProcessedAuditID FROM AIInsights.DdlChangeWatermark WHERE SingletonId = 1), 0),
-                (SELECT LastProcessedAt FROM AIInsights.DdlChangeWatermark WHERE SingletonId = 1);
-            """;
+        var schemaExists = false;
+        var auditTableExists = false;
+        var triggerEnabled = false;
         try
         {
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            // Existence flags first, in a query that references no AIInsights object, so a database
+            // that only has dbo.DDL_AuditLog + DDL_Audit still reports them correctly.
+            var state = await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false);
+            schemaExists = state.SchemaExists;
+            auditTableExists = state.AuditTableExists;
+            triggerEnabled = state.TriggerEnabled;
+
+            var count = 0;
+            var lastId = 0;
+            DateTime? lastAt = null;
+            if (schemaExists)
             {
-                return new LayerStatus
+                await using var cmd = new SqlCommand(
+                    """
+                    DECLARE @Count INT, @LastId INT, @LastAt DATETIME2;
+                    SELECT @Count = 0, @LastId = 0;
+                    IF OBJECT_ID(N'AIInsights.SchemaInsights', N'U') IS NOT NULL
+                        SELECT @Count = COUNT(*) FROM AIInsights.SchemaInsights;
+                    IF OBJECT_ID(N'AIInsights.DdlChangeWatermark', N'U') IS NOT NULL
+                        SELECT @LastId = LastProcessedAuditID, @LastAt = LastProcessedAt
+                        FROM AIInsights.DdlChangeWatermark
+                        WHERE SingletonId = 1;
+                    SELECT @Count, @LastId, @LastAt;
+                    """,
+                    conn);
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    LayerEnabledViaEnvironment = true,
-                    AiInsightsSchemaExists = false,
-                    DdlAuditTableExists = false,
-                    DdlAuditTriggerEnabled = false,
-                    SchemaInsightsCount = 0,
-                    LastProcessedAuditId = 0,
-                    LastProcessedAt = null
-                };
+                    count = reader.GetInt32(0);
+                    lastId = reader.GetInt32(1);
+                    lastAt = reader.IsDBNull(2) ? null : reader.GetDateTime(2);
+                }
             }
 
             return new LayerStatus
             {
                 LayerEnabledViaEnvironment = true,
-                AiInsightsSchemaExists = reader.GetInt32(0) == 1,
-                DdlAuditTableExists = reader.GetInt32(1) == 1,
-                DdlAuditTriggerEnabled = reader.GetInt32(2) == 1,
-                SchemaInsightsCount = reader.GetInt32(3),
-                LastProcessedAuditId = reader.GetInt32(4),
-                LastProcessedAt = reader.IsDBNull(5) ? null : reader.GetDateTime(5)
+                AiInsightsSchemaExists = schemaExists,
+                DdlAuditTableExists = auditTableExists,
+                DdlAuditTriggerEnabled = triggerEnabled,
+                SchemaInsightsCount = count,
+                LastProcessedAuditId = lastId,
+                LastProcessedAt = lastAt
             };
         }
-        catch (SqlException ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogDebug(ex, "Insights status query failed (layer may not be installed).");
+            if (ex is SqlException)
+            {
+                _logger.LogDebug(ex, "Insights status query failed (layer may not be installed).");
+            }
+            else
+            {
+                _logger.LogWarning(ex, "GetStatusAsync failed.");
+            }
+
             return new LayerStatus
             {
                 LayerEnabledViaEnvironment = true,
-                AiInsightsSchemaExists = false,
-                DdlAuditTableExists = false,
-                DdlAuditTriggerEnabled = false,
-                SchemaInsightsCount = 0,
-                LastProcessedAuditId = 0,
-                LastProcessedAt = null
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "GetStatusAsync failed.");
-            return new LayerStatus
-            {
-                LayerEnabledViaEnvironment = true,
-                AiInsightsSchemaExists = false,
-                DdlAuditTableExists = false,
-                DdlAuditTriggerEnabled = false,
+                AiInsightsSchemaExists = schemaExists,
+                DdlAuditTableExists = auditTableExists,
+                DdlAuditTriggerEnabled = triggerEnabled,
                 SchemaInsightsCount = 0,
                 LastProcessedAuditId = 0,
                 LastProcessedAt = null
@@ -129,7 +136,7 @@ public sealed class InsightsLayerService(
     {
         if (!IsEnabled)
         {
-            return await NoOpInsightsLayerService.Instance.InstallLayerAsync(cancellationToken);
+            return await NoOpInsightsLayerService.Instance.InstallLayerAsync(cancellationToken).ConfigureAwait(false);
         }
 
         try
@@ -138,29 +145,121 @@ public sealed class InsightsLayerService(
             var schemaSql = await ReadEmbeddedResourceAsync(assembly, SchemaScriptResource, cancellationToken).ConfigureAwait(false);
             await ExecuteScriptBatchesAsync(schemaSql, cancellationToken).ConfigureAwait(false);
 
-            await using (var conn = await _connectionFactory.GetOpenConnectionAsync())
+            InstallState state;
+            await using (var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false))
             {
+                // An existing DDL_Audit is never replaced: it may be a client's own trigger.
                 if (await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false)
-                    && !await DdlAuditTriggerExistsAsync(conn, cancellationToken).ConfigureAwait(false))
+                    && !(await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false)).TriggerExists)
                 {
                     var triggerSql = await ReadEmbeddedResourceAsync(assembly, TriggerScriptResource, cancellationToken).ConfigureAwait(false);
                     await ExecuteScriptBatchesAsync(triggerSql, cancellationToken).ConfigureAwait(false);
                 }
+
+                state = await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false);
             }
 
-            return new DbOperationResult(success: true, data: new { installed = true, message = "AIInsights schema, tables, DDL_AuditLog, and DDL_Audit trigger applied (idempotent)." });
+            var gaps = DescribeInstallGaps(state);
+            if (gaps is not null)
+            {
+                _logger.LogError("InstallLayerAsync finished but verification failed: {Gaps}", gaps);
+                return new DbOperationResult(
+                    success: false,
+                    error: $"Install did not complete: {gaps}. {InstallPermissionHint}",
+                    data: new
+                    {
+                        installed = false,
+                        aiInsightsSchemaExists = state.SchemaExists,
+                        coreTablesExist = state.CoreTablesExist,
+                        ddlAuditTableExists = state.AuditTableExists,
+                        ddlAuditTriggerExists = state.TriggerExists,
+                        ddlAuditTriggerEnabled = state.TriggerEnabled
+                    });
+            }
+
+            return new DbOperationResult(success: true, data: new { installed = true, message = "AIInsights schema, tables, DDL_AuditLog, and DDL_Audit trigger applied and verified (idempotent)." });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogError(ex, "InstallLayerAsync failed.");
             var msg = ex.Message;
             if (msg.Contains("DDL", StringComparison.OrdinalIgnoreCase) || msg.Contains("permission", StringComparison.OrdinalIgnoreCase))
             {
-                msg += " Hint: installing the database DDL trigger requires ALTER ANY DATABASE DDL TRIGGER (or membership in ddl_admin / sysadmin).";
+                msg += " " + InstallPermissionHint;
             }
 
-            return new DbOperationResult(success: false, error: msg);
+            return new DbOperationResult(success: false, error: msg, data: new { installed = false });
         }
+    }
+
+    private const string InstallPermissionHint =
+        "Hint: installing the database DDL trigger requires ALTER ANY DATABASE DDL TRIGGER (or membership in ddl_admin / sysadmin).";
+
+    /// <summary>Existence of every object the install creates.</summary>
+    internal sealed record InstallState(
+        bool SchemaExists,
+        bool CoreTablesExist,
+        bool AuditTableExists,
+        bool TriggerExists,
+        bool TriggerEnabled);
+
+    /// <summary>Returns null when the install is complete, otherwise a short list of what is missing.</summary>
+    internal static string? DescribeInstallGaps(InstallState state)
+    {
+        var gaps = new List<string>();
+        if (!state.SchemaExists)
+        {
+            gaps.Add("AIInsights schema is missing");
+        }
+        else if (!state.CoreTablesExist)
+        {
+            gaps.Add("one or more AIInsights tables (SchemaInsights, InsightHistory, DdlChangeWatermark) are missing");
+        }
+
+        if (!state.AuditTableExists)
+        {
+            gaps.Add("dbo.DDL_AuditLog is missing");
+        }
+
+        if (!state.TriggerExists)
+        {
+            gaps.Add("database trigger DDL_Audit is missing");
+        }
+        else if (!state.TriggerEnabled)
+        {
+            gaps.Add("database trigger DDL_Audit is disabled");
+        }
+
+        return gaps.Count == 0 ? null : string.Join("; ", gaps);
+    }
+
+    /// <summary>Reads existence flags only; references no AIInsights object, so it compiles on any database.</summary>
+    private static async Task<InstallState> ReadInstallStateAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        await using var cmd = new SqlCommand(
+            """
+            SELECT
+                CASE WHEN SCHEMA_ID(N'AIInsights') IS NOT NULL THEN 1 ELSE 0 END,
+                CASE WHEN OBJECT_ID(N'AIInsights.SchemaInsights', N'U') IS NOT NULL
+                       AND OBJECT_ID(N'AIInsights.InsightHistory', N'U') IS NOT NULL
+                       AND OBJECT_ID(N'AIInsights.DdlChangeWatermark', N'U') IS NOT NULL THEN 1 ELSE 0 END,
+                CASE WHEN OBJECT_ID(N'dbo.DDL_AuditLog', N'U') IS NOT NULL THEN 1 ELSE 0 END,
+                CASE WHEN EXISTS (SELECT 1 FROM sys.triggers WHERE name = N'DDL_Audit' AND parent_class = 0) THEN 1 ELSE 0 END,
+                CASE WHEN EXISTS (SELECT 1 FROM sys.triggers WHERE name = N'DDL_Audit' AND parent_class = 0 AND is_disabled = 0) THEN 1 ELSE 0 END;
+            """,
+            conn);
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return new InstallState(false, false, false, false, false);
+        }
+
+        return new InstallState(
+            reader.GetInt32(0) == 1,
+            reader.GetInt32(1) == 1,
+            reader.GetInt32(2) == 1,
+            reader.GetInt32(3) == 1,
+            reader.GetInt32(4) == 1);
     }
 
     public async Task<(SchemaInsight? insight, InsightFreshness freshness)> GetInsightForObjectAsync(
@@ -175,7 +274,7 @@ public sealed class InsightsLayerService(
         }
 
         var schema = NormalizeSchema(schemaName);
-        await using var conn = await _connectionFactory.GetOpenConnectionAsync();
+        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var insight = await TryLoadInsightRowAsync(conn, objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
         if (insight is null)
         {
@@ -185,6 +284,12 @@ public sealed class InsightsLayerService(
         var live = await TryComputeLiveFingerprintAsync(conn, objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
         if (live.State == LiveObjectState.Missing)
         {
+            if (!await CanTrustObjectMissingAsync(conn, schema, cancellationToken).ConfigureAwait(false))
+            {
+                // Catalog views hide objects the login cannot see; keep the shared insight.
+                return (insight, InsightFreshness.AccessDenied);
+            }
+
             await ArchiveInsightAsync(conn, insight.InsightId, "ObjectMissing", "GetInsight", null, cancellationToken).ConfigureAwait(false);
             return (null, InsightFreshness.StaleArchived);
         }
@@ -268,11 +373,13 @@ public sealed class InsightsLayerService(
             return (existing, existingFreshness);
         }
 
+        // AnalyzedBeforeServerToday is computed in SQL against GETDATE(), the same clock that wrote
+        // LastAnalyzed, so the once-per-day rule does not depend on the MCP host's time zone.
         var shouldRefreshAutoMechanical = existing is not null
             && existingFreshness == InsightFreshness.Fresh
             && IsAutoMechanical(existing)
             && InsightsLayerEnvironment.IsAutoPopulationRefreshEnabled
-            && existing.LastAnalyzed.Date < DateTime.Now.Date;
+            && existing.AnalyzedBeforeServerToday;
 
         if (existing is not null && !shouldRefreshAutoMechanical)
         {
@@ -281,7 +388,7 @@ public sealed class InsightsLayerService(
 
         try
         {
-            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             var live = await TryComputeLiveFingerprintAsync(conn, objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
             if (live.State != LiveObjectState.Found)
             {
@@ -295,7 +402,7 @@ public sealed class InsightsLayerService(
                 _logger.LogDebug("Auto baseline upsert skipped for {Type} {Schema}.{Object}: {Error}", objectType, schema, objectName, upsert.Error);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogDebug(ex, "EnsureBaselineForObjectAsync failed for {Type} {Schema}.{Object}", objectType, schema, objectName);
         }
@@ -307,7 +414,7 @@ public sealed class InsightsLayerService(
     {
         if (!IsEnabled)
         {
-            return await NoOpInsightsLayerService.Instance.UpsertInsightAsync(input, cancellationToken);
+            return await NoOpInsightsLayerService.Instance.UpsertInsightAsync(input, cancellationToken).ConfigureAwait(false);
         }
 
         var schema = NormalizeSchema(input.SchemaName);
@@ -315,113 +422,211 @@ public sealed class InsightsLayerService(
 
         try
         {
-            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
-            var live = await TryComputeLiveFingerprintAsync(conn, input.ObjectType, schema, input.ObjectName, cancellationToken).ConfigureAwait(false);
-            DateTime? modifyDate = live.State == LiveObjectState.Found ? live.ModifyDate : null;
-            string? fingerprint = live.State == LiveObjectState.Found ? live.Fingerprint : null;
-            int? objectId = live.State == LiveObjectState.Found ? live.ObjectId : null;
-
-            await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-            try
+            for (var attempt = 1; ; attempt++)
             {
-                await using (var updateCmd = new SqlCommand(
-                    """
-                    UPDATE AIInsights.SchemaInsights
-                    SET Description = @Description,
-                        BusinessPurpose = @BusinessPurpose,
-                        DataPatterns = @DataPatterns,
-                        UsageGuidelines = @UsageGuidelines,
-                        RelatedObjects = @RelatedObjects,
-                        LLMModel = @LLMModel,
-                        Confidence = @Confidence,
-                        LastAnalyzed = GETDATE(),
-                        AnalyzedBy = @AnalyzedBy,
-                        Version = Version + 1,
-                        ModifyDateAtAnalysis = @ModifyDateAtAnalysis,
-                        ObjectIdAtAnalysis = @ObjectIdAtAnalysis,
-                        SchemaFingerprint = @SchemaFingerprint
-                    WHERE ObjectType = @ObjectType
-                      AND SchemaName = @SchemaName
-                      AND ObjectName = @ObjectName
-                      AND ((@ColumnName IS NULL AND ColumnName IS NULL) OR (ColumnName = @ColumnName));
-                    """,
-                    conn,
-                    tx))
+                try
                 {
-                    AddUpsertParameters(updateCmd, input, schema, columnName, modifyDate, objectId, fingerprint);
-                    var updated = await updateCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    if (updated == 0)
-                    {
-                        await using var insertCmd = new SqlCommand(
-                            """
-                            INSERT INTO AIInsights.SchemaInsights (
-                                ObjectType, SchemaName, ObjectName, ColumnName,
-                                Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
-                                LLMModel, Confidence, AnalyzedBy, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint)
-                            VALUES (
-                                @ObjectType, @SchemaName, @ObjectName, @ColumnName,
-                                @Description, @BusinessPurpose, @DataPatterns, @UsageGuidelines, @RelatedObjects,
-                                @LLMModel, @Confidence, @AnalyzedBy, @ModifyDateAtAnalysis, @ObjectIdAtAnalysis, @SchemaFingerprint);
-                            """,
-                            conn,
-                            tx);
-                        AddUpsertParameters(insertCmd, input, schema, columnName, modifyDate, objectId, fingerprint);
-                        _ = await insertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    }
+                    await UpsertOnceAsync(input, schema, columnName, cancellationToken).ConfigureAwait(false);
+                    return new DbOperationResult(success: true, data: new { schema, input.ObjectName, input.ObjectType });
                 }
-
-                await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return new DbOperationResult(success: true, data: new { schema, input.ObjectName, input.ObjectType });
-            }
-            catch
-            {
-                await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                throw;
+                catch (SqlException ex) when (ex.Number == SqlDeadlockVictimError && attempt < MaxUpsertAttempts && !cancellationToken.IsCancellationRequested)
+                {
+                    // Range locks on neighbouring keys can still deadlock; the victim was rolled back, so retry.
+                    _logger.LogDebug(ex, "UpsertInsightAsync deadlock on attempt {Attempt}; retrying.", attempt);
+                    await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt), cancellationToken).ConfigureAwait(false);
+                }
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogError(ex, "UpsertInsightAsync failed.");
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }
 
-    public async Task ProcessDdlChangesAsync(CancellationToken cancellationToken = default)
+    private const int SqlDeadlockVictimError = 1205;
+    private const int MaxUpsertAttempts = 3;
+    private const int UpsertKeyLockTimeoutMs = 15000;
+
+    /// <summary>
+    /// App-lock resource for one insight key. Hashed because sp_getapplock resources are limited to
+    /// 255 characters; upper-cased because the default collations compare names case-insensitively.
+    /// </summary>
+    internal static string UpsertLockResource(string objectType, string schema, string objectName, string? columnName) =>
+        "AIInsights.Upsert:" + ComputeSha256Hex(
+            string.Join('\u001F', objectType.Trim(), schema, objectName, columnName ?? string.Empty).ToUpperInvariant());
+
+    private async Task UpsertOnceAsync(SchemaInsight input, string schema, string? columnName, CancellationToken cancellationToken)
+    {
+        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var live = await TryComputeLiveFingerprintAsync(conn, input.ObjectType, schema, input.ObjectName, cancellationToken).ConfigureAwait(false);
+        DateTime? modifyDate = live.State == LiveObjectState.Found ? live.ModifyDate : null;
+        string? fingerprint = live.State == LiveObjectState.Found ? live.Fingerprint : null;
+        int? objectId = live.State == LiveObjectState.Found ? live.ObjectId : null;
+
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Same-key upserts queue on a transaction-owned app lock. UPDLOCK + HOLDLOCK alone is not
+            // enough: two sessions can both hold the compatible range lock and then both INSERT.
+            await using (var lockCmd = new SqlCommand(
+                """
+                DECLARE @Result INT;
+                EXEC @Result = sp_getapplock
+                    @Resource = @LockResource,
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = @LockTimeoutMs;
+                SELECT @Result;
+                """,
+                conn,
+                tx))
+            {
+                lockCmd.Parameters.Add("@LockResource", SqlDbType.NVarChar, 255).Value = UpsertLockResource(input.ObjectType, schema, input.ObjectName, columnName);
+                lockCmd.Parameters.AddWithValue("@LockTimeoutMs", UpsertKeyLockTimeoutMs);
+                var lockResult = await lockCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (lockResult is not int granted || granted < 0)
+                {
+                    throw new TimeoutException($"Another session is updating the insight for {schema}.{input.ObjectName}; try again.");
+                }
+            }
+
+            await using (var updateCmd = new SqlCommand(
+                """
+                UPDATE AIInsights.SchemaInsights WITH (UPDLOCK, HOLDLOCK)
+                SET Description = @Description,
+                    BusinessPurpose = @BusinessPurpose,
+                    DataPatterns = @DataPatterns,
+                    UsageGuidelines = @UsageGuidelines,
+                    RelatedObjects = @RelatedObjects,
+                    LLMModel = @LLMModel,
+                    Confidence = @Confidence,
+                    LastAnalyzed = GETDATE(),
+                    AnalyzedBy = @AnalyzedBy,
+                    Version = Version + 1,
+                    ModifyDateAtAnalysis = @ModifyDateAtAnalysis,
+                    ObjectIdAtAnalysis = @ObjectIdAtAnalysis,
+                    SchemaFingerprint = @SchemaFingerprint
+                WHERE ObjectType = @ObjectType
+                  AND SchemaName = @SchemaName
+                  AND ObjectName = @ObjectName
+                  AND ((@ColumnName IS NULL AND ColumnName IS NULL) OR (ColumnName = @ColumnName));
+                """,
+                conn,
+                tx))
+            {
+                AddUpsertParameters(updateCmd, input, schema, columnName, modifyDate, objectId, fingerprint);
+                var updated = await updateCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (updated == 0)
+                {
+                    await using var insertCmd = new SqlCommand(
+                        """
+                        INSERT INTO AIInsights.SchemaInsights (
+                            ObjectType, SchemaName, ObjectName, ColumnName,
+                            Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
+                            LLMModel, Confidence, AnalyzedBy, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint)
+                        VALUES (
+                            @ObjectType, @SchemaName, @ObjectName, @ColumnName,
+                            @Description, @BusinessPurpose, @DataPatterns, @UsageGuidelines, @RelatedObjects,
+                            @LLMModel, @Confidence, @AnalyzedBy, @ModifyDateAtAnalysis, @ObjectIdAtAnalysis, @SchemaFingerprint);
+                        """,
+                        conn,
+                        tx);
+                    AddUpsertParameters(insertCmd, input, schema, columnName, modifyDate, objectId, fingerprint);
+                    _ = await insertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(tx, _logger).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Rolls back without letting a rollback failure (broken connection, cancelled token) replace
+    /// the exception that caused it; the caller rethrows the original.
+    /// </summary>
+    internal static async Task RollbackQuietlyAsync(System.Data.Common.DbTransaction tx, ILogger logger)
+    {
+        try
+        {
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception rollbackEx)
+        {
+            logger.LogWarning(rollbackEx, "Transaction rollback failed; the original error is rethrown.");
+        }
+    }
+
+    /// <summary>Result of one DDL reconciliation attempt.</summary>
+    internal enum DdlProcessingOutcome
+    {
+        Disabled,
+        NotInstalled,
+        Completed,
+        SkippedBusy,
+        Failed
+    }
+
+    internal static string DescribeOutcome(DdlProcessingOutcome outcome) => outcome switch
+    {
+        DdlProcessingOutcome.Disabled => "disabled",
+        DdlProcessingOutcome.NotInstalled => "not_installed",
+        DdlProcessingOutcome.Completed => "completed",
+        DdlProcessingOutcome.SkippedBusy => "skipped_busy",
+        _ => "failed"
+    };
+
+    private const string ProcessingLockResource = "AIInsights.ProcessDdlChanges";
+    private const int FingerprintScanBatchSize = 500;
+
+    /// <summary>
+    /// InsightID after which the next fingerprint scan starts. In memory only: after a restart the
+    /// rotation starts again from the beginning, which is harmless.
+    /// </summary>
+    private int _fingerprintScanCursor;
+
+    public async Task<bool> ProcessDdlChangesAsync(CancellationToken cancellationToken = default) =>
+        await RunDdlProcessingAsync(cancellationToken).ConfigureAwait(false) != DdlProcessingOutcome.SkippedBusy;
+
+    private async Task<DdlProcessingOutcome> RunDdlProcessingAsync(CancellationToken cancellationToken)
     {
         if (!IsEnabled)
         {
-            return;
+            return DdlProcessingOutcome.Disabled;
         }
 
         try
         {
-            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
-            if (!await AiInsightsInstalledAsync(conn, cancellationToken).ConfigureAwait(false))
+            List<ObjectIdentity> archivedObjects;
+            await using (var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false))
             {
-                return;
-            }
-
-            var archivedObjects = new List<ObjectIdentity>();
-
-            if (await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false)
-                && await DdlWatermarkTableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
-            {
-                var lastId = await ReadWatermarkAsync(conn, cancellationToken).ConfigureAwait(false);
-                var newRows = await ReadDdlAuditRowsAsync(conn, lastId, cancellationToken).ConfigureAwait(false);
-                if (newRows.Count > 0)
+                if (!await AiInsightsInstalledAsync(conn, cancellationToken).ConfigureAwait(false))
                 {
-                    var maxId = lastId;
-                    foreach (var row in newRows)
-                    {
-                        maxId = Math.Max(maxId, row.Id);
-                        archivedObjects.AddRange(await ArchiveInsightsForDdlObjectAsync(conn, row, cancellationToken).ConfigureAwait(false));
-                    }
+                    return DdlProcessingOutcome.NotInstalled;
+                }
 
-                    await UpdateWatermarkAsync(conn, maxId, cancellationToken).ConfigureAwait(false);
+                // One run at a time per database, across every MCP server process: the watermark
+                // read/advance and the archive steps are not safe to interleave.
+                if (!await TryAcquireProcessingLockAsync(conn, cancellationToken).ConfigureAwait(false))
+                {
+                    _logger.LogDebug("ProcessDdlChanges skipped: another run holds the {Resource} app lock.", ProcessingLockResource);
+                    return DdlProcessingOutcome.SkippedBusy;
+                }
+
+                try
+                {
+                    archivedObjects = await ProcessDdlChangesUnderLockAsync(conn, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await ReleaseProcessingLockAsync(conn).ConfigureAwait(false);
                 }
             }
-
-            archivedObjects.AddRange(await ScanFingerprintsAndArchiveAsync(conn, take: 500, cancellationToken).ConfigureAwait(false));
 
             if (InsightsLayerEnvironment.IsAutoPopulationEnabled)
             {
@@ -430,10 +635,84 @@ public sealed class InsightsLayerService(
                     _ = await EnsureBaselineForObjectAsync(obj.ObjectType, obj.SchemaName, obj.ObjectName, cancellationToken).ConfigureAwait(false);
                 }
             }
+
+            return DdlProcessingOutcome.Completed;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "ProcessDdlChangesAsync failed (non-fatal).");
+            return DdlProcessingOutcome.Failed;
+        }
+    }
+
+    private async Task<List<ObjectIdentity>> ProcessDdlChangesUnderLockAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        var archivedObjects = new List<ObjectIdentity>();
+        var auditRowsProcessed = false;
+
+        if (await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false)
+            && await DdlWatermarkTableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
+        {
+            var lastId = await ReadWatermarkAsync(conn, cancellationToken).ConfigureAwait(false);
+            var newRows = await ReadDdlAuditRowsAsync(conn, lastId, cancellationToken).ConfigureAwait(false);
+            if (newRows.Count > 0)
+            {
+                var maxId = lastId;
+                foreach (var row in newRows)
+                {
+                    maxId = Math.Max(maxId, row.Id);
+                    archivedObjects.AddRange(await ArchiveInsightsForDdlObjectAsync(conn, row, cancellationToken).ConfigureAwait(false));
+                }
+
+                await UpdateWatermarkAsync(conn, maxId, cancellationToken).ConfigureAwait(false);
+                auditRowsProcessed = true;
+            }
+        }
+
+        // Fallback only, as the refresh tool documents: when audit rows drove this run, the scan
+        // waits for a later run with nothing pending.
+        if (!auditRowsProcessed)
+        {
+            archivedObjects.AddRange(await ScanFingerprintsAndArchiveAsync(conn, FingerprintScanBatchSize, cancellationToken).ConfigureAwait(false));
+        }
+
+        return archivedObjects;
+    }
+
+    private static async Task<bool> TryAcquireProcessingLockAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        await using var cmd = new SqlCommand(
+            """
+            DECLARE @Result INT;
+            EXEC @Result = sp_getapplock
+                @Resource = @LockResource,
+                @LockMode = N'Exclusive',
+                @LockOwner = N'Session',
+                @LockTimeout = 0;
+            SELECT @Result;
+            """,
+            conn);
+        cmd.Parameters.Add("@LockResource", SqlDbType.NVarChar, 255).Value = ProcessingLockResource;
+        var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return scalar is int result && result >= 0;
+    }
+
+    private async Task ReleaseProcessingLockAsync(SqlConnection conn)
+    {
+        try
+        {
+            await using var cmd = new SqlCommand(
+                "EXEC sp_releaseapplock @Resource = @LockResource, @LockOwner = N'Session';",
+                conn);
+            cmd.Parameters.Add("@LockResource", SqlDbType.NVarChar, 255).Value = ProcessingLockResource;
+            _ = await cmd.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "ProcessDdlChangesAsync failed (non-fatal).");
+            // A session-owned app lock lives as long as the session. Evict pooled sessions so a lock
+            // that could not be released is not kept alive by an idle pooled connection.
+            _logger.LogWarning(ex, "Releasing the {Resource} app lock failed; clearing the connection pool.", ProcessingLockResource);
+            SqlConnection.ClearPool(conn);
         }
     }
 
@@ -441,13 +720,13 @@ public sealed class InsightsLayerService(
     {
         if (!IsEnabled)
         {
-            return await NoOpInsightsLayerService.Instance.ListInsightsAsync(schemaName, objectType, take, cancellationToken);
+            return await NoOpInsightsLayerService.Instance.ListInsightsAsync(schemaName, objectType, take, cancellationToken).ConfigureAwait(false);
         }
 
         take = Math.Clamp(take, 1, 2000);
         try
         {
-            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = new SqlCommand(
                 """
                 SELECT TOP (@Take)
@@ -472,7 +751,7 @@ public sealed class InsightsLayerService(
 
             return new DbOperationResult(success: true, data: list);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogError(ex, "ListInsightsAsync failed.");
             return new DbOperationResult(success: false, error: ex.Message);
@@ -483,13 +762,13 @@ public sealed class InsightsLayerService(
     {
         if (!IsEnabled)
         {
-            return await NoOpInsightsLayerService.Instance.GetHistoryAsync(schemaName, objectName, take, cancellationToken);
+            return await NoOpInsightsLayerService.Instance.GetHistoryAsync(schemaName, objectName, take, cancellationToken).ConfigureAwait(false);
         }
 
         take = Math.Clamp(take, 1, 2000);
         try
         {
-            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = new SqlCommand(
                 """
                 SELECT TOP (@Take)
@@ -521,13 +800,14 @@ public sealed class InsightsLayerService(
                     ["archiveReason"] = reader.IsDBNull(7) ? null : reader.GetString(7),
                     ["archivedByEvent"] = reader.IsDBNull(8) ? null : reader.GetString(8),
                     ["sourceDdlAuditId"] = reader.IsDBNull(9) ? null : reader.GetInt32(9),
+                    // UTC: InsightHistory.ArchivedAt defaults to SYSUTCDATETIME().
                     ["archivedAt"] = reader.GetDateTime(10)
                 });
             }
 
             return new DbOperationResult(success: true, data: list);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogError(ex, "GetHistoryAsync failed.");
             return new DbOperationResult(success: false, error: ex.Message);
@@ -538,18 +818,18 @@ public sealed class InsightsLayerService(
     {
         if (!IsEnabled)
         {
-            return await NoOpInsightsLayerService.Instance.RefreshInsightsAsync(cancellationToken);
+            return await NoOpInsightsLayerService.Instance.RefreshInsightsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         try
         {
-            await ProcessDdlChangesAsync(cancellationToken).ConfigureAwait(false);
-            await using var conn = await _connectionFactory.GetOpenConnectionAsync();
+            var outcome = await RunDdlProcessingAsync(cancellationToken).ConfigureAwait(false);
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             var recent = await QueryRecentInsightsAsync(conn, cancellationToken).ConfigureAwait(false);
             var topPatterns = new List<Dictionary<string, object?>>();
-            return new DbOperationResult(success: true, data: new { recentInsights = recent, topQueryPatterns = topPatterns });
+            return new DbOperationResult(success: true, data: new { recentInsights = recent, topQueryPatterns = topPatterns, ddlProcessing = DescribeOutcome(outcome) });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogError(ex, "RefreshInsightsAsync failed.");
             return new DbOperationResult(success: false, error: ex.Message);
@@ -763,6 +1043,10 @@ public sealed class InsightsLayerService(
         return related.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
+    /// <summary>
+    /// Insights analyzed in the last 7 days. The window is computed in SQL with GETDATE(), the clock
+    /// that writes LastAnalyzed, not with the MCP host clock.
+    /// </summary>
     private static async Task<List<Dictionary<string, object?>>> QueryRecentInsightsAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
         var list = new List<(string Type, string Name, string? Description, DateTime Date, string? By)>();
@@ -808,8 +1092,9 @@ public sealed class InsightsLayerService(
 
     private async Task ExecuteScriptBatchesAsync(string script, CancellationToken cancellationToken)
     {
-        await using var conn = await _connectionFactory.GetOpenConnectionAsync();
-        conn.FireInfoMessageEventOnUserErrors = true;
+        // Errors must surface as SqlException: FireInfoMessageEventOnUserErrors would turn severity <= 16
+        // errors (for example permission denied on CREATE TRIGGER) into dropped info messages.
+        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         foreach (var batch in SqlBatchSplitter.SplitBatches(script))
         {
             if (string.IsNullOrWhiteSpace(batch))
@@ -850,15 +1135,6 @@ public sealed class InsightsLayerService(
     private static async Task<bool> DdlWatermarkTableExistsAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
         await using var cmd = new SqlCommand("SELECT CASE WHEN OBJECT_ID(N'AIInsights.DdlChangeWatermark', N'U') IS NULL THEN 0 ELSE 1 END;", conn);
-        var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        return scalar is int i && i == 1;
-    }
-
-    private static async Task<bool> DdlAuditTriggerExistsAsync(SqlConnection conn, CancellationToken cancellationToken)
-    {
-        await using var cmd = new SqlCommand(
-            "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.triggers WHERE name = N'DDL_Audit' AND parent_class = 0) THEN 1 ELSE 0 END;",
-            conn);
         var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return scalar is int i && i == 1;
     }
@@ -1149,39 +1425,95 @@ public sealed class InsightsLayerService(
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Where the next scan starts. A full batch means rows may remain past the last one scanned, so
+    /// the next run continues from there; a short batch means every candidate was covered, so the
+    /// rotation restarts from the beginning.
+    /// </summary>
+    internal static int NextFingerprintScanCursor(IReadOnlyList<int> scannedIdsInScanOrder, int take) =>
+        scannedIdsInScanOrder.Count == 0 || scannedIdsInScanOrder.Count < take
+            ? 0
+            : scannedIdsInScanOrder[^1];
+
+    private sealed record FingerprintScanRow(
+        int Id,
+        string Type,
+        string? Schema,
+        string Name,
+        int? ObjectIdAtAnalysis,
+        DateTime? ModifyDateAtAnalysis,
+        string? SchemaFingerprint);
+
+    /// <summary>
+    /// Background staleness check. Rows whose object still exists with the same object_id, name and
+    /// modify_date (within <see cref="ModifyDateTolerance"/>) are filtered out in SQL; only the rest
+    /// get a live fingerprint. The scan starts after <see cref="_fingerprintScanCursor"/> and wraps,
+    /// so every row is eventually covered.
+    /// </summary>
     private async Task<List<ObjectIdentity>> ScanFingerprintsAndArchiveAsync(SqlConnection conn, int take, CancellationToken cancellationToken)
     {
+        var cursor = Volatile.Read(ref _fingerprintScanCursor);
         await using var cmd = new SqlCommand(
             """
-            SELECT TOP (@Take) InsightID, ObjectType, SchemaName, ObjectName, ObjectIdAtAnalysis
-            FROM AIInsights.SchemaInsights
-            WHERE ColumnName IS NULL
-            ORDER BY InsightID ASC;
+            SELECT TOP (@Take)
+                si.InsightID, si.ObjectType, si.SchemaName, si.ObjectName,
+                si.ObjectIdAtAnalysis, si.ModifyDateAtAnalysis, si.SchemaFingerprint
+            FROM AIInsights.SchemaInsights si
+            LEFT JOIN sys.objects o ON o.object_id = si.ObjectIdAtAnalysis
+            WHERE si.ColumnName IS NULL
+              AND (
+                    si.ObjectIdAtAnalysis IS NULL
+                    OR si.ModifyDateAtAnalysis IS NULL
+                    OR o.object_id IS NULL
+                    OR o.name <> si.ObjectName
+                    OR SCHEMA_NAME(o.schema_id) <> ISNULL(si.SchemaName, N'dbo')
+                    OR o.modify_date < DATEADD(millisecond, -@ToleranceMs, si.ModifyDateAtAnalysis)
+                    OR o.modify_date > DATEADD(millisecond, @ToleranceMs, si.ModifyDateAtAnalysis)
+                  )
+            ORDER BY CASE WHEN si.InsightID > @Cursor THEN 0 ELSE 1 END, si.InsightID;
             """,
             conn);
         cmd.Parameters.AddWithValue("@Take", take);
+        cmd.Parameters.AddWithValue("@Cursor", cursor);
+        cmd.Parameters.AddWithValue("@ToleranceMs", (int)ModifyDateTolerance.TotalMilliseconds);
 
-        var rows = new List<(int Id, string Type, string? Schema, string Name, int? ObjectIdAtAnalysis)>();
+        var rows = new List<FingerprintScanRow>();
         var archived = new List<ObjectIdentity>();
         await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                rows.Add((
+                rows.Add(new FingerprintScanRow(
                     reader.GetInt32(0),
                     reader.GetString(1),
                     reader.IsDBNull(2) ? null : reader.GetString(2),
                     reader.GetString(3),
-                    reader.IsDBNull(4) ? null : reader.GetInt32(4)));
+                    reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                    reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6)));
             }
         }
 
+        Volatile.Write(ref _fingerprintScanCursor, NextFingerprintScanCursor(rows.Select(r => r.Id).ToList(), take));
+
+        var missingTrustedBySchema = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)
         {
             var schema = NormalizeSchema(row.Schema);
             var live = await TryComputeLiveFingerprintAsync(conn, row.Type, schema, row.Name, cancellationToken).ConfigureAwait(false);
             if (live.State == LiveObjectState.Missing)
             {
+                if (!missingTrustedBySchema.TryGetValue(schema, out var trusted))
+                {
+                    trusted = await CanTrustObjectMissingAsync(conn, schema, cancellationToken).ConfigureAwait(false);
+                    missingTrustedBySchema[schema] = trusted;
+                }
+
+                if (!trusted)
+                {
+                    continue;
+                }
+
                 await ArchiveInsightAsync(conn, row.Id, "ObjectMissing", "FingerprintScan", null, cancellationToken).ConfigureAwait(false);
                 archived.Add(new ObjectIdentity(row.Type, schema, row.Name));
                 continue;
@@ -1192,24 +1524,10 @@ public sealed class InsightsLayerService(
                 continue;
             }
 
-            await using var readCmd = new SqlCommand(
-                "SELECT ModifyDateAtAnalysis, SchemaFingerprint FROM AIInsights.SchemaInsights WHERE InsightID = @Id;",
-                conn);
-            readCmd.Parameters.AddWithValue("@Id", row.Id);
-            await using var r2 = await readCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            if (!await r2.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                continue;
-            }
-
-            var storedModify = r2.IsDBNull(0) ? (DateTime?)null : r2.GetDateTime(0);
-            var storedFp = r2.IsDBNull(1) ? null : r2.GetString(1);
-            await r2.CloseAsync().ConfigureAwait(false);
-
             var stale = IsStaleAgainstLive(
                 row.ObjectIdAtAnalysis,
-                storedModify,
-                storedFp,
+                row.ModifyDateAtAnalysis,
+                row.SchemaFingerprint,
                 live.ObjectId,
                 live.ModifyDate,
                 live.Fingerprint);
@@ -1221,6 +1539,27 @@ public sealed class InsightsLayerService(
         }
 
         return archived;
+    }
+
+    /// <summary>
+    /// Catalog views only list objects the login can see, so "not found" proves the object is gone
+    /// only when the login can see all metadata in the schema: db_owner, or VIEW DEFINITION on the
+    /// schema (granted directly or inherited from the database). Otherwise the caller must not archive.
+    /// </summary>
+    private static async Task<bool> CanTrustObjectMissingAsync(SqlConnection conn, string schema, CancellationToken cancellationToken)
+    {
+        await using var cmd = new SqlCommand(
+            """
+            SELECT CASE
+                WHEN IS_MEMBER(N'db_owner') = 1 THEN 1
+                WHEN HAS_PERMS_BY_NAME(QUOTENAME(@Schema), N'SCHEMA', N'VIEW DEFINITION') = 1 THEN 1
+                ELSE 0
+            END;
+            """,
+            conn);
+        cmd.Parameters.Add("@Schema", SqlDbType.NVarChar, 128).Value = schema;
+        var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return scalar is int i && i == 1;
     }
 
     private async Task ArchiveInsightAsync(SqlConnection conn, int insightId, string reason, string archivedByEvent, int? sourceDdlAuditId, CancellationToken cancellationToken)
@@ -1263,7 +1602,7 @@ public sealed class InsightsLayerService(
         }
         catch
         {
-            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await RollbackQuietlyAsync(tx, _logger).ConfigureAwait(false);
             throw;
         }
     }
@@ -1275,7 +1614,8 @@ public sealed class InsightsLayerService(
             SELECT TOP (1)
                 InsightID, ObjectType, SchemaName, ObjectName, ColumnName,
                 Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
-                LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint
+                LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint,
+                CASE WHEN CAST(LastAnalyzed AS DATE) < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END AS AnalyzedBeforeServerToday
             FROM AIInsights.SchemaInsights
             WHERE ObjectType = @ObjectType
               AND ObjectName = @ObjectName
@@ -1317,7 +1657,8 @@ public sealed class InsightsLayerService(
             Version = reader.GetInt32(14),
             ModifyDateAtAnalysis = reader.IsDBNull(15) ? null : reader.GetDateTime(15),
             ObjectIdAtAnalysis = reader.IsDBNull(16) ? null : reader.GetInt32(16),
-            SchemaFingerprint = reader.IsDBNull(17) ? null : reader.GetString(17)
+            SchemaFingerprint = reader.IsDBNull(17) ? null : reader.GetString(17),
+            AnalyzedBeforeServerToday = reader.GetInt32(18) == 1
         };
 
     private static async Task<LiveFingerprintResult> TryComputeLiveFingerprintAsync(

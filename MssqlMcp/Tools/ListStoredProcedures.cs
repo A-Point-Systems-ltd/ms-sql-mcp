@@ -27,18 +27,17 @@ public partial class Tools
             OR (s.name + '.' + p.name) LIKE @NamePattern)
         ORDER BY s.name, p.name";
 
-    private async Task<DbOperationResult> ListStoredProcedures(string? partialName = null)
+    private async Task<DbOperationResult> ListStoredProcedures(string? partialName = null, CancellationToken cancellationToken = default)
     {
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             {
-                using var cmd = new SqlCommand(ListStoredProceduresQuery, conn);
+                await using var cmd = new SqlCommand(ListStoredProceduresQuery, conn);
                 AddNamePatternParameter(cmd, partialName);
                 var procedures = new List<Dictionary<string, object?>>();
-                using var reader = await cmd.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     procedures.Add(new Dictionary<string, object?>
                     {
@@ -53,9 +52,9 @@ public partial class Tools
                 return new DbOperationResult(success: true, data: procedures);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "ListStoredProcedures failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} (ListStoredProcedures) failed: {Message}", ToolNames.ListObjects, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

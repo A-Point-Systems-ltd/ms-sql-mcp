@@ -10,20 +10,22 @@ namespace Mssql.McpServer;
 public partial class Tools
 {
     [McpServerTool(
+        Name = ToolNames.GetInsight,
         Title = "Get Insight",
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns the cached AI insight for a single database object plus a freshness state. Response shape: { insight: {...} | null, insightFreshness: 'LayerDisabled' | 'Absent' | 'Fresh' | 'StaleArchived' | 'AccessDenied' | 'DefinitionUnavailable' }. If the live schema fingerprint has changed (object dropped or modified), the stored row is auto-archived to AIInsights.InsightHistory and freshness becomes 'StaleArchived'. After 'StaleArchived' or 'Absent', re-investigate the object and call UpsertInsight.")]
+        Description("Returns the cached AI insight for a single database object plus a freshness state. Response shape: { insight: {...} | null, insightFreshness: 'LayerDisabled' | 'Absent' | 'Fresh' | 'StaleArchived' | 'AccessDenied' | 'DefinitionUnavailable' }. If the live schema fingerprint has changed (object dropped or modified), the stored row is auto-archived to AIInsights.InsightHistory and freshness becomes 'StaleArchived'. After 'StaleArchived' or 'Absent', re-investigate the object and call " + ToolNames.UpsertInsight + ".")]
     public async Task<DbOperationResult> GetInsight(
         [Description("Object name without schema (e.g. 'TableProblems'). Case follows SQL Server collation.")] string objectName,
         [Description("Schema name. Pass 'dbo' explicitly when the object lives in dbo; pass null only when schema is unknown.")] string? schemaName = null,
-        [Description("Object type label as stored in AIInsights: 'Table' | 'View' | 'Procedure' | 'Function' | 'Trigger'. Defaults to 'Table'.")] string objectType = "Table")
+        [Description("Object type label as stored in AIInsights: 'Table' | 'View' | 'Procedure' | 'Function' | 'Trigger'. Defaults to 'Table'.")] string objectType = "Table",
+        CancellationToken cancellationToken = default)
     {
         try
         {
             var (insight, freshness) = await _insightsLayer
-                .GetInsightForObjectAsync(objectType, schemaName, objectName)
+                .GetInsightForObjectAsync(objectType, schemaName, objectName, cancellationToken)
                 .ConfigureAwait(false);
             return new DbOperationResult(
                 success: true,
@@ -33,9 +35,9 @@ public partial class Tools
                     insightFreshness = freshness.ToString()
                 });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "GetInsight failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} failed: {Message}", ToolNames.GetInsight, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

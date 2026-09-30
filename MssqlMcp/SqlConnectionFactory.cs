@@ -7,14 +7,22 @@ namespace Mssql.McpServer;
 
 public class SqlConnectionFactory : ISqlConnectionFactory
 {
-    public async Task<SqlConnection> GetOpenConnectionAsync()
+    public async Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
         var connectionString = GetConnectionString();
 
         // Let ADO.Net handle connection pooling
         var conn = new SqlConnection(connectionString);
-        await conn.OpenAsync();
-        return conn;
+        try
+        {
+            await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return conn;
+        }
+        catch
+        {
+            await conn.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static string GetConnectionString()

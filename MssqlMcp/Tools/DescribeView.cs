@@ -10,28 +10,7 @@ namespace Mssql.McpServer;
 
 public partial class Tools
 {
-    [McpServerTool(
-        Title = "Describe View",
-        ReadOnly = true,
-        Idempotent = true,
-        Destructive = false),
-        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call UpsertInsight using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation. Returns: view metadata (schema, name, id, create/modify dates, description), column list, and full T-SQL definition. When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments.")]
-    public async Task<DbOperationResult> DescribeView(
-        [Description("View name. Accepts 'view' or 'schema.view'. Schema-qualified is recommended when ambiguous.")] string name)
-    {
-        string? schema = null;
-        if (name.Contains('.'))
-        {
-            var parts = name.Split('.');
-            if (parts.Length > 1)
-            {
-                name = parts[1];
-                schema = parts[0];
-            }
-        }
-
-        // Query for view info
-        const string ViewInfoQuery = @"SELECT 
+    private const string DescribeViewInfoQuery = @"SELECT
             s.name AS [schema],
             v.name,
             v.object_id AS id,
@@ -40,15 +19,13 @@ public partial class Tools
             ep.value AS description
         FROM sys.views v
         INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
-        LEFT JOIN sys.extended_properties ep 
-            ON ep.major_id = v.object_id 
-            AND ep.minor_id = 0 
+        LEFT JOIN sys.extended_properties ep
+            ON ep.major_id = v.object_id
+            AND ep.minor_id = 0
             AND ep.name = 'MS_Description'
-        WHERE v.name = @ObjectName 
-            AND (s.name = @SchemaName OR @SchemaName IS NULL)";
+        WHERE v.object_id = @ObjectId";
 
-        // Query for columns
-        const string ColumnsQuery = @"SELECT 
+    private const string DescribeViewColumnsQuery = @"SELECT
             c.name,
             ty.name AS type,
             c.max_length,
@@ -57,94 +34,86 @@ public partial class Tools
             c.is_nullable
         FROM sys.columns c
         INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-        WHERE c.object_id = (
-            SELECT v.object_id 
-            FROM sys.views v
-            INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
-            WHERE v.name = @ObjectName 
-                AND (s.name = @SchemaName OR @SchemaName IS NULL)
-        )
+        WHERE c.object_id = @ObjectId
         ORDER BY c.column_id";
 
-        // Query for code definition
-        const string DefinitionQuery = @"SELECT OBJECT_DEFINITION(v.object_id) AS definition
-        FROM sys.views v
-        INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
-        WHERE v.name = @ObjectName 
-            AND (s.name = @SchemaName OR @SchemaName IS NULL)";
+    [McpServerTool(
+        Name = ToolNames.DescribeView,
+        Title = "Describe View",
+        ReadOnly = true,
+        Idempotent = true,
+        Destructive = false),
+        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call " + ToolNames.UpsertInsight + " using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation. Returns: view metadata (schema, name, id, create/modify dates, description), column list, and full T-SQL definition. When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments.")]
+    public async Task<DbOperationResult> DescribeView(
+        [Description("View name: 'view', 'schema.view' or 'database.schema.view' (database must be the connected one). Parts may be [bracketed] or \"quoted\". When schema is omitted and the name exists in several schemas, dbo wins, otherwise the first schema alphabetically.")] string name,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ObjectNameParser.TryParse(name, out ObjectNameParts parts, out var parseError))
+        {
+            return new DbOperationResult(success: false, error: parseError);
+        }
 
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var resolved = await ResolveObjectAsync(conn, parts, ViewObjectTypes, cancellationToken).ConfigureAwait(false);
+            if (resolved is not { } view)
             {
-                var result = new Dictionary<string, object?>();
-
-                // View Info
-                using (var cmd = new SqlCommand(ViewInfoQuery, conn))
-                {
-                    cmd.Parameters.AddWithValue("@ObjectName", name);
-                    cmd.Parameters.AddWithValue("@SchemaName", schema == null ? DBNull.Value : schema);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
-                    {
-                        result["view"] = new
-                        {
-                            schema = reader["schema"],
-                            name = reader["name"],
-                            id = reader["id"],
-                            create_date = reader["create_date"],
-                            modify_date = reader["modify_date"],
-                            description = reader["description"] is DBNull ? null : reader["description"]
-                        };
-                    }
-                    else
-                    {
-                        return new DbOperationResult(success: false, error: $"View '{name}' not found.");
-                    }
-                }
-
-                // Columns
-                using (var cmd = new SqlCommand(ColumnsQuery, conn))
-                {
-                    cmd.Parameters.AddWithValue("@ObjectName", name);
-                    cmd.Parameters.AddWithValue("@SchemaName", schema == null ? DBNull.Value : schema);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    var columns = new List<object>();
-                    while (await reader.ReadAsync())
-                    {
-                        columns.Add(new
-                        {
-                            name = reader["name"],
-                            type = reader["type"],
-                            max_length = reader["max_length"],
-                            precision = reader["precision"],
-                            scale = reader["scale"],
-                            is_nullable = (bool)reader["is_nullable"]
-                        });
-                    }
-                    result["columns"] = columns;
-                }
-
-                // Code Definition
-                using (var cmd = new SqlCommand(DefinitionQuery, conn))
-                {
-                    cmd.Parameters.AddWithValue("@ObjectName", name);
-                    cmd.Parameters.AddWithValue("@SchemaName", schema == null ? DBNull.Value : schema);
-                    using var reader = await cmd.ExecuteReaderAsync();
-                    if (await reader.ReadAsync())
-                    {
-                        result["definition"] = reader["definition"] is DBNull ? null : reader["definition"];
-                    }
-                }
-
-                await TryAttachInsightAsync(result, "View", schema, name).ConfigureAwait(false);
-                return new DbOperationResult(success: true, data: result);
+                return new DbOperationResult(success: false, error: ObjectNotFoundMessage("View", name, parts));
             }
+
+            var result = new Dictionary<string, object?>();
+
+            // View info
+            await using (var cmd = new SqlCommand(DescribeViewInfoQuery, conn))
+            {
+                AddObjectIdParameter(cmd, view.ObjectId);
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    return new DbOperationResult(success: false, error: ObjectNotFoundMessage("View", name, parts));
+                }
+
+                result["view"] = new
+                {
+                    schema = reader["schema"],
+                    name = reader["name"],
+                    id = reader["id"],
+                    create_date = reader["create_date"],
+                    modify_date = reader["modify_date"],
+                    description = reader["description"] is DBNull ? null : reader["description"]
+                };
+            }
+
+            // Columns
+            await using (var cmd = new SqlCommand(DescribeViewColumnsQuery, conn))
+            {
+                AddObjectIdParameter(cmd, view.ObjectId);
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                var columns = new List<object>();
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    columns.Add(new
+                    {
+                        name = reader["name"],
+                        type = reader["type"],
+                        max_length = reader["max_length"],
+                        precision = reader["precision"],
+                        scale = reader["scale"],
+                        is_nullable = (bool)reader["is_nullable"]
+                    });
+                }
+                result["columns"] = columns;
+            }
+
+            result["definition"] = await ReadObjectDefinitionAsync(conn, view.ObjectId, cancellationToken).ConfigureAwait(false);
+
+            await TryAttachInsightAsync(result, "View", view.Schema, view.Name, cancellationToken).ConfigureAwait(false);
+            return new DbOperationResult(success: true, data: result);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "DescribeView failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} failed: {Message}", ToolNames.DescribeView, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

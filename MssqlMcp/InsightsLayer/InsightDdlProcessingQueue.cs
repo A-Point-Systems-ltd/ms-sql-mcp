@@ -43,6 +43,24 @@ public sealed class InsightDdlProcessingQueue(
         _ = _signals.Writer.TryWrite(true);
     }
 
+    internal static readonly TimeSpan BusyRetryDelay = TimeSpan.FromSeconds(5);
+    internal const int MaxConsecutiveBusyRetries = 3;
+
+    // Touched only by the single ExecuteAsync reader loop.
+    private int _consecutiveBusyRetries;
+
+    private async Task RetryLaterAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await Task.Delay(BusyRetryDelay, stoppingToken).ConfigureAwait(false);
+            _ = _signals.Writer.TryWrite(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
@@ -56,10 +74,21 @@ public sealed class InsightDdlProcessingQueue(
 
                 try
                 {
-                    await _insightsLayer.ProcessDdlChangesAsync(stoppingToken).ConfigureAwait(false);
+                    if (await _insightsLayer.ProcessDdlChangesAsync(stoppingToken).ConfigureAwait(false))
+                    {
+                        _consecutiveBusyRetries = 0;
+                    }
+                    else if (_consecutiveBusyRetries < MaxConsecutiveBusyRetries)
+                    {
+                        // Another server process holds the lock; retry shortly so this write is not missed.
+                        // Capped: the lock holder processes the same audit rows, so endless retries add nothing.
+                        _consecutiveBusyRetries++;
+                        _ = RetryLaterAsync(stoppingToken);
+                    }
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                catch (Exception) when (stoppingToken.IsCancellationRequested)
                 {
+                    // SqlClient may surface a cancelled command as SqlException rather than OperationCanceledException.
                     break;
                 }
                 catch (Exception ex)

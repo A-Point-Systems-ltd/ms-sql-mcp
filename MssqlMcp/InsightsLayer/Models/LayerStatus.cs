@@ -17,5 +17,9 @@ public sealed class LayerStatus
 
     public int LastProcessedAuditId { get; init; }
 
+    /// <summary>
+    /// UTC on the database server (written with <c>SYSUTCDATETIME()</c>), unlike
+    /// <see cref="SchemaInsight.LastAnalyzed"/>, which is server local time.
+    /// </summary>
     public DateTime? LastProcessedAt { get; init; }
 }

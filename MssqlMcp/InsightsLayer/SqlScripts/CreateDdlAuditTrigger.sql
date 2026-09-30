@@ -1,3 +1,9 @@
+-- Database-level DDL audit trigger. Applied only by an explicit install_insights_layer call, and only
+-- when DDL_Audit does not exist yet: an existing trigger (possibly deployed by another team) is left untouched.
+-- Compatible with SQL Server 2008 R2+.
+-- dbo.DDL_AuditLog name columns are varchar(100): values are read as nvarchar and cut with LEFT(..., 100)
+-- so long names never raise a truncation error that would roll back the caller's DDL.
+
 SET ANSI_NULLS ON
 GO
 
@@ -10,34 +16,28 @@ AS
 SET NOCOUNT ON
 DECLARE
    @CommandXML xml,
-   @CommandText varchar(max)
+   @CommandText nvarchar(max),
+   @ObjectName nvarchar(100)
 
-SET @CommandXML=eventdata( )
-SET @CommandText=@CommandXML.value( '(/EVENT_INSTANCE/TSQLCommand/CommandText)[1]', 'VARCHAR(max)' )
-SET @CommandText=ltrim( rtrim( replace( @CommandText, '', '' ) ) )
-
-IF 1=0
-BEGIN
-	ROLLBACK;
-	RETURN
-END
+SET @CommandXML = EVENTDATA()
+SET @CommandText = LTRIM(RTRIM(@CommandXML.value('(/EVENT_INSTANCE/TSQLCommand/CommandText)[1]', 'NVARCHAR(MAX)')))
+SET @ObjectName = LEFT(@CommandXML.value('(/EVENT_INSTANCE/ObjectName)[1]', 'NVARCHAR(128)'), 100)
 
 INSERT INTO dbo.DDL_AuditLog (HostName, LoginName, SchemaName, ObjectName, ObjectType, EventType, CommandText, CommandXML, ProgramName)
-VALUES (host_name( ), 
-	SUSER_SNAME(),
-	@CommandXML.value( '(/EVENT_INSTANCE/SchemaName)[1]', 'VARCHAR(100)'),
-	@CommandXML.value( '(/EVENT_INSTANCE/ObjectName)[1]', 'VARCHAR(100)'),
-	@CommandXML.value( '(/EVENT_INSTANCE/ObjectType)[1]', 'VARCHAR(100)'),
-	@CommandXML.value( '(/EVENT_INSTANCE/EventType)[1]', 'VARCHAR(64)'),
-	@CommandText,
-	@CommandXML,
-	PROGRAM_NAME()
-	)
+VALUES (
+    LEFT(HOST_NAME(), 100),
+    LEFT(SUSER_SNAME(), 100),
+    LEFT(@CommandXML.value('(/EVENT_INSTANCE/SchemaName)[1]', 'NVARCHAR(128)'), 100),
+    @ObjectName,
+    LEFT(@CommandXML.value('(/EVENT_INSTANCE/ObjectType)[1]', 'NVARCHAR(128)'), 100),
+    LEFT(@CommandXML.value('(/EVENT_INSTANCE/EventType)[1]', 'NVARCHAR(128)'), 64),
+    @CommandText,
+    @CommandXML,
+    LEFT(PROGRAM_NAME(), 100)
+    )
 
-	DECLARE @ObjectName VARCHAR(100) =
-    @CommandXML.value('(/EVENT_INSTANCE/ObjectName)[1]', 'VARCHAR(100)');
-
-DECLARE @s NVARCHAR(MAX) = N'last modified ' + @ObjectName + N':';
+-- Tell the developer who else changed this object in the last month (kept from the original spec).
+DECLARE @s NVARCHAR(MAX) = N'last modified ' + ISNULL(@ObjectName, N'') + N':';
 
 ;WITH LastPerUser AS
 (
@@ -50,7 +50,7 @@ DECLARE @s NVARCHAR(MAX) = N'last modified ' + @ObjectName + N':';
              )
     FROM dbo.DDL_AuditLog
     WHERE ObjectName = @ObjectName
-      AND LoginName <> SUSER_SNAME()
+      AND LoginName <> LEFT(SUSER_SNAME(), 100)
       AND DATEADD(month, 1, PostTime) > GETDATE()
 )
 SELECT @s = @s +

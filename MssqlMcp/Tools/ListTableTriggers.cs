@@ -39,18 +39,17 @@ public partial class Tools
             OR (s.name + '.' + tr.name) LIKE @NamePattern)
     ORDER BY s.name, OBJECT_NAME(tr.parent_id), tr.name";
 
-    private async Task<DbOperationResult> ListTableTriggers(string? partialName = null)
+    private async Task<DbOperationResult> ListTableTriggers(string? partialName = null, CancellationToken cancellationToken = default)
     {
-        var conn = await _connectionFactory.GetOpenConnectionAsync();
         try
         {
-            using (conn)
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             {
-                using var cmd = new SqlCommand(ListTableTriggersQuery, conn);
+                await using var cmd = new SqlCommand(ListTableTriggersQuery, conn);
                 AddNamePatternParameter(cmd, partialName);
                 var triggers = new List<Dictionary<string, object?>>();
-                using var reader = await cmd.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     triggers.Add(new Dictionary<string, object?>
                     {
@@ -69,9 +68,9 @@ public partial class Tools
                 return new DbOperationResult(success: true, data: triggers);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "ListTableTriggers failed: {Message}", ex.Message);
+            _logger.LogError(ex, "{Tool} (ListTableTriggers) failed: {Message}", ToolNames.ListObjects, ex.Message);
             return new DbOperationResult(success: false, error: ex.Message);
         }
     }

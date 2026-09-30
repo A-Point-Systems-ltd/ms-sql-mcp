@@ -7,16 +7,13 @@
     <RootNamespace>Mssql.McpServer</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Company>Microsoft</Company>
+    <Company>A Point Systems</Company>
     <Product>MSSQL MCP Server</Product>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
     <InformationalVersion>1.0.0</InformationalVersion>
-  </PropertyGroup>
-
-  <PropertyGroup>
-      <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-      <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>    
+    <!-- ScriptDom ships 13 satellite resource languages; English-only keeps the single-file exe lean. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <!-- Default Release publish settings: single self-contained exe to fixed folder. -->
@@ -53,6 +50,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.11" />
+    <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.117.0" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
   </ItemGroup>
 

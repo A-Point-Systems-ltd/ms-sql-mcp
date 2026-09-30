@@ -29,6 +29,10 @@ public sealed class SchemaInsight
 
     public decimal? Confidence { get; init; }
 
+    /// <summary>
+    /// Database server local time (written with <c>GETDATE()</c>), unspecified kind. Compare it only
+    /// with server-side values; the MCP host may be in a different time zone.
+    /// </summary>
     public DateTime LastAnalyzed { get; init; }
 
     public string? AnalyzedBy { get; init; }
@@ -40,4 +44,10 @@ public sealed class SchemaInsight
     public int? ObjectIdAtAnalysis { get; init; }
 
     public string? SchemaFingerprint { get; init; }
+
+    /// <summary>
+    /// True when <see cref="LastAnalyzed"/> falls before today's date on the database server clock
+    /// (computed in SQL). Internal, so it is not serialized into tool responses.
+    /// </summary>
+    internal bool AnalyzedBeforeServerToday { get; init; }
 }
