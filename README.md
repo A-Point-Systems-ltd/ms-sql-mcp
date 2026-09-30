@@ -10,6 +10,7 @@ Forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-
 - [Quick start](#quick-start)
 - [MCP client configuration](#mcp-client-configuration)
 - [Environment variables](#environment-variables)
+- [Multiple connections](#multiple-connections)
 - [MCP tools reference](#mcp-tools-reference)
 - [AI Insights layer](#ai-insights-layer)
 - [Response shape](#response-shape)
@@ -29,7 +30,7 @@ Forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-
 
 Tested target versions include SQL Server 2008 R2 through 2022 and Azure SQL Database.
 
-The server validates `CONNECTION_STRING` and opens a test connection **before** starting the MCP transport. If either check fails, the process exits with code `1` and writes diagnostics to the log file.
+With a single `CONNECTION_STRING` (legacy mode) the server validates it and opens a test connection **before** starting the MCP transport. If either check fails, the process exits with code `1` and writes diagnostics to the log file. With several connections, startup behaves differently; see [Multiple connections](#multiple-connections).
 
 ## Quick start
 
@@ -49,7 +50,7 @@ Point your MCP client at the built executable:
 MssqlMcp\bin\Debug\net10.0\MssqlMcp.exe
 ```
 
-Set `CONNECTION_STRING` in the MCP server environment (see [sample_mcp.json](sample_mcp.json) for a template).
+Set `CONNECTION_STRING` (or `MSSQL_CONNECTIONS`, see [Multiple connections](#multiple-connections)) in the MCP server environment (see [sample_mcp.json](sample_mcp.json) for a template).
 
 **First prompt to try:** “List tables in the database” (the agent should call `list_objects` with `objectType=Table`).
 
@@ -131,7 +132,10 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `CONNECTION_STRING` | **Yes** | — | ADO.NET connection string for the target database. Validated at startup. |
+| `CONNECTION_STRING` | One of the three connection variables | — | ADO.NET connection string for a single database (legacy mode, profile name `default`). Validated at startup; the process exits with code `1` if it cannot connect. |
+| `MSSQL_CONNECTIONS` | One of the three connection variables | — | JSON array of named connections. See [Multiple connections](#multiple-connections). |
+| `MSSQL_CONNECTIONS_FILE` | One of the three connection variables | — | Path to a file holding the same JSON array. |
+| `MSSQL_ALLOW_ADHOC_CONNECTIONS` | No | disabled | Set to `true` to let `open_connection` register new connections from a raw connection string at runtime. |
 | `USE_INSIGHTS_LAYER` | No | enabled | Opt-**out** switch. Set to `false`, `0`, `no`, `off`, or `disabled` to disable the AI Insights layer. Any other value (including unset) leaves it enabled. |
 | `INSIGHTS_AUTOPOPULATE` | No | enabled | Opt-out. When enabled (and insights layer is on), introspection auto-creates mechanical baseline insights and attaches enrichment directives. Set to a falsey value to disable auto-population only. |
 | `LOG_FILE_PATH` | No | `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/macOS) | Full file path, or a directory (timestamped log files are created inside it). |
@@ -140,7 +144,7 @@ When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the serv
 
 ## MCP tools reference
 
-The server exposes **19 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
+The server exposes **22 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
 
 > **Breaking change (.NET 10 / MCP SDK 2.x upgrade):** tool names changed from PascalCase (`ReadData`, `ExecuteSQL`, …) to snake_case (`read_data`, `execute_sql`, …). Update client tool allow-lists, auto-approve rules and saved prompts that reference the old names.
 
@@ -182,6 +186,16 @@ Requires `USE_INSIGHTS_LAYER` enabled (default) and **install_insights_layer** r
 
 When `USE_INSIGHTS_LAYER=false`, insight-specific tools return errors or empty status; introspection tools skip insight enrichment.
 
+### Connection management (3 tools)
+
+| Tool | MCP flags | Purpose |
+|------|-----------|---------|
+| **list_connections** | read-only | Lists every registered connection: name, open/closed, read-only, server, database (never credentials), plus `connectionRequired` and `count`. Call it first in a session. |
+| **open_connection** | write | Reopens a configured connection, or (only with `MSSQL_ALLOW_ADHOC_CONNECTIONS=true`) registers an ad-hoc one from `connectionString`. Ad-hoc connections are read-only unless `readOnly=false`. The connection is tested (5 s cap) before it is registered. |
+| **close_connection** | write | Closes a connection. Ad-hoc connections are forgotten; configured ones stay listed as closed and can be reopened. The last open connection cannot be closed. |
+
+These three tools take no `connection` argument. Every other tool accepts an optional `connection` argument; see [Multiple connections](#multiple-connections).
+
 ### Read vs execute routing
 
 `SqlStatementClassifier` parses every statement with the T-SQL parser (`Microsoft.SqlServer.TransactSql.ScriptDom`) and enforces a strict split. Every tool accepts **exactly one statement**; T-SQL needs no `;` between statements, so text such as `SELECT 1 WAITFOR DELAY '…'` counts as two statements and is rejected.
@@ -191,6 +205,99 @@ When `USE_INSIGHTS_LAYER=false`, insight-specific tools return errors or empty s
 - **execute_sql** — single DDL/DML statements (including `SELECT … INTO`; a `CREATE PROCEDURE` body counts as one statement). Any plain `SELECT` is rejected with a message pointing to `read_data`. `SET`, `DECLARE`, `USE`, `WAITFOR` and `SHUTDOWN` are rejected as unsupported.
 
 This keeps destructive operations behind an explicitly flagged tool and prevents accidental full-table reads through the write path.
+
+## Multiple connections
+
+One server process can hold several named SQL Server connections. Nothing changes for existing single-connection setups.
+
+### 1. Legacy: `CONNECTION_STRING`
+
+Set only `CONNECTION_STRING` and the server behaves as before: one connection (internally named `default`, which is only a label, not a "default connection"), the `connection` argument is optional, and startup fails fast (exit code `1`) if the database is unreachable.
+
+### 2. `MSSQL_CONNECTIONS`
+
+A JSON array, one object per connection:
+
+| Property | Required | Description |
+|----------|----------|-------------|
+| `name` | Yes | 1-64 letters, digits, `-`, `_` or `.`. Unique, compared case-insensitively. |
+| `connectionString` | Yes | ADO.NET connection string. |
+| `readOnly` | No (`false`) | When `true`, the write tools listed in [Read-only profiles](#6-read-only-profiles) are refused on this connection. |
+| `insights` | No (`true`) | Enables the AI Insights layer for this connection. |
+
+```json
+[
+  { "name": "prod", "connectionString": "Server=prod-sql;Database=App;Trusted_Connection=True;TrustServerCertificate=True", "readOnly": true },
+  { "name": "dev",  "connectionString": "Server=DC\\DEV;Database=App;Trusted_Connection=True;TrustServerCertificate=True" }
+]
+```
+
+The config is strict: unknown properties are rejected, and so is a `"default"` property (there is no default connection, see the rule below). Invalid config makes the server exit with code `1`. `CONNECTION_STRING`, `MSSQL_CONNECTIONS` and `MSSQL_CONNECTIONS_FILE` can be combined; all names must be unique.
+
+### 3. `MSSQL_CONNECTIONS_FILE`
+
+Path to a file containing the same JSON array. Connection strings may contain `${env:VAR}` placeholders, expanded at load time from the server's environment, so secrets stay out of the file. An unset variable is a startup error. Placeholders are expanded in `MSSQL_CONNECTIONS` as well.
+
+```json
+[
+  { "name": "crm", "connectionString": "Server=sql01;Database=Crm;User Id=mcp_reader;Password=${env:CRM_PASSWORD};TrustServerCertificate=True", "readOnly": true }
+]
+```
+
+### 4. The rule: when is `connection` required?
+
+- **Exactly one registered connection:** `connection` is optional.
+- **More than one registered connection:** `connection` is **mandatory** on every data tool. There is **no default connection**.
+
+"Registered" counts every connection: configured, legacy and ad-hoc, **open or closed**, so the rule does not flip when a connection is closed. Closing an ad-hoc connection forgets it and lowers the count; closing a configured one does not.
+
+The JSON schema keeps `connection` optional so single-connection clients see no change; the rule is enforced when the call is made. A missing or unknown name returns an error that lists every connection (name, server, database, read-only, open), so an agent can retry in one step. Agents are told the rule by the server instructions, each tool's `connection` description, and `connectionRequired` in `list_connections`.
+
+Startup in multi-connection mode: all targets are probed in parallel with a 5 s timeout, and unreachable targets are logged but do **not** stop the server (unlike legacy mode).
+
+### 5. `MSSQL_ALLOW_ADHOC_CONNECTIONS`
+
+Off by default. When set to `true`, `open_connection` accepts a `name` plus a raw `connectionString` and registers it at runtime. Because this lets an agent point the server at arbitrary hosts (an SSRF-like capability), ad-hoc connections are **read-only by default** (`readOnly=false` must be passed explicitly), have the Insights layer disabled, and are probed with a 5 s timeout before registration. A configured connection cannot be redefined ad hoc. Adding an ad-hoc connection to a single-connection server makes `connection` mandatory from then on.
+
+### 6. Read-only profiles
+
+A connection with `"readOnly": true` refuses these tools with an error:
+
+`execute_sql`, `insert_data`, `update_data`, `create_table`, `drop_table`, `upsert_insight`, `install_insights_layer`, `refresh_insights`, `rebuild_baseline_insights`.
+
+Inspection tools, `read_data`, `get_insight`, `list_insights`, `get_insight_history` and `insights_check` still work. Read-only is enforced by this server, not by SQL Server: also use a least-privilege database login for connections that must never write.
+
+### 7. Full `mcp.json` example
+
+Two connections, one read-only, with the password kept out of the config through `MSSQL_CONNECTIONS_FILE` and `${env:...}`:
+
+```json
+{
+  "mcpServers": {
+    "MSSQL-MCP": {
+      "type": "stdio",
+      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\bin\\Release\\net10.0\\win-x64\\MssqlMcp.exe",
+      "env": {
+        "MSSQL_CONNECTIONS_FILE": "C:\\Secrets\\mssql-connections.json",
+        "CRM_PASSWORD": "<set in your secret store>",
+        "USE_INSIGHTS_LAYER": "true",
+        "LOG_FILE_PATH": "C:\\Logs\\mssql-mcp.log"
+      }
+    }
+  }
+}
+```
+
+with `C:\Secrets\mssql-connections.json`:
+
+```json
+[
+  { "name": "crm-prod", "connectionString": "Server=prod-sql;Database=Crm;User Id=mcp_reader;Password=${env:CRM_PASSWORD};TrustServerCertificate=True", "readOnly": true },
+  { "name": "crm-dev",  "connectionString": "Server=DC\\DEV;Database=Crm;Trusted_Connection=True;TrustServerCertificate=True" }
+]
+```
+
+Inline `MSSQL_CONNECTIONS` works too (see `sample_mcp.json`), but nesting JSON inside a JSON string needs careful escaping; prefer the file for anything beyond a demo. No tool ever returns a connection string, and the startup log masks passwords.
 
 ## AI Insights layer
 
@@ -322,7 +429,8 @@ Output path is configured in `MssqlMcp/MssqlMcp.csproj` and `Properties/PublishP
 MS-SQL/
 ├── MssqlMcp/                    # MCP server (.NET 10 exe)
 │   ├── Program.cs               # Startup, logging, DI, stdio transport
-│   ├── SqlConnectionFactory.cs  # CONNECTION_STRING → SqlConnection
+│   ├── SqlConnectionFactory.cs  # current connection profile → SqlConnection
+│   ├── Connections/             # Registry, config loader, routing filter, masker
 │   ├── SqlStatementClassifier.cs
 │   ├── TriggerQualifiedName.cs
 │   ├── DbOperationResult.cs
@@ -364,7 +472,9 @@ Logs include process info, masked connection string, SQL connection test results
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Immediate exit code 1 | `CONNECTION_STRING` not set | Add it to MCP `env` |
+| Immediate exit code 1 | No connection configured, invalid `MSSQL_CONNECTIONS` JSON, or (legacy mode) unreachable database | Set `CONNECTION_STRING` or `MSSQL_CONNECTIONS`; check the log file |
+| Error that `connection` is required | More than one connection is registered | Call `list_connections` and pass one of the names as `connection` |
+| Ad-hoc connections are disabled | `MSSQL_ALLOW_ADHOC_CONNECTIONS` is not `true` | Set it in the MCP `env`, or add the connection to `MSSQL_CONNECTIONS` |
 | Connection test failed | Wrong server/database/auth | Verify string outside MCP (`sqlcmd`, SSMS) |
 | install_insights_layer permission error | Missing DDL trigger rights | Grant `ALTER ANY DATABASE DDL TRIGGER` or use `ddl_admin` |
 | execute_sql rejects SELECT | By design | Use **read_data** for all queries that return rows |
