@@ -4,7 +4,8 @@ import { AuthKind, ConnectionProfile, validateProfile } from './profile';
 import { ConnectionStore } from './store';
 import { probeConnection } from './probe';
 import { missingPasswordMessage, missingPasswords } from './serverEnv';
-import { withConnectionHint } from './serverInfo';
+import { describeServerInfo, withConnectionHint } from './serverInfo';
+import type { ExplorerClient } from '../explorer/explorerClient';
 
 const TEST_TIMEOUT_MS = 30_000;
 
@@ -154,7 +155,7 @@ async function runWizard(store: ConnectionStore, existing?: ConnectionProfile): 
   return { profile, password };
 }
 
-export function registerConnectionCommands(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): void {
+export function registerConnectionCommands(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger, explorer: ExplorerClient): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void>) =>
     context.subscriptions.push(vscode.commands.registerCommand(`msSqlMcp.${id}`, async (arg?: unknown) => {
       try { await fn(arg); }
@@ -203,7 +204,16 @@ export function registerConnectionCommands(context: vscode.ExtensionContext, sto
       const timer = setTimeout(() => ac.abort(new Error(`Timed out after ${TEST_TIMEOUT_MS / 1000} s.`)), TEST_TIMEOUT_MS);
       const sub = token.onCancellationRequested(() => ac.abort(new Error('Cancelled.')));
       try {
-        const summary = await probeConnection(context.extensionUri, p, passwords, log, ac.signal);
+        // Open profiles are served by the shared explorer process; closed ones need a one-off probe process.
+        const summary = p.open
+          ? await Promise.race([
+              explorer.call(p.name, 'get_server_info', {}).then(describeServerInfo),
+              new Promise<never>((_, reject) => {
+                if (ac.signal.aborted) reject(ac.signal.reason);
+                ac.signal.addEventListener('abort', () => reject(ac.signal.reason), { once: true });
+              }),
+            ])
+          : await probeConnection(context.extensionUri, p, passwords, log, ac.signal);
         void vscode.window.showInformationMessage(`MSSQL-MCP '${p.name}': ${summary}`);
       } catch (err) {
         if (token.isCancellationRequested) return;

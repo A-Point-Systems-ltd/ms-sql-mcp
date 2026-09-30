@@ -17,10 +17,14 @@ export class MssqlMcpServerProvider implements vscode.McpServerDefinitionProvide
 
   dispose(): void { this.emitter.dispose(); }
 
-  provideMcpServerDefinitions(): vscode.McpStdioServerDefinition[] {
+  async provideMcpServerDefinitions(): Promise<vscode.McpStdioServerDefinition[]> {
     if (process.platform !== 'win32') return [];
     const exe = resolveExePath(this.context.extensionUri);
-    if (!exe || !this.store.list().some(p => p.open)) return [];
+    if (!exe) return [];
+    // The server exits on an empty config, so offer it only when at least one open profile is usable.
+    const profiles = this.store.list();
+    const usable = profiles.filter(p => p.open).length - missingPasswords(profiles, await this.store.passwords()).length;
+    if (usable <= 0) return [];
     const version = this.context.extension.packageJSON.version as string;
     return [new vscode.McpStdioServerDefinition('MSSQL-MCP', exe, [], {}, version)];
   }
