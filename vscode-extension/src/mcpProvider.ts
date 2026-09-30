@@ -1,10 +1,19 @@
 import * as vscode from 'vscode';
 import { PROVIDER_ID } from './constants';
 import { ConnectionStore } from './connections/store';
-import { buildServerConnections, missingPasswordMessage, missingPasswords } from './connections/serverEnv';
+import { AgentServerSettings, agentProviderEnv, buildServerConnections, definitionVersion, missingPasswordMessage, missingPasswords } from './connections/serverEnv';
 import { resolveExePath } from './exe';
 
 export { PROVIDER_ID };
+
+function agentSettings(): AgentServerSettings {
+  const cfg = vscode.workspace.getConfiguration('msSqlMcp');
+  return {
+    insights: cfg.get<boolean>('insights', true),
+    allowAdhocConnections: cfg.get<boolean>('allowAdhocConnections', false),
+    serverPath: cfg.get<string>('serverPath', ''),
+  };
+}
 
 /** Exposes the open connection profiles to VS Code's agent mode as one MCP stdio server. */
 export class MssqlMcpServerProvider implements vscode.McpServerDefinitionProvider<vscode.McpStdioServerDefinition> {
@@ -23,15 +32,16 @@ export class MssqlMcpServerProvider implements vscode.McpServerDefinitionProvide
     if (!exe) return [];
     // The server exits on an empty config, so offer it only when at least one open profile is usable.
     const profiles = this.store.list();
-    const usable = profiles.filter(p => p.open).length - missingPasswords(profiles, await this.store.passwords()).length;
+    const passwords = await this.store.passwords();
+    const usable = profiles.filter(p => p.open).length - missingPasswords(profiles, passwords).length;
     if (usable <= 0) return [];
-    const version = this.context.extension.packageJSON.version as string;
+    // The version changes whenever the server config would, so VS Code restarts a running server on profile changes.
+    const version = definitionVersion(this.context.extension.packageJSON.version as string, profiles, agentSettings(), passwords);
     return [new vscode.McpStdioServerDefinition('MSSQL-MCP', exe, [], {}, version)];
   }
 
   // Secrets are attached here so they are read only when the server actually starts.
   async resolveMcpServerDefinition(def: vscode.McpStdioServerDefinition): Promise<vscode.McpStdioServerDefinition> {
-    const cfg = vscode.workspace.getConfiguration('msSqlMcp');
     const profiles = this.store.list();
     const passwords = await this.store.passwords();
     const missing = missingPasswords(profiles, passwords);
@@ -40,11 +50,7 @@ export class MssqlMcpServerProvider implements vscode.McpServerDefinitionProvide
       void vscode.window.showWarningMessage(
         `MSSQL-MCP: ${missing.length} connection(s) skipped. ${missing.map(missingPasswordMessage).join(' ')}`);
     }
-    def.env = {
-      MSSQL_CONNECTIONS: buildServerConnections(profiles, passwords),
-      USE_INSIGHTS_LAYER: cfg.get<boolean>('insights', true) ? 'true' : 'false',
-      MSSQL_ALLOW_ADHOC_CONNECTIONS: cfg.get<boolean>('allowAdhocConnections', false) ? 'true' : 'false',
-    };
+    def.env = agentProviderEnv(buildServerConnections(profiles, passwords), agentSettings());
     return def;
   }
 }

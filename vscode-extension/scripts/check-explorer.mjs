@@ -1,22 +1,23 @@
 // Manual end-to-end check (not shipped): lists every category, describes a table/view, scripts DDL and runs a
-// Data View preview on DC\DEV master, running the real payloads through the explorer parsers / tree model.
-// Prints only counts and DDL first lines - never row data (privacy).
-// Usage: RUN_DCDEV_EXT_CHECK=1 node scripts/check-explorer.mjs [path-to-MssqlMcp.exe]
+// Data View preview on the master database of DCDEV_SERVER (default LocalDB), running the real payloads through the
+// explorer parsers / tree model. Prints only counts and DDL first lines - never row data, and never login / user names
+// (they are often personal names; privacy).
+// Usage: RUN_DCDEV_EXT_CHECK=1 [DCDEV_SERVER=DC\DEV] node scripts/check-explorer.mjs [path-to-MssqlMcp.exe]
 import { McpStdioClient } from '../out/client/mcpStdioClient.js';
 import { pick } from '../out/client/parse.js';
-import { buildServerConnections } from '../out/connections/serverEnv.js';
+import { buildServerConnections, explorerProcessEnv } from '../out/connections/serverEnv.js';
 import { CATEGORIES, parseObjectList, parseTableChildren, parseViewIndexes } from '../out/explorer/catalog.js';
 import { childNodes, dataViewRequest, ddlText, parseChildren, scriptArgs } from '../out/explorer/treeModel.js';
 import { parseReadData, rowsToTable } from '../out/dataTable.js';
 
 if (process.env.RUN_DCDEV_EXT_CHECK !== '1') { console.log('Skipped (set RUN_DCDEV_EXT_CHECK=1).'); process.exit(0); }
 const exe = process.argv[2] ?? new URL('../../MssqlMcp/bin/Release/net10.0/win-x64/MssqlMcp.exe', import.meta.url).pathname.replace(/^\/(\w:)/, '$1');
-const profile = { name: 'dcdev', server: 'DC\\DEV', database: 'master', auth: 'windows', readOnly: true, insights: false, open: true, encrypt: 'mandatory', trustServerCertificate: true };
+// Target server: DCDEV_SERVER (e.g. DC\DEV for the 2008 R2 check), default LocalDB. Read-only, master only.
+const server = process.env.DCDEV_SERVER || '(localdb)\\MSSQLLocalDB';
+const profile = { name: 'dcdev', server, database: 'master', auth: 'windows', readOnly: true, insights: false, open: true, encrypt: 'mandatory', trustServerCertificate: true };
 const log = { info() {}, debug() {}, trace() {}, warn: (_s, m) => console.error('warn:', m), error: (_s, m) => console.error('error:', m) };
-const client = new McpStdioClient(exe, {
-  MSSQL_CONNECTIONS: buildServerConnections([profile], new Map(), { forceReadOnly: true, insights: false }),
-  USE_INSIGHTS_LAYER: 'false', MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
-}, log);
+const client = new McpStdioClient(exe, explorerProcessEnv(buildServerConnections([profile], new Map(), { forceReadOnly: true, insights: false })), log);
+const PRINCIPAL_CATEGORIES = new Set(['logins', 'users']);
 const full = (tool, args) => client.callTool(tool, { ...args, connection: 'dcdev' });
 const data = async (tool, args) => { const r = await full(tool, args); return pick(r, 'data') ?? r; };
 // First CREATE/ALTER line (skips SET options and comments), so the CREATE OR ALTER vs ALTER form is visible.
@@ -33,7 +34,9 @@ try {
   for (const def of CATEGORIES.filter(c => c.listType)) {
     try {
       const parsed = parseObjectList(await data('list_objects', { objectType: def.listType }), def);
-      console.log(`${def.label}: ${parsed.length}`, parsed.slice(0, 2));
+      // Principal names are personal data: counts only.
+      if (PRINCIPAL_CATEGORIES.has(def.id)) console.log(`${def.label}: ${parsed.length}`);
+      else console.log(`${def.label}: ${parsed.length}`, parsed.slice(0, 2));
     } catch (e) { console.log(`${def.label}: ERROR ${e.message}`); }
   }
   const cat = id => CATEGORIES.find(c => c.id === id);

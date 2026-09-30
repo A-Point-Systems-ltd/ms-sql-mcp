@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { Logger } from '../logger';
-import { AuthKind, ConnectionProfile, validateProfile } from './profile';
+import { AuthKind, ConnectionProfile, envPlaceholderError, validateProfile } from './profile';
 import { ConnectionStore } from './store';
 import { probeConnection } from './probe';
 import { missingPasswordMessage, missingPasswords } from './serverEnv';
@@ -92,19 +92,19 @@ async function runWizard(store: ConnectionStore, existing?: ConnectionProfile): 
       title, prompt: 'SQL Server connection string (must not contain a password; it is stored unencrypted)', value: existing?.rawConnectionString, ignoreFocusOut: true,
       validateInput: v => !v.trim() ? 'Connection string is required.'
         : /\b(password|pwd)\s*=/i.test(v) ? 'Remove the password - use another authentication type so it can be kept in secret storage.'
-        : undefined,
+        : envPlaceholderError(v),
     });
     if (rawConnectionString === undefined) return undefined;
     server = ''; database = ''; user = undefined;
   } else {
-    const s = await vscode.window.showInputBox({ title, prompt: 'Server (host, host\\instance or host,port)', value: server, ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : 'Server is required.' });
+    const s = await vscode.window.showInputBox({ title, prompt: 'Server (host, host\\instance or host,port)', value: server, ignoreFocusOut: true, validateInput: v => v.trim() ? envPlaceholderError(v) : 'Server is required.' });
     if (s === undefined) return undefined;
     server = s.trim();
-    const d = await vscode.window.showInputBox({ title, prompt: 'Database', value: database, ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : 'Database is required.' });
+    const d = await vscode.window.showInputBox({ title, prompt: 'Database', value: database, ignoreFocusOut: true, validateInput: v => v.trim() ? envPlaceholderError(v) : 'Database is required.' });
     if (d === undefined) return undefined;
     database = d.trim();
     if (auth === 'sql' || auth === 'entraInteractive') {
-      const u = await vscode.window.showInputBox({ title, prompt: 'User', value: user, ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : 'User is required.' });
+      const u = await vscode.window.showInputBox({ title, prompt: 'User', value: user, ignoreFocusOut: true, validateInput: v => v.trim() ? envPlaceholderError(v) : 'User is required.' });
       if (u === undefined) return undefined;
       user = u.trim();
     } else {
@@ -134,7 +134,7 @@ async function runWizard(store: ConnectionStore, existing?: ConnectionProfile): 
     const pw = await vscode.window.showInputBox({
       title, password: true, ignoreFocusOut: true,
       prompt: hasSaved ? 'Password (leave empty to keep the saved one)' : 'Password',
-      validateInput: v => (v || hasSaved) ? undefined : 'Password is required.',
+      validateInput: v => (v || hasSaved) ? envPlaceholderError(v) : 'Password is required.',
     });
     if (pw === undefined) return undefined;
     if (pw !== '') password = pw;

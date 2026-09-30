@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { McpClient } from './mcpClient';
-import { McpToolError, unwrapToolResult } from './parse';
+import { McpToolError, traceablePayload, unwrapToolResult } from './parse';
 import { Logger } from '../logger';
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -60,7 +60,7 @@ export class McpStdioClient implements McpClient {
       const result = await this.request('tools/call', { name, arguments: args });
       const payload = unwrapToolResult(result);
       this.log.debug('tool', `← ${name} ok (${Date.now() - startedAt} ms)`);
-      this.log.trace('tool', `${name} result`, payload);
+      this.log.trace('tool', `${name} result`, traceablePayload(name, payload));
       return payload;
     } catch (err) {
       this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`, err);

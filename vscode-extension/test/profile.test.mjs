@@ -36,3 +36,16 @@ test('validation catches bad names and missing fields', () => {
   assert.ok(validateProfile({ ...base, server: '' }).length > 0);
   assert.ok(validateProfile({ ...base, auth: 'sql', user: '' }).length > 0);
 });
+
+test('${env: is rejected in server, database, user and raw connection string', async () => {
+  const { envPlaceholderError } = await import('../out/connections/profile.js');
+  const bad = '${env:SECRET}';
+  assert.ok(envPlaceholderError(bad));
+  assert.ok(envPlaceholderError('x${ENV:Y}'));
+  assert.equal(envPlaceholderError('plain$ {env'), undefined);
+  assert.equal(envPlaceholderError(undefined), undefined);
+  for (const extra of [{ server: bad }, { database: bad }, { auth: 'sql', user: bad }, { auth: 'raw', rawConnectionString: `Server=${bad}` }]) {
+    assert.ok(validateProfile({ ...base, ...extra }).some(e => e.includes('${env:')), JSON.stringify(extra));
+  }
+  assert.deepEqual(validateProfile(base), []);
+});

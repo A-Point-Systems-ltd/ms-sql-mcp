@@ -15,10 +15,23 @@ export interface ConnectionProfile {
 }
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const ENV_PLACEHOLDER_RE = /\$\{env:/i;
+
+/**
+ * The server expands `${env:NAME}` in connection strings from its own environment, so a profile value containing
+ * one could read (and send to a SQL Server) any variable of the server process. Such input is rejected.
+ */
+export function envPlaceholderError(value: string | undefined): string | undefined {
+  return value !== undefined && ENV_PLACEHOLDER_RE.test(value) ? 'The text "${env:" is not allowed here.' : undefined;
+}
 
 export function validateProfile(p: ConnectionProfile): string[] {
   const errors: string[] = [];
   if (!NAME_RE.test(p.name)) errors.push('Name must be 1-64 letters, digits, "-", "_" or ".".');
+  for (const v of [p.server, p.database, p.user, p.rawConnectionString]) {
+    const envError = envPlaceholderError(v);
+    if (envError) { errors.push(envError); break; }
+  }
   if (p.auth === 'raw') {
     if (!p.rawConnectionString?.trim()) errors.push('Connection string is required.');
     return errors;

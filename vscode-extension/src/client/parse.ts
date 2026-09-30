@@ -88,3 +88,15 @@ function errorText(payload: unknown): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * What trace logging may record for a tool result. read_data rows can hold client personal data, so only the row
+ * count and truncation flag are kept; other results are returned unchanged.
+ */
+export function traceablePayload(tool: string, payload: unknown): unknown {
+  if (tool !== 'read_data') {
+    return payload;
+  }
+  const rows = pick(payload, 'data');
+  return { rowCount: Array.isArray(rows) ? rows.length : 0, truncated: pick(payload, 'truncated') === true };
+}

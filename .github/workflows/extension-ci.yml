@@ -2,6 +2,9 @@ name: extension-ci
 on:
   pull_request:
     paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
+  push:
+    branches: [main]
+    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
 permissions:
   contents: read
 jobs:

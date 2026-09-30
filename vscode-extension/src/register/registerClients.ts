@@ -7,7 +7,8 @@ import { Logger } from '../logger';
 import { registerClaudeCode, powershellCommand } from './claudeCode';
 import { claudeDesktopConfigPaths, cursorConfigPath } from './clientPaths';
 import { atomicWriteFile, writeClientConfig } from './configWriter';
-import { buildConnectionsFile, needsSecretDecision } from './connectionsFile';
+import { externalClientEnv } from '../connections/serverEnv';
+import { buildConnectionsFile, needsSecretDecision, refreshConfirmationReason } from './connectionsFile';
 import { McpEntry } from './jsonMerge';
 import { SERVER_KEY } from './naming';
 import { copyStableExe } from './stableExe';
@@ -16,6 +17,7 @@ const PASSWORDS_FLAG = 'msSqlMcp.connectionsFileHasPasswords';
 const FILE_NAME = 'connections.json';
 const USE_PLACEHOLDERS = 'Use ${env:} placeholders';
 const WRITE_PASSWORDS = 'Write passwords to a per-user file';
+const RE_REGISTER = 'Re-register';
 
 /** Copies the bundled (or configured) exe to globalStorage/bin/<version>/ so client configs survive extension upgrades. */
 export async function ensureStableExe(context: vscode.ExtensionContext): Promise<string> {
@@ -43,11 +45,10 @@ function buildEntry(exe: string, file: string): McpEntry {
   return {
     command: exe,
     args: [],
-    env: {
-      MSSQL_CONNECTIONS_FILE: file,
-      USE_INSIGHTS_LAYER: cfg.get<boolean>('insights', true) ? 'true' : 'false',
-      MSSQL_ALLOW_ADHOC_CONNECTIONS: cfg.get<boolean>('allowAdhocConnections', false) ? 'true' : 'false',
-    },
+    env: externalClientEnv(file, {
+      insights: cfg.get<boolean>('insights', true),
+      allowAdhocConnections: cfg.get<boolean>('allowAdhocConnections', false),
+    }),
   };
 }
 
@@ -66,13 +67,33 @@ export function registerClientCommand(context: vscode.ExtensionContext, store: C
     store.onDidChange(() => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        if (!fs.existsSync(connectionsFilePath(context))) return;
-        const withPasswords = context.globalState.get<boolean>(PASSWORDS_FLAG, false);
-        writeConnectionsFile(context, store, withPasswords).catch(err => log.error('registerClients', 'connections.json refresh failed', err));
+        refreshConnectionsFile(context, store, log).catch(err => log.error('registerClients', 'connections.json refresh failed', err));
       }, 300);
     }),
     { dispose: () => { if (timer) clearTimeout(timer); } },
   );
+}
+
+/**
+ * Rewrites an existing connections.json after a profile change. A change that registered clients could not start
+ * with (a new ${env:} variable, or no connections left) is not written silently: the user is warned and can re-register.
+ */
+async function refreshConnectionsFile(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): Promise<void> {
+  const file = connectionsFilePath(context);
+  if (!fs.existsSync(file)) return;
+  const withPasswords = context.globalState.get<boolean>(PASSWORDS_FLAG, false);
+  const next = buildConnectionsFile(store.list(), await store.passwords(), withPasswords);
+  let previous: string | undefined;
+  try { previous = fs.readFileSync(file, 'utf8'); } catch { previous = undefined; }
+  const reason = refreshConfirmationReason(previous, next);
+  if (!reason) {
+    await writeConnectionsFile(context, store, withPasswords);
+    return;
+  }
+  log.warn('registerClients', `connections.json not refreshed automatically: ${reason}.`);
+  const pick = await vscode.window.showWarningMessage(
+    `MSSQL-MCP: the connections file used by Cursor / Claude was not updated: ${reason}. Re-register to update it.`, RE_REGISTER);
+  if (pick === RE_REGISTER) await vscode.commands.executeCommand('msSqlMcp.registerClients');
 }
 
 async function run(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): Promise<void> {

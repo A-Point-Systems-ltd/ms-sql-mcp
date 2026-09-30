@@ -1,14 +1,17 @@
 #!/usr/bin/env node
-// Stage a QA'd MssqlMcp.exe into the extension for packaging.
+// Stage a QA'd single-file MssqlMcp.exe into the extension for packaging (vsce package).
 //
 // Usage:
-//   node scripts/stage-exe.mjs <path-to-exe> [--version X.Y.Z] [--version-txt <path>]
+//   node scripts/stage-exe.mjs <path-to-exe> [--sha256 <hex>] [--version-txt <path>] [--version X.Y.Z]
 //
-// - Copies <path-to-exe> to vscode-extension/bin/MssqlMcp.exe
-// - If a VERSION.txt is given (or found next to the exe), verifies the copied
-//   file's SHA256 against the SHA256 recorded there. Mismatch => non-zero exit.
-// - If --version is given, writes it into package.json "version" so the
-//   marketplace release mirrors the MCP version.
+// - Copies <path-to-exe> to vscode-extension/bin/MssqlMcp.exe (bin/ is git-ignored and shipped in the VSIX).
+//   Build the exe from the same commit as the extension, e.g.
+//   dotnet publish MssqlMcp/MssqlMcp.csproj -c Release -o <scratch dir>
+//   (the csproj sets win-x64, self-contained, single-file; always pass -o, its default PublishDir is the release folder)
+// - SHA256 check: --sha256 (from release-manifest.json / SHA256SUMS.txt) wins; otherwise a VERSION.txt given with
+//   --version-txt, or found next to the exe, is used. Mismatch => non-zero exit; neither => warning only.
+// - --version writes package.json "version". It must equal the server <Version> in MssqlMcp.csproj
+//   (scripts/check-version.mjs and CI enforce this), so normally leave it out.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs';
@@ -54,7 +57,7 @@ function expectedSha(versionTxtPath) {
 const { exe, version, versionTxt, sha256: expectedSha256 } = parseArgs(process.argv.slice(2));
 
 if (!exe) {
-  fail('missing <path-to-exe>. Usage: node scripts/stage-exe.mjs <exe> [--version X.Y.Z] [--version-txt <path>]');
+  fail('missing <path-to-exe>. Usage: node scripts/stage-exe.mjs <exe> [--sha256 <hex>] [--version-txt <path>] [--version X.Y.Z]');
 }
 const exePath = resolve(exe);
 if (!existsSync(exePath)) {

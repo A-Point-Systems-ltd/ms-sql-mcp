@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { McpStdioClient } from '../client/mcpStdioClient';
 import { pick } from '../client/parse';
 import { ConnectionStore } from '../connections/store';
-import { buildServerConnections, missingPasswordMessage, missingPasswords } from '../connections/serverEnv';
+import { buildServerConnections, explorerProcessEnv, missingPasswordMessage, missingPasswords } from '../connections/serverEnv';
 import { resolveExe } from '../exe';
 import { Logger } from '../logger';
 
@@ -112,12 +112,10 @@ export class ExplorerClient implements vscode.Disposable {
         ? skipped.map(missingPasswordMessage).join(' ')
         : 'No open connections. Add or open a connection first.');
     }
-    const client = new McpStdioClient(exe.path, {
-      MSSQL_CONNECTIONS: buildServerConnections(profiles, passwords, { forceReadOnly: true, insights: false }),
-      USE_INSIGHTS_LAYER: 'false',
-      MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
-      LOG_FILE_PATH: path.join(this.context.globalStorageUri.fsPath, 'logs') + path.sep,
-    }, this.log, () => {
+    const client = new McpStdioClient(exe.path, explorerProcessEnv(
+      buildServerConnections(profiles, passwords, { forceReadOnly: true, insights: false }),
+      { LOG_FILE_PATH: path.join(this.context.globalStorageUri.fsPath, 'logs') + path.sep },
+    ), this.log, () => {
       if (this.client === client) this.client = undefined;
     });
     try {

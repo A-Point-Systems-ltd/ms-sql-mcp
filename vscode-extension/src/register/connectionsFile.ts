@@ -59,3 +59,22 @@ export function buildConnectionsFile(profiles: ConnectionProfile[], passwords: M
   }));
   return { json: JSON.stringify(arr, null, 2) + '\n', envVars, skipped };
 }
+
+const PLACEHOLDER_RE = /\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * Why an automatic refresh of connections.json must not be written silently, or undefined when it may be.
+ * External clients read the file at start-up and the server exits (FATAL) on an unset variable or an empty
+ * config, so a refresh that needs a variable the previous file did not reference, or that has no connections,
+ * needs the user's confirmation (re-registering).
+ */
+export function refreshConfirmationReason(previousJson: string | undefined, next: ConnectionsFileResult): string | undefined {
+  const count = (() => {
+    try { return (JSON.parse(next.json) as unknown[]).length; } catch { return 0; }
+  })();
+  if (count === 0) return 'the updated connections file would contain no connections, and registered clients would fail to start';
+  const before = new Set([...(previousJson ?? '').matchAll(PLACEHOLDER_RE)].map(m => m[1]));
+  const added = next.envVars.filter(v => !before.has(v));
+  if (added.length) return `the updated connections file needs environment variable(s) that registered clients do not have yet: ${added.join(', ')}`;
+  return undefined;
+}

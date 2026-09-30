@@ -42,6 +42,23 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, log);
 
+  // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
+  registerClientCommand(context, store, log);
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    if (e.affectsConfiguration('msSqlMcp.serverPath')) explorer.reset();
+  }));
+
+  registerMcpProvider(context, store, log);
+  log.info('activate', 'MSSQL-MCP activated');
+}
+
+/** Registers the agent-facing MCP server definition provider when the host supports it (VS Code 1.101+, Cursor). */
+function registerMcpProvider(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): void {
+  if (typeof vscode.lm?.registerMcpServerDefinitionProvider !== 'function') {
+    log.warn('activate', 'This editor has no MCP server definition API (vscode.lm.registerMcpServerDefinitionProvider); ' +
+      'the agent server is not offered here. Use "Register with Cursor / Claude" instead.');
+    return;
+  }
   const provider = new MssqlMcpServerProvider(context, store);
   context.subscriptions.push(
     provider,
@@ -49,11 +66,8 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(() => provider.refresh()),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('msSqlMcp.insights') || e.affectsConfiguration('msSqlMcp.allowAdhocConnections') || e.affectsConfiguration('msSqlMcp.serverPath')) provider.refresh();
-      if (e.affectsConfiguration('msSqlMcp.serverPath')) explorer.reset();
     }),
   );
-  registerClientCommand(context, store, log);
-  log.info('activate', 'MSSQL-MCP activated');
 }
 
 export function deactivate(): void {}

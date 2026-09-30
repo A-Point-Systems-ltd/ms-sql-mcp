@@ -1,6 +1,64 @@
+import { createHash } from 'crypto';
 import { ConnectionProfile, buildConnectionString } from './profile';
 
 export interface ServerEnvOptions { forceReadOnly?: boolean; insights?: boolean }
+
+/** The `msSqlMcp.*` settings that shape the agent-facing server. */
+export interface AgentServerSettings { insights: boolean; allowAdhocConnections: boolean; serverPath: string }
+
+/**
+ * Env for the VS Code MCP server definition. The server also reads CONNECTION_STRING and MSSQL_CONNECTIONS_FILE, which
+ * the editor would otherwise pass through from its own environment and silently add connections; `null` removes them.
+ */
+export function agentProviderEnv(connectionsJson: string, s: AgentServerSettings): Record<string, string | null> {
+  return {
+    MSSQL_CONNECTIONS: connectionsJson,
+    CONNECTION_STRING: null,
+    MSSQL_CONNECTIONS_FILE: null,
+    USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
+    MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
+  };
+}
+
+/**
+ * Env for the explorer / probe child processes, spread over process.env. Inherited connection sources are blanked
+ * (the server ignores empty values), the Insights layer and ad-hoc connections are off.
+ */
+export function explorerProcessEnv(connectionsJson: string, extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    MSSQL_CONNECTIONS: connectionsJson,
+    CONNECTION_STRING: '',
+    MSSQL_CONNECTIONS_FILE: '',
+    USE_INSIGHTS_LAYER: 'false',
+    MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
+    ...extra,
+  };
+}
+
+/** Env for Cursor / Claude Desktop / Claude Code entries: only the connections file, other sources blanked. */
+export function externalClientEnv(connectionsFile: string, s: Pick<AgentServerSettings, 'insights' | 'allowAdhocConnections'>): Record<string, string> {
+  return {
+    MSSQL_CONNECTIONS_FILE: connectionsFile,
+    CONNECTION_STRING: '',
+    MSSQL_CONNECTIONS: '',
+    USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
+    MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
+  };
+}
+
+/**
+ * MCP server definition version: `<pkgVersion>+<8 hex>`. VS Code restarts / offers to restart a running server when it
+ * changes, so the hash covers every non-secret input of the server config: the open profiles (name, readOnly, insights,
+ * auth, user, server, database, encrypt, trustServerCertificate, whether it is exported) and the relevant settings.
+ * Passwords and raw connection strings are never hashed.
+ */
+export function definitionVersion(pkgVersion: string, profiles: ConnectionProfile[], s: AgentServerSettings, passwords: Map<string, string>): string {
+  const open = profiles.filter(p => p.open).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).map(p => [
+    p.name, p.readOnly, p.insights, p.auth, p.user ?? '', p.server, p.database, p.encrypt, p.trustServerCertificate, !lacksPassword(p, passwords),
+  ]);
+  const input = JSON.stringify({ open, insights: s.insights, adhoc: s.allowAdhocConnections, serverPath: s.serverPath });
+  return `${pkgVersion}+${createHash('sha1').update(input).digest('hex').slice(0, 8)}`;
+}
 
 /** True when the profile uses SQL auth and has no stored password, so it cannot be exported. */
 function lacksPassword(p: ConnectionProfile, passwords: Map<string, string>): boolean {
