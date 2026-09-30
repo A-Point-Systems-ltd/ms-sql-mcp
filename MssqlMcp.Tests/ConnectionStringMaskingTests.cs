@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using Mssql.McpServer;
+using Mssql.McpServer.Connections;
 
 namespace MssqlMcp.Tests;
 
@@ -14,7 +14,7 @@ public sealed class ConnectionStringMaskingTests
     [InlineData("Server=.;Database=x;User ID=u;Password='a;b=c'", "b=c")]
     public void Mask_never_leaks_any_part_of_the_password(string connectionString, string secretFragment)
     {
-        var masked = Program.MaskConnectionString(connectionString);
+        var masked = ConnectionStringMasker.Mask(connectionString);
 
         Assert.DoesNotContain(secretFragment, masked, StringComparison.Ordinal);
         Assert.Contains("***MASKED***", masked, StringComparison.Ordinal);
@@ -23,7 +23,7 @@ public sealed class ConnectionStringMaskingTests
     [Fact]
     public void Mask_keeps_non_secret_fields_for_diagnostics()
     {
-        var masked = Program.MaskConnectionString("Server=DC\\DEV;Database=Sales;Trusted_Connection=True");
+        var masked = ConnectionStringMasker.Mask("Server=DC\\DEV;Database=Sales;Trusted_Connection=True");
 
         Assert.Contains("DC\\DEV", masked, StringComparison.Ordinal);
         Assert.Contains("Sales", masked, StringComparison.Ordinal);
@@ -32,7 +32,7 @@ public sealed class ConnectionStringMaskingTests
     [Fact]
     public void Mask_does_not_echo_unparsable_input()
     {
-        var masked = Program.MaskConnectionString("this is ; not = a valid ; Password=oops; UnknownKey=1");
+        var masked = ConnectionStringMasker.Mask("this is ; not = a valid ; Password=oops; UnknownKey=1");
 
         Assert.DoesNotContain("oops", masked, StringComparison.Ordinal);
     }

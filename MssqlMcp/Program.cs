@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Mssql.McpServer.Connections;
 using Mssql.McpServer.InsightsLayer;
 using System.Diagnostics;
 
@@ -58,7 +59,7 @@ internal class Program
             return;
         }
 
-        log.Append($"Connection String: {MaskConnectionString(connStr)}");
+        log.Append($"Connection String: {ConnectionStringMasker.Mask(connStr)}");
 
         // Test SQL connection before starting MCP server
         try
@@ -73,7 +74,7 @@ internal class Program
         catch (Exception ex)
         {
             var errorMsg = $"FATAL: SQL Server connection test FAILED: {ex.Message}";
-            var detailMsg = $"Connection String (masked): {MaskConnectionString(connStr)}";
+            var detailMsg = $"Connection String (masked): {ConnectionStringMasker.Mask(connStr)}";
 
             Console.Error.WriteLine(errorMsg);
             Console.Error.WriteLine(detailMsg);
@@ -196,33 +197,6 @@ internal class Program
         }
 
         return Path.Combine(logDirectory, fileName);
-    }
-
-    /// <summary>
-    /// Masks secrets in a connection string for logging. Parses with <see cref="SqlConnectionStringBuilder"/>
-    /// so quoted values containing ';' cannot leak; unparsable strings are never echoed.
-    /// </summary>
-    internal static string MaskConnectionString(string connectionString)
-    {
-        if (string.IsNullOrEmpty(connectionString))
-        {
-            return string.Empty;
-        }
-
-        try
-        {
-            var builder = new SqlConnectionStringBuilder(connectionString);
-            if (!string.IsNullOrEmpty(builder.Password))
-            {
-                builder.Password = "***MASKED***";
-            }
-
-            return builder.ConnectionString;
-        }
-        catch (Exception)
-        {
-            return "<unparsable connection string - not logged>";
-        }
     }
 }
 
