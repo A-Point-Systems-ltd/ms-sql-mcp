@@ -77,12 +77,92 @@ public sealed class TableDdlRendererTests
     {
         var ddl = TableDdlRenderer.RenderTable(Orders(), includeDependents: true);
 
-        var fk = ddl.IndexOf("ALTER TABLE [sales].[Order Lines] WITH CHECK ADD CONSTRAINT [FK_OL_Orders] FOREIGN KEY ([OrderId]) REFERENCES [sales].[Orders] ([Id]) ON DELETE CASCADE", StringComparison.Ordinal);
         var ix = ddl.IndexOf("CREATE NONCLUSTERED INDEX [IX_OL_Order] ON [sales].[Order Lines] ([OrderId] ASC) INCLUDE ([Qty]) WHERE ([Qty]>(0))", StringComparison.Ordinal);
-        var nocheck = ddl.IndexOf("ALTER TABLE [sales].[Order Lines] NOCHECK CONSTRAINT [CK_OL_Qty]", StringComparison.Ordinal);
-        Assert.True(fk > 0 && ix > fk && nocheck > ix, ddl);
+        var fk = ddl.IndexOf("ALTER TABLE [sales].[Order Lines] WITH CHECK ADD CONSTRAINT [FK_OL_Orders] FOREIGN KEY ([OrderId]) REFERENCES [sales].[Orders] ([Id]) ON DELETE CASCADE", StringComparison.Ordinal);
+        var ck = ddl.IndexOf("ALTER TABLE [sales].[Order Lines] WITH NOCHECK ADD CONSTRAINT [CK_OL_Qty] CHECK ([Qty]>=(0));", StringComparison.Ordinal);
+        Assert.True(ix > 0 && fk > ix && ck > fk, ddl);
+        Assert.DoesNotContain("CONSTRAINT [CK_OL_Qty] CHECK ([Qty]>=(0))\r\n", ddl);
+        Assert.DoesNotContain("NOCHECK CONSTRAINT", ddl);
         Assert.Contains("sys.sp_addextendedproperty @name = N'MS_Description', @value = N'Order lines'", ddl);
         Assert.DoesNotContain("ON UPDATE NO ACTION", ddl);
+        Assert.StartsWith("SET ANSI_NULLS ON\r\nGO\r\nSET QUOTED_IDENTIFIER ON\r\nGO\r\nCREATE TABLE", ddl);
+    }
+
+    [Fact]
+    public void Disabled_check_is_inline_and_nochecked_untrusted_one_is_not_inlined()
+    {
+        var t = Orders() with { Checks = [new("CK_D", "([Qty]>(1))", true, true), new("CK_U", "([Qty]>(2))", false, true)] };
+        var ddl = TableDdlRenderer.RenderTable(t, includeDependents: true);
+        Assert.Contains("CONSTRAINT [CK_D] CHECK ([Qty]>(1))", ddl);
+        Assert.Contains("ALTER TABLE [sales].[Order Lines] NOCHECK CONSTRAINT [CK_D];", ddl);
+        Assert.Contains("WITH NOCHECK ADD CONSTRAINT [CK_U] CHECK ([Qty]>(2));", ddl);
+        Assert.DoesNotContain("NOCHECK CONSTRAINT [CK_U]", ddl);
+        Assert.DoesNotContain("\tCONSTRAINT [CK_U]", ddl);
+    }
+
+    [Fact]
+    public void Sparse_follows_collate()
+    {
+        var c = Col("c", "varchar", 10) with { Collation = "X_CI", IsSparse = true };
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { Columns = [c], Indexes = [], Checks = [], ForeignKeys = [] }, false);
+        Assert.Contains("[c] [varchar](10) COLLATE X_CI SPARSE NULL", ddl);
+    }
+
+    [Fact]
+    public void Collation_equal_to_database_is_suppressed_and_alias_types_get_collate()
+    {
+        var same = Col("a", "varchar", 10) with { Collation = "hebrew_ci_ai" };
+        var alias = Col("b", "Phone", 10) with { UserTypeSchema = "dbo", Collation = "Latin1_General_CI_AS" };
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { Columns = [same, alias], Indexes = [], Checks = [], ForeignKeys = [] }, false);
+        Assert.Contains("[a] [varchar](10) NULL", ddl);
+        Assert.Contains("[b] [dbo].[Phone] COLLATE Latin1_General_CI_AS NULL", ddl);
+    }
+
+    [Fact]
+    public void Rowguidcol_is_rendered_before_nullability()
+    {
+        var c = Col("g", "uniqueidentifier", 16, nullable: false) with { IsRowGuidCol = true };
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { Columns = [c], Indexes = [], Checks = [], ForeignKeys = [] }, false);
+        Assert.Contains("[g] [uniqueidentifier] ROWGUIDCOL NOT NULL", ddl);
+    }
+
+    [Fact]
+    public void Foreign_key_actions_not_for_replication_and_disabled()
+    {
+        var fk = new ForeignKeyMeta("FK_X", "dbo", "c", ["a", "b"], "dbo", "p", ["x", "y"], "SET_NULL", "CASCADE", true, true, true);
+        Assert.Equal(
+            "ALTER TABLE [dbo].[c] WITH NOCHECK ADD CONSTRAINT [FK_X] FOREIGN KEY ([a], [b]) REFERENCES [dbo].[p] ([x], [y]) ON DELETE SET NULL ON UPDATE CASCADE NOT FOR REPLICATION;\r\nGO\r\nALTER TABLE [dbo].[c] NOCHECK CONSTRAINT [FK_X];",
+            TableDdlRenderer.RenderForeignKey(fk));
+    }
+
+    [Fact]
+    public void Disabled_indexes_are_emitted_last()
+    {
+        var disabled = new IndexMeta("IX_D", 2, false, false, false, null, true, [new("OrderId", false, false)]);
+        var t = Orders() with { Indexes = [Orders().Indexes[0], disabled] };
+        var ddl = TableDdlRenderer.RenderTable(t, includeDependents: true);
+        var dis = ddl.IndexOf("ALTER INDEX [IX_D] ON [sales].[Order Lines] DISABLE;", StringComparison.Ordinal);
+        Assert.True(dis > ddl.IndexOf("sp_addextendedproperty", StringComparison.Ordinal), ddl);
+        Assert.True(dis > ddl.IndexOf("FOREIGN KEY", StringComparison.Ordinal), ddl);
+        Assert.Equal(dis, ddl.LastIndexOf("ALTER INDEX", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Disabled_constraint_backed_index_adds_warning()
+    {
+        var pk = new IndexMeta("PK_D", 1, true, true, false, null, true, [new("Id", false, false)]);
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { Indexes = [pk] }, false);
+        Assert.Contains("-- WARNING: constraint [PK_D] is disabled on the source", ddl);
+    }
+
+    [Fact]
+    public void Constraint_with_unexpected_index_type_is_warned_not_mislabelled()
+    {
+        var pk = new IndexMeta("PK_H", 7, true, true, false, null, false, [new("Id", false, false)]);
+        var ddl = TableDdlRenderer.RenderIndex("dbo", "t", pk, out var warning);
+        Assert.NotNull(warning);
+        Assert.Contains("NONCLUSTERED", ddl);
+        Assert.DoesNotContain(" CLUSTERED", ddl.Replace("NONCLUSTERED", ""));
     }
 
     [Fact]
