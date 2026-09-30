@@ -19,6 +19,15 @@ public sealed class ConnectionToolsTests
     private static ConnectionProfile P(string n) =>
         new(n, $"Server=s{n};Database=d{n};User ID=u;Password=topsecret", false, true, ConnectionSource.Configured);
 
+    [Theory]
+    [InlineData(0, 5)]
+    [InlineData(1, 1)]
+    [InlineData(4, 4)]
+    [InlineData(5, 5)]
+    [InlineData(30, 5)]
+    public void Probe_timeout_is_capped_and_infinite_becomes_five_seconds(int configured, int expected) =>
+        Assert.Equal(expected, Tools.ProbeTimeoutSeconds(configured));
+
     [Fact]
     public void List_connections_reports_rule_and_hides_secrets()
     {
@@ -53,7 +62,6 @@ public sealed class ConnectionToolsTests
         Assert.False(reg.IsOpen("b"));
         Assert.True(reg.ConnectionArgumentRequired);
     }
-
 
     [Fact]
     public void List_connections_count_and_rule_come_from_one_snapshot()

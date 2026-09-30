@@ -67,7 +67,7 @@ public partial class Tools
         {
             // The probe is capped at 5 s; the registered profile keeps the user's own connection string.
             var probe = new SqlConnectionStringBuilder(profile.ConnectionString);
-            probe.ConnectTimeout = Math.Min(probe.ConnectTimeout, 5);
+            probe.ConnectTimeout = ProbeTimeoutSeconds(probe.ConnectTimeout);
             await using var conn = new SqlConnection(probe.ConnectionString);
             await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = new SqlCommand("SELECT 1", conn);
@@ -85,6 +85,9 @@ public partial class Tools
             connection = registered,
         });
     }
+
+    /// <summary>Caps the probe timeout at 5 s; 0 means infinite in SqlClient and is capped too.</summary>
+    internal static int ProbeTimeoutSeconds(int configured) => configured is > 0 and < 5 ? configured : 5;
 
     [McpServerTool(Name = ToolNames.CloseConnection, Title = "Close Connection", ReadOnly = false, Idempotent = true, Destructive = false),
         Description("Closes a connection: tools can no longer use it and its pooled sessions are released. Ad-hoc connections are forgotten (which can make 'connection' optional again if only one remains); " +

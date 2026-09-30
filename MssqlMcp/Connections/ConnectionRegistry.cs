@@ -175,8 +175,11 @@ public sealed class ConnectionRegistry
         return ToStatus(stored, open: true);
     }
 
-    /// <summary>Closes a connection and drops its pooled sessions. Ad-hoc profiles are unregistered (the count drops).</summary>
-    public bool Close(string name) => CloseCore(name, requireAnotherOpen: false) != CloseResult.NotFound;
+    /// <summary>
+    /// Closes a connection and drops its pooled sessions. Ad-hoc profiles are unregistered (the count drops).
+    /// Has no last-open guard: for tests and internal use only; tools must call <see cref="TryClose"/>.
+    /// </summary>
+    internal bool Close(string name) => CloseCore(name, requireAnotherOpen: false) != CloseResult.NotFound;
 
     /// <summary>Like <see cref="Close"/> but refuses, atomically, to close the last open connection.</summary>
     public CloseResult TryClose(string name) => CloseCore(name, requireAnotherOpen: true);
