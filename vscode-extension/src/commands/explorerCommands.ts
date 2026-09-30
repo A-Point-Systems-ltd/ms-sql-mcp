@@ -2,9 +2,11 @@ import * as vscode from 'vscode';
 import { showDataPreview } from '../dataPanel';
 import { parseReadData, rowsToTable } from '../dataTable';
 import type { ObjectRef } from '../explorer/catalog';
+import type { DdlDocumentProvider } from '../explorer/ddlDocuments';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import type { ExplorerNode, ExplorerTreeProvider } from '../explorer/explorerTree';
-import { ddlUri, previewSql } from '../explorer/sqlText';
+import { DDL_SCHEME, ddlUri } from '../explorer/sqlText';
+import { dataViewRequest } from '../explorer/treeModel';
 import { Logger } from '../logger';
 import type { ObjectFilterViewProvider } from '../tree/filterView';
 
@@ -27,6 +29,7 @@ export function registerExplorerCommands(
   tree: ExplorerTreeProvider,
   explorer: ExplorerClient,
   filterView: ObjectFilterViewProvider,
+  ddl: DdlDocumentProvider,
   log: Logger,
 ): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void> | void) =>
@@ -59,12 +62,22 @@ export function registerExplorerCommands(
     const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
     const payload = await vscode.window.withProgress(
       { location: { viewId: 'msSqlMcp.explorer' }, title: `Loading ${title}` },
-      () => explorer.callResult(ref.connection, 'read_data', { sql: previewSql(ref.schema, ref.name, rows), maxRows: rows }));
+      () => explorer.callResult(ref.connection, 'read_data', dataViewRequest(ref, rows)));
     const result = parseReadData(payload);
     showDataPreview(title, ref.connection, rowsToTable(result.rows), result.truncated);
   });
 
-  reg('refresh', arg => tree.refresh(arg as ExplorerNode | undefined));
+  // Refresh: from a DDL editor's title (arg = its Uri) it re-scripts that document; from the tree it clears
+  // the node's cache. Without an argument (tree title bar, palette) it refreshes the tree and an active DDL editor.
+  reg('refresh', arg => {
+    if (arg instanceof vscode.Uri) {
+      ddl.reload(arg);
+      return;
+    }
+    tree.refresh(arg as ExplorerNode | undefined);
+    const active = vscode.window.activeTextEditor?.document.uri;
+    if (!arg && active?.scheme === DDL_SCHEME) ddl.reload(active);
+  });
 
   reg('clearFilter', () => {
     tree.setFilter('');

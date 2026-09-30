@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CATEGORIES } from '../out/explorer/catalog.js';
 import {
-  CLOSED_MESSAGE, categoryKey, childFolderNodes, childNodes, childrenKey, connectionDescription, ddlText, describeNode,
+  CLOSED_MESSAGE, categoryKey, childFolderNodes, childNodes, childrenKey, connectionDescription, connectionPrefix, dataViewRequest, ddlText, describeNode,
   errorNode, nodeId, objectNodes, parseChildren, rootCategories, scriptArgs, subCategories,
 } from '../out/explorer/treeModel.js';
 
@@ -20,7 +20,8 @@ test('connection item: description, contextValue, collapsible by open state', ()
   assert.equal(open.command, undefined);
   const closed = describeNode({ kind: 'connection', profile: profile({ open: false }) });
   assert.equal(closed.contextValue, 'msSqlMcp.conn.closed');
-  assert.equal(closed.collapsible, false);
+  // Collapsible, so expanding it shows CLOSED_MESSAGE.
+  assert.equal(closed.collapsible, true);
   assert.equal(CLOSED_MESSAGE, 'Closed - right-click › Open to browse');
 });
 
@@ -124,4 +125,21 @@ test('cache keys and stable ids', () => {
   assert.equal(nodeId(a), nodeId(b));
   assert.notEqual(nodeId(a), nodeId(objectNodes('other', cat('tables'), [{ schema: 'dbo', name: 'T' }], '').nodes[0]));
   assert.equal(nodeId({ kind: 'message', text: 'x', isError: false }), undefined);
+});
+
+test('key and id components are escaped: "|" and "." inside names cannot collide', () => {
+  assert.notEqual(childrenKey('dev', 'a.b', 'c'), childrenKey('dev', 'a', 'b.c'));
+  assert.notEqual(childrenKey('dev', 'a|b', 'c'), childrenKey('dev', 'a', 'b|c'));
+  assert.ok(childrenKey('dev', 'x|y', 'z').startsWith(connectionPrefix('dev')));
+  assert.equal(childrenKey('dev', 'x|y', 'z').split('|').length, 3);
+  const id = (schema, name) => nodeId(objectNodes('dev', cat('tables'), [{ schema, name }], '').nodes[0]);
+  assert.notEqual(id('a|b', 'c'), id('a', 'b|c'));
+  assert.equal(id('a|b', 'c').split('|').length, id('dbo', 'T').split('|').length);
+});
+
+test('data view request asks for one extra row so the server can report truncation', () => {
+  assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'Table', schema: 'dbo', name: 'T' }, 500),
+    { sql: 'SELECT TOP (501) * FROM [dbo].[T]', maxRows: 500 });
+  assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'View', schema: 's', name: 'v]' }, 1),
+    { sql: 'SELECT TOP (2) * FROM [s].[v]]]', maxRows: 1 });
 });

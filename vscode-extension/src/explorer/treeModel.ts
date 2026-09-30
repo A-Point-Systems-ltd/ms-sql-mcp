@@ -4,7 +4,7 @@ import { pick } from '../client/parse';
 import type { ConnectionProfile } from '../connections/profile';
 import { matchesFilter } from '../tree/filter';
 import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
-import { qualified } from './sqlText';
+import { previewSql, qualified } from './sqlText';
 
 export interface ConnectionNode { kind: 'connection'; profile: ConnectionProfile }
 export interface CategoryNode { kind: 'category'; connection: string; def: CategoryDef }
@@ -49,8 +49,14 @@ const SCHEMA_SCOPED = new Set(['Table', 'View', 'ForeignKey', 'TableTrigger', 'S
 /** Server errors that only mean "the private process was restarted under this call". */
 const TRANSIENT = /Explorer restarted|Client disposed/i;
 
-export const categoryKey = (connection: string, categoryId: string): string => `${connection}|${categoryId}`;
-export const childrenKey = (connection: string, schema: string | undefined, name: string): string => `${connection}|${schema ?? ''}.${name}|children`;
+/** Escapes one key/id component so '|' (separator) and '.' (schema.name) inside names cannot collide. */
+const k = (v: string): string => encodeURIComponent(v).replace(/\./g, '%2E');
+
+/** Prefix shared by every cache key of one connection. */
+export const connectionPrefix = (connection: string): string => `${k(connection)}|`;
+export const categoryKey = (connection: string, categoryId: string): string => `${connectionPrefix(connection)}${categoryId}`;
+export const childrenKey = (connection: string, schema: string | undefined, name: string): string =>
+  `${connectionPrefix(connection)}${k(schema ?? '')}.${k(name)}|children`;
 
 const display = (ref: { schema?: string; name: string }): string => (ref.schema ? `${ref.schema}.${ref.name}` : ref.name);
 
@@ -104,6 +110,14 @@ export function childNodes(connection: string, folder: ChildFolderId, children: 
   return children[folder].map(ref => ({ kind: 'child', ref: { connection, ...ref } }));
 }
 
+/**
+ * read_data arguments for Data View: TOP (rows + 1) with maxRows = rows, so a table with more rows
+ * makes the server cut at `rows` and report truncated=true.
+ */
+export function dataViewRequest(ref: ObjectRef, rows: number): { sql: string; maxRows: number } {
+  return { sql: previewSql(ref.schema, ref.name, rows + 1), maxRows: rows };
+}
+
 export function scriptArgs(ref: ObjectRef): { objectType: string; name: string; parent?: string } {
   const name = ref.schema && SCHEMA_SCOPED.has(ref.scriptType) ? qualified(ref.schema, ref.name) : ref.name;
   return { objectType: ref.scriptType, name, ...(ref.parent ? { parent: ref.parent } : {}) };
@@ -129,10 +143,10 @@ export function errorNode(err: unknown): MessageNode {
 
 /** Stable tree id (keeps expansion state across refreshes). Message nodes have none. */
 export function nodeId(node: ExplorerNode): string | undefined {
-  const refId = (r: ObjectRef) => `${r.connection}|${r.scriptType}|${r.parent ?? ''}|${r.schema ?? ''}|${r.name}`;
+  const refId = (r: ObjectRef) => [r.connection, r.scriptType, r.parent ?? '', r.schema ?? '', r.name].map(k).join('|');
   switch (node.kind) {
-    case 'connection': return `conn|${node.profile.name}`;
-    case 'category': return `cat|${node.connection}|${node.def.id}`;
+    case 'connection': return `conn|${k(node.profile.name)}`;
+    case 'category': return `cat|${k(node.connection)}|${node.def.id}`;
     case 'object': return `obj|${refId(node.ref)}`;
     case 'childFolder': return `folder|${refId(node.parentRef)}|${node.folder}`;
     case 'child': return `child|${refId(node.ref)}`;
@@ -148,7 +162,7 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
       const p = node.profile;
       return {
         id, label: p.name, description: connectionDescription(p), tooltip: `${p.name}: ${connectionDescription(p)}`,
-        contextValue: p.open ? 'msSqlMcp.conn.open' : 'msSqlMcp.conn.closed', collapsible: p.open,
+        contextValue: p.open ? 'msSqlMcp.conn.open' : 'msSqlMcp.conn.closed', collapsible: true,
         icon: p.open ? 'database' : 'circle-slash',
       };
     }

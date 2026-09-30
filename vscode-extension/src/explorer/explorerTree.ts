@@ -7,7 +7,7 @@ import { qualified } from './sqlText';
 import type { ExplorerClient } from './explorerClient';
 import {
   CLOSED_MESSAGE, CategoryNode, ConnectionNode, EMPTY_MESSAGE, ExplorerNode, ItemSpec, ObjectChildren, ObjectNode,
-  categoryKey, childFolderNodes, childNodes, childrenKey, describeNode, errorNode, objectNodes, parseChildren,
+  categoryKey, childFolderNodes, childNodes, childrenKey, connectionPrefix, describeNode, errorNode, objectNodes, parseChildren,
   rootCategories, subCategories,
 } from './treeModel';
 
@@ -37,8 +37,8 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
   private readonly subs: vscode.Disposable[];
 
   constructor(private readonly store: ConnectionStore, private readonly explorer: ExplorerClient, private readonly log: Logger) {
-    // A profile change also resets the explorer process (ExplorerClient subscribes to the store itself,
-    // debounced); its onDidReset refreshes again once the new process set applies.
+    // No explorer.reset() here: ExplorerClient resets itself on store change (debounced), and the tree
+    // refreshes again on its onDidReset once the new profile set applies.
     this.subs = [
       store.onDidChange(() => this.refresh()),
       explorer.onDidReset(() => this.refresh()),
@@ -63,11 +63,11 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
       this.children.clear();
       this.nodes.clear();
     } else if (node.kind === 'connection') {
-      this.clearPrefix(`${node.profile.name}|`);
+      this.clearPrefix(node.profile.name);
     } else if (node.kind === 'category') {
       const ids = [node.def.id, ...CATEGORIES.filter(c => c.parent === node.def.id).map(c => c.id)];
       for (const id of ids) this.lists.delete(categoryKey(node.connection, id));
-      if (node.def.childFolders) this.clearPrefix(`${node.connection}|`, this.children);
+      if (node.def.childFolders) this.clearPrefix(node.connection, this.children);
     } else if (node.kind === 'object') {
       this.children.delete(childrenKey(node.ref.connection, node.ref.schema, node.ref.name));
     }
@@ -153,7 +153,8 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     return p;
   }
 
-  private clearPrefix(prefix: string, only?: Map<string, unknown>): void {
+  private clearPrefix(connection: string, only?: Map<string, unknown>): void {
+    const prefix = connectionPrefix(connection);
     for (const map of only ? [only] : [this.lists, this.children]) {
       for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key);
     }

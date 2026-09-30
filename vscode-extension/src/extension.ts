@@ -26,6 +26,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerConnectionCommands(context, store, log, explorer);
 
   const tree = new ExplorerTreeProvider(store, explorer, log);
+  const ddlProvider = new DdlDocumentProvider(explorer, log);
   const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
   updateHasConnections();
@@ -33,11 +34,12 @@ export function activate(context: vscode.ExtensionContext): void {
     tree,
     vscode.window.createTreeView('msSqlMcp.explorer', { treeDataProvider: tree, showCollapseAll: true }),
     vscode.window.registerWebviewViewProvider(FILTER_VIEW_ID, filterView),
-    vscode.workspace.registerTextDocumentContentProvider(DDL_SCHEME, new DdlDocumentProvider(explorer, log)),
+    ddlProvider,
+    vscode.workspace.registerTextDocumentContentProvider(DDL_SCHEME, ddlProvider),
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, log);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, log);
 
   const provider = new MssqlMcpServerProvider(context, store);
   context.subscriptions.push(

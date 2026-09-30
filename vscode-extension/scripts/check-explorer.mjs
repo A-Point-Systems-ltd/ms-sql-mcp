@@ -6,8 +6,7 @@ import { McpStdioClient } from '../out/client/mcpStdioClient.js';
 import { pick } from '../out/client/parse.js';
 import { buildServerConnections } from '../out/connections/serverEnv.js';
 import { CATEGORIES, parseObjectList, parseTableChildren, parseViewIndexes } from '../out/explorer/catalog.js';
-import { previewSql } from '../out/explorer/sqlText.js';
-import { childNodes, ddlText, parseChildren, scriptArgs } from '../out/explorer/treeModel.js';
+import { childNodes, dataViewRequest, ddlText, parseChildren, scriptArgs } from '../out/explorer/treeModel.js';
 import { parseReadData, rowsToTable } from '../out/dataTable.js';
 
 if (process.env.RUN_DCDEV_EXT_CHECK !== '1') { console.log('Skipped (set RUN_DCDEV_EXT_CHECK=1).'); process.exit(0); }
@@ -60,12 +59,18 @@ try {
       if (k) await ddl(`${k.ref.scriptType} ${k.ref.name}`, k.ref);
     }
   }
-  // Data View: previewSql + read_data on every table/view until one returns rows; counts only.
+  // Data View: dataViewRequest (TOP n+1, maxRows n) + read_data on every table/view until one returns rows; counts only.
   const preview = async (kind, o) => {
     try {
-      const r = parseReadData(await full('read_data', { sql: previewSql(o.schema, o.name, 500), maxRows: 500 }));
+      const r = parseReadData(await full('read_data', dataViewRequest(o, 500)));
       const grid = rowsToTable(r.rows);
       console.log(`read_data ${kind} ${o.schema}.${o.name}: rows=${grid.data.length} columns=${grid.columns.length} truncated=${r.truncated}`);
+      if (grid.data.length > 1) {
+        // Same request with a cap below the row count: the server must report truncation.
+        const cap = grid.data.length - 1;
+        const c = parseReadData(await full('read_data', dataViewRequest(o, cap)));
+        console.log(`read_data ${kind} ${o.schema}.${o.name} (Data View rows=${cap}): rows=${c.rows.length} truncated=${c.truncated} maxRows=${c.maxRows}`);
+      }
       return grid.data.length;
     } catch (e) { console.log(`read_data ${kind} ${o.schema}.${o.name}: ERROR ${e.message.split('\n')[0]}`); return 0; }
   };

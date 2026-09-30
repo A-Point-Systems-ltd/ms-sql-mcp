@@ -193,6 +193,13 @@
           "command": "msSqlMcp.showDdl",
           "when": "false"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "msSqlMcp.refresh",
+          "when": "resourceScheme == mssql-ddl",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
