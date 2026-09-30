@@ -103,10 +103,19 @@ internal static partial class ConnectionConfigLoader
         }
     }
 
+    /// <summary>
+    /// Substitutes ${env:NAME}. A placeholder enclosed in double quotes ("${env:NAME}") sits inside a quoted
+    /// connection-string value, so any '"' in the substituted text is doubled (SqlConnectionStringBuilder rule);
+    /// otherwise the value is substituted as is.
+    /// </summary>
     private static string ExpandEnv(string value, string profileName, Func<string, string?> getEnv) =>
         EnvPlaceholderRegex().Replace(value, m =>
-            getEnv(m.Groups[1].Value)
-            ?? throw new InvalidOperationException($"Connection '{profileName}' references ${{env:{m.Groups[1].Value}}} but that environment variable is not set."));
+        {
+            var v = getEnv(m.Groups[1].Value)
+                ?? throw new InvalidOperationException($"Connection '{profileName}' references ${{env:{m.Groups[1].Value}}} but that environment variable is not set.");
+            var quoted = m.Index > 0 && value[m.Index - 1] == '"' && m.Index + m.Length < value.Length && value[m.Index + m.Length] == '"';
+            return quoted ? v.Replace("\"", "\"\"") : v;
+        });
 
     [GeneratedRegex(@"^[A-Za-z0-9_.\-]{1,64}\z")]
     private static partial Regex NameRegex();

@@ -96,4 +96,33 @@ public sealed class ConnectionConfigLoaderTests
         Assert.DoesNotContain("topsecret", p.ToString(), StringComparison.Ordinal);
         Assert.Contains("***MASKED***", p.ToString(), StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("p;w=d'x\"y z")]
+    [InlineData(" lead;trail ")]
+    [InlineData("a\"\"b")]
+    [InlineData("plain")]
+    public void Quoted_env_placeholder_round_trips_any_password(string password)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { name = "q", connectionString = "Data Source=s;Initial Catalog=d;User ID=u;Password=\"${env:PWD_Q}\";Encrypt=True" },
+        });
+        var p = Assert.Single(Load(new() { ["MSSQL_CONNECTIONS"] = json, ["PWD_Q"] = password }));
+        var b = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(p.ConnectionString);
+        Assert.Equal(password, b.Password);
+        Assert.Equal("s", b.DataSource);
+        Assert.True(b.Encrypt == Microsoft.Data.SqlClient.SqlConnectionEncryptOption.Mandatory);
+    }
+
+    [Fact]
+    public void Unquoted_env_placeholder_is_substituted_raw()
+    {
+        var p = Assert.Single(Load(new()
+        {
+            ["MSSQL_CONNECTIONS"] = "[{\"name\":\"r\",\"connectionString\":\"Data Source=${env:SRV};Initial Catalog=d\"}]",
+            ["SRV"] = "host\"x",
+        }));
+        Assert.Equal("Data Source=host\"x;Initial Catalog=d", p.ConnectionString);
+    }
 }

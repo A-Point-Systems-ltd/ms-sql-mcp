@@ -19,7 +19,7 @@ export function timestamp(d: Date): string {
   return `${p(d.getFullYear(), 4)}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-/** `<path>.<yyyyMMddHHmmss>.bak` */
-export function backupPath(configPath: string, now: Date): string {
-  return `${configPath}.${timestamp(now)}.bak`;
+/** `<path>.<yyyyMMddHHmmss>.bak`; `attempt` > 0 adds `-<attempt+1>` so two backups in one second do not collide. */
+export function backupPath(configPath: string, now: Date, attempt = 0): string {
+  return `${configPath}.${timestamp(now)}${attempt > 0 ? `-${attempt + 1}` : ''}.bak`;
 }

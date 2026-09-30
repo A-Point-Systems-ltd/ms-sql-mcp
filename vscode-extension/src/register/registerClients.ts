@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { ConnectionStore } from '../connections/store';
 import { EXE_NAME, resolveExe } from '../exe';
 import { Logger } from '../logger';
-import { registerClaudeCode, manualCommand } from './claudeCode';
+import { registerClaudeCode, powershellCommand } from './claudeCode';
 import { claudeDesktopConfigPaths, cursorConfigPath } from './clientPaths';
 import { atomicWriteFile, writeClientConfig } from './configWriter';
 import { buildConnectionsFile, needsSecretDecision } from './connectionsFile';
@@ -35,7 +35,7 @@ export async function writeConnectionsFile(context: vscode.ExtensionContext, sto
   const file = connectionsFilePath(context);
   atomicWriteFile(file, result.json);
   await context.globalState.update(PASSWORDS_FLAG, includePasswords);
-  return { file, ...result };
+  return { file, envVars: result.envVars, skipped: result.skipped };
 }
 
 function buildEntry(exe: string, file: string): McpEntry {
@@ -125,11 +125,11 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
     const r = await registerClaudeCode(entry);
     if (r.status === 'registered') report.push('Claude Code: registered (user scope).');
     else if (r.status === 'failed') report.push(`Claude Code: FAILED - ${r.message}`);
-    else { report.push(`Claude Code: not registered (${r.reason}).`); copyCmd = manualCommand(entry); }
+    else { report.push(`Claude Code: not registered (${r.reason}). Use the button to copy a command for Windows PowerShell.`); copyCmd = powershellCommand(entry); }
   }
 
   log.info('registerClients', report.join(' | '));
-  const buttons = copyCmd ? ['Copy Claude Code command'] : [];
+  const buttons = copyCmd ? ['Copy PowerShell command'] : [];
   const pick = await vscode.window.showInformationMessage(`MSSQL-MCP: ${report.join('\n')}`, { modal: report.length > 2 }, ...buttons);
   if (pick && copyCmd) await vscode.env.clipboard.writeText(copyCmd);
 }

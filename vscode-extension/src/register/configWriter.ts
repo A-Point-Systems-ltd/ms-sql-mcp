@@ -27,8 +27,15 @@ export function writeClientConfig(configPath: string, key: string, entry: McpEnt
   const merged = mergeMcpServer(existing, key, entry);
   let backup: string | undefined;
   if (existing !== undefined) {
-    backup = backupPath(configPath, now);
-    fs.copyFileSync(configPath, backup, fs.constants.COPYFILE_EXCL);
+    for (let attempt = 0; backup === undefined; attempt++) {
+      const candidate = backupPath(configPath, now, attempt);
+      try {
+        fs.copyFileSync(configPath, candidate, fs.constants.COPYFILE_EXCL);
+        backup = candidate;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 99) throw err;
+      }
+    }
   }
   atomicWriteFile(configPath, merged);
   return { path: configPath, backup };

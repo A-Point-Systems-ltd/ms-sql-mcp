@@ -19,7 +19,7 @@ export function needsSecretDecision(profiles: ConnectionProfile[]): boolean {
 }
 
 /**
- * Content of connections.json. With `includePasswords=false`, SQL auth becomes `Password=${env:MSSQLMCP_PWD_<NAME>}`;
+ * Content of connections.json. With `includePasswords=false`, SQL auth becomes `Password="${env:MSSQLMCP_PWD_<NAME>}"`;
  * raw connection strings that embed a password cannot be rewritten safely and are skipped.
  * SECURITY: with `includePasswords=true` the result contains clear-text passwords; never log it.
  */
@@ -52,6 +52,10 @@ export function buildConnectionsFile(profiles: ConnectionProfile[], passwords: M
     }
     usable.push(p);
   }
-  const arr = JSON.parse(buildServerConnections(usable, effective)) as unknown[];
+  // Quote the placeholder so the server doubles any '"' in the substituted password (see ConnectionConfigLoader.ExpandEnv).
+  const arr = (JSON.parse(buildServerConnections(usable, effective)) as { connectionString: string }[]).map(c => ({
+    ...c,
+    connectionString: c.connectionString.replace(/Password=(\$\{env:[A-Za-z_][A-Za-z0-9_]*\})/, 'Password="$1"'),
+  }));
   return { json: JSON.stringify(arr, null, 2) + '\n', envVars, skipped };
 }

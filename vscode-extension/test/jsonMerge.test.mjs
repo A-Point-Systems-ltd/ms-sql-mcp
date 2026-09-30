@@ -112,3 +112,28 @@ test('copyStableExe copies per version, keeps older versions, reuses same-size c
   assert.equal(fs.readFileSync(b, 'utf8'), 'abcdef');
   assert.throws(() => copyStableExe(src, dir, '..\\x', 'MssqlMcp.exe'), /version/);
 });
+
+test('backups within the same second get a counter suffix', () => {
+  const dir = tmp();
+  const p = path.join(dir, 'mcp.json');
+  fs.writeFileSync(p, '{}');
+  const d = new Date(2026, 0, 2, 3, 4, 5);
+  const a = writeClientConfig(p, 'ms-sql', entry, d);
+  const b = writeClientConfig(p, 'ms-sql', entry, d);
+  assert.equal(path.basename(a.backup), 'mcp.json.20260102030405.bak');
+  assert.equal(path.basename(b.backup), 'mcp.json.20260102030405-2.bak');
+});
+
+test('copyStableExe recopies a same-size file with a different mtime', () => {
+  const dir = tmp();
+  const src = path.join(dir, 'src.exe');
+  fs.writeFileSync(src, 'aaa');
+  const t = copyStableExe(src, dir, '2.0.0', 'MssqlMcp.exe');
+  fs.writeFileSync(src, 'bbb');
+  fs.utimesSync(src, new Date(2020, 0, 1), new Date(2020, 0, 1));
+  copyStableExe(src, dir, '2.0.0', 'MssqlMcp.exe');
+  assert.equal(fs.readFileSync(t, 'utf8'), 'bbb');
+  const m = fs.statSync(t).mtimeMs;
+  copyStableExe(src, dir, '2.0.0', 'MssqlMcp.exe');
+  assert.equal(fs.statSync(t).mtimeMs, m);
+});
