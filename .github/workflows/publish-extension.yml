@@ -17,6 +17,7 @@ on:
 jobs:
   publish:
     runs-on: windows-latest
+    # contents: write is used only by the final "Create GitHub release" step.
     permissions:
       contents: write
     defaults:
@@ -25,6 +26,13 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Real publish only from main
+        if: ${{ inputs.dryRun == false && github.ref != 'refs/heads/main' }}
+        shell: bash
+        run: |
+          echo "::error::dryRun=false is allowed only on refs/heads/main (this run is on ${{ github.ref }}). Re-run on main or keep dryRun=true."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -32,6 +40,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check versions are in sync
+        run: npm run check:version
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -45,12 +59,6 @@ jobs:
       - name: Publish server (single-file exe)
         working-directory: .
         run: dotnet publish MssqlMcp/MssqlMcp.csproj -c Release -p:PublishProfile=ReleaseSingleFile "-p:PublishDir=${{ runner.temp }}/exe/"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check versions are in sync
-        run: npm run check:version
 
       - name: Stage exe (SHA-256 recorded and verified)
         shell: pwsh
@@ -85,14 +93,14 @@ jobs:
         if: ${{ inputs.dryRun == false }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx vsce publish --packagePath "${{ steps.ver.outputs.vsix }}" -p "$env:VSCE_PAT"
+        run: npx vsce publish --packagePath "${{ steps.ver.outputs.vsix }}"
 
       - name: Publish to Open VSX
         if: ${{ inputs.dryRun == false }}
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx ovsx publish "${{ steps.ver.outputs.vsix }}" -p "$env:OVSX_PAT"
+        run: npx ovsx publish "${{ steps.ver.outputs.vsix }}"
 
       - name: Create GitHub release
         if: ${{ inputs.dryRun == false }}
-        run: gh release create "ext-v${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.vsix }}" --title "Extension v${{ steps.ver.outputs.version }}" --generate-notes
+        run: gh release create "ext-v${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.vsix }}" --title "Extension v${{ steps.ver.outputs.version }}" --target ${{ github.sha }} --generate-notes

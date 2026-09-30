@@ -1,7 +1,9 @@
 name: extension-ci
 on:
   pull_request:
-    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj']
+    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: windows-latest
