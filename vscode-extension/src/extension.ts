@@ -10,6 +10,7 @@ import { ExplorerTreeProvider } from './explorer/explorerTree';
 import { DDL_SCHEME } from './explorer/sqlText';
 import { Logger } from './logger';
 import { MssqlMcpServerProvider } from './mcpProvider';
+import { registerClientCommand } from './register/registerClients';
 import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -51,6 +52,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration('msSqlMcp.serverPath')) explorer.reset();
     }),
   );
+  registerClientCommand(context, store, log);
   log.info('activate', 'MSSQL-MCP activated');
 }
 
