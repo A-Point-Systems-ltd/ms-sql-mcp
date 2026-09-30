@@ -6,8 +6,7 @@
 //
 // - Copies <path-to-exe> to vscode-extension/bin/MssqlMcp.exe
 // - If a VERSION.txt is given (or found next to the exe), verifies the copied
-//   file's SHA256 against the SHA256 recorded there (same discipline as
-//   Deploy-McpRelease.ps1). Mismatch => non-zero exit.
+//   file's SHA256 against the SHA256 recorded there. Mismatch => non-zero exit.
 // - If --version is given, writes it into package.json "version" so the
 //   marketplace release mirrors the MCP version.
 

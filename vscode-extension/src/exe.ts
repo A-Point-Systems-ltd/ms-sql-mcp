@@ -12,7 +12,7 @@ export type ExeResolution =
  * Locate the server executable.
  *
  * `msSqlMcp.serverPath` wins when set, which lets an estate deploy one shared
- * binary (see docs/INSTALL-SERVER.md) instead of a ~107 MB copy per user. When it is
+ * binary instead of a copy per user. When it is
  * empty we fall back to the copy bundled inside the .vsix.
  */
 export function resolveExe(extensionUri: vscode.Uri): ExeResolution {
