@@ -1,37 +1,85 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildConnectionsFile, refreshConfirmationReason } from '../out/register/connectionsFile.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { buildConnectionsFile, planConnectionsFileRefresh, refreshConnectionsFileOnDisk } from '../out/register/connectionsFile.js';
 import { traceablePayload } from '../out/client/parse.js';
 
 const p = (name, extra = {}) => ({ name, server: 's', database: 'd', auth: 'windows', readOnly: false, insights: true, open: true, encrypt: 'optional', trustServerCertificate: true, ...extra });
 const sql = (name, extra = {}) => p(name, { auth: 'sql', user: 'u', ...extra });
+const names = json => JSON.parse(json).map(x => x.name);
 
-test('refresh with the same env vars and a non-empty file writes silently', () => {
+function tempFile(initialProfiles) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mssqlmcp-refresh-'));
+  const file = path.join(dir, 'connections.json');
+  fs.writeFileSync(file, buildConnectionsFile(initialProfiles, new Map(), false).json);
+  return file;
+}
+
+test('narrowing changes are always written: read-only, close', () => {
   const prev = buildConnectionsFile([sql('a'), p('w')], new Map(), false).json;
-  const next = buildConnectionsFile([sql('a'), p('w', { readOnly: true })], new Map(), false);
-  assert.equal(refreshConfirmationReason(prev, next), undefined);
+  const tightened = planConnectionsFileRefresh([sql('a'), p('w', { readOnly: true })], new Map(), false, prev);
+  assert.equal(tightened.action, 'write');
+  assert.deepEqual(tightened.pending, []);
+  assert.equal(JSON.parse(tightened.json).find(x => x.name === 'w').readOnly, true);
+
+  const closed = planConnectionsFileRefresh([sql('a'), p('w', { open: false })], new Map(), false, prev);
+  assert.equal(closed.action, 'write');
+  assert.deepEqual(names(closed.json), ['a']);
 });
 
-test('refresh that needs a new env var asks for confirmation and names it', () => {
+test('a profile that needs a new env var is left out and reported; the rest is written', () => {
   const prev = buildConnectionsFile([sql('a')], new Map(), false).json;
-  const next = buildConnectionsFile([sql('a'), sql('b')], new Map(), false);
-  const reason = refreshConfirmationReason(prev, next);
-  assert.ok(reason);
-  assert.match(reason, /MSSQLMCP_PWD_B/);
-  assert.doesNotMatch(reason, /MSSQLMCP_PWD_A/);
+  const plan = planConnectionsFileRefresh([sql('a'), sql('b')], new Map(), false, prev);
+  assert.equal(plan.action, 'write');
+  assert.deepEqual(names(plan.json), ['a']);
+  assert.deepEqual(plan.pending, [{ name: 'b', envVar: 'MSSQLMCP_PWD_B' }]);
+  assert.doesNotMatch(plan.json, /MSSQLMCP_PWD_B/);
 });
 
-test('refresh that would write an empty file asks for confirmation', () => {
+test('an unreadable previous file counts as referencing no variables', () => {
+  const plan = planConnectionsFileRefresh([sql('a'), p('w')], new Map(), false, undefined);
+  assert.deepEqual(names(plan.json), ['w']);
+  assert.deepEqual(plan.pending.map(x => x.name), ['a']);
+});
+
+test('no connections left means delete', () => {
   const prev = buildConnectionsFile([p('w')], new Map(), false).json;
-  const next = buildConnectionsFile([p('w', { open: false })], new Map(), false);
-  assert.equal(JSON.parse(next.json).length, 0);
-  assert.match(refreshConfirmationReason(prev, next), /no connections/i);
+  assert.equal(planConnectionsFileRefresh([p('w', { open: false })], new Map(), false, prev).action, 'delete');
+  // Only a pending profile left: still nothing usable.
+  const only = planConnectionsFileRefresh([p('w', { open: false }), sql('b')], new Map(), false, prev);
+  assert.equal(only.action, 'delete');
+  assert.deepEqual(only.pending.map(x => x.name), ['b']);
 });
 
-test('dropping an env var is fine; an unreadable previous file counts as having none', () => {
-  const prev = buildConnectionsFile([sql('a'), sql('b')], new Map(), false).json;
-  assert.equal(refreshConfirmationReason(prev, buildConnectionsFile([sql('a')], new Map(), false)), undefined);
-  assert.match(refreshConfirmationReason(undefined, buildConnectionsFile([sql('a')], new Map(), false)), /MSSQLMCP_PWD_A/);
+test('with passwords written to the file nothing is pending', () => {
+  const prev = buildConnectionsFile([p('w')], new Map(), false).json;
+  const plan = planConnectionsFileRefresh([p('w'), sql('b')], new Map([['b', 'pw']]), true, prev);
+  assert.deepEqual(names(plan.json), ['w', 'b']);
+  assert.deepEqual(plan.pending, []);
+});
+
+test('on disk: closing the last open connection removes connections.json', () => {
+  const file = tempFile([p('w')]);
+  const r = refreshConnectionsFileOnDisk(file, [p('w', { open: false })], new Map(), false);
+  assert.equal(r.action, 'delete');
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('on disk: close while a new placeholder profile is pending rewrites without both', () => {
+  const file = tempFile([p('w'), p('x')]);
+  const r = refreshConnectionsFileOnDisk(file, [p('w'), p('x', { open: false }), sql('b')], new Map(), false);
+  assert.equal(r.action, 'write');
+  assert.deepEqual(names(fs.readFileSync(file, 'utf8')), ['w']);
+  assert.deepEqual(r.pending.map(x => x.name), ['b']);
+});
+
+test('on disk: missing file is never created', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mssqlmcp-refresh-'));
+  const file = path.join(dir, 'connections.json');
+  assert.equal(refreshConnectionsFileOnDisk(file, [p('w')], new Map(), false).action, 'none');
+  assert.equal(fs.existsSync(file), false);
 });
 
 test('read_data results are traced as a row count only', () => {

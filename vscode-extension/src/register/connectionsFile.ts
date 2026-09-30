@@ -1,5 +1,7 @@
 import { ConnectionProfile } from '../connections/profile';
 import { buildServerConnections } from '../connections/serverEnv';
+import * as fs from 'fs';
+import { atomicWriteFile } from './configWriter';
 import { passwordEnvVar } from './naming';
 
 export interface ConnectionsFileResult {
@@ -62,19 +64,44 @@ export function buildConnectionsFile(profiles: ConnectionProfile[], passwords: M
 
 const PLACEHOLDER_RE = /\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
+/** A profile left out of a refresh because its password placeholder needs a variable registered clients do not have yet. */
+export interface PendingProfile { name: string; envVar: string }
+
+export type RefreshPlan =
+  | { action: 'write'; json: string; pending: PendingProfile[] }
+  | { action: 'delete'; pending: PendingProfile[] };
+
 /**
- * Why an automatic refresh of connections.json must not be written silently, or undefined when it may be.
- * External clients read the file at start-up and the server exits (FATAL) on an unset variable or an empty
- * config, so a refresh that needs a variable the previous file did not reference, or that has no connections,
- * needs the user's confirmation (re-registering).
+ * Plan for an automatic refresh of an existing connections.json after a profile change. Narrowing changes (close,
+ * remove, read-only) must always reach the file, so the file is always rebuilt from the current profiles; only
+ * profiles whose placeholder variable is new since the last write are left out (external clients would FATAL on an
+ * unset variable) and reported as pending. With no connections left the file is deleted rather than written empty.
  */
-export function refreshConfirmationReason(previousJson: string | undefined, next: ConnectionsFileResult): string | undefined {
-  const count = (() => {
-    try { return (JSON.parse(next.json) as unknown[]).length; } catch { return 0; }
-  })();
-  if (count === 0) return 'the updated connections file would contain no connections, and registered clients would fail to start';
-  const before = new Set([...(previousJson ?? '').matchAll(PLACEHOLDER_RE)].map(m => m[1]));
-  const added = next.envVars.filter(v => !before.has(v));
-  if (added.length) return `the updated connections file needs environment variable(s) that registered clients do not have yet: ${added.join(', ')}`;
-  return undefined;
+export function planConnectionsFileRefresh(
+  profiles: ConnectionProfile[], passwords: Map<string, string>, includePasswords: boolean, previousJson: string | undefined,
+): RefreshPlan {
+  const known = new Set([...(previousJson ?? '').matchAll(PLACEHOLDER_RE)].map(m => m[1]));
+  const pending: PendingProfile[] = includePasswords
+    ? []
+    : profiles.filter(x => x.open && x.auth === 'sql').map(x => ({ name: x.name, envVar: passwordEnvVar(x.name) })).filter(x => !known.has(x.envVar));
+  const pendingNames = new Set(pending.map(x => x.name));
+  const result = buildConnectionsFile(profiles.filter(x => !pendingNames.has(x.name)), passwords, includePasswords);
+  const count = (JSON.parse(result.json) as unknown[]).length;
+  return count === 0 ? { action: 'delete', pending } : { action: 'write', json: result.json, pending };
+}
+
+/**
+ * Applies {@link planConnectionsFileRefresh} to `file`. Never creates the file: returns `none` when it does not exist.
+ * SECURITY: with `includePasswords=true` the written file contains clear-text passwords.
+ */
+export function refreshConnectionsFileOnDisk(
+  file: string, profiles: ConnectionProfile[], passwords: Map<string, string>, includePasswords: boolean,
+): RefreshPlan | { action: 'none' } {
+  if (!fs.existsSync(file)) return { action: 'none' };
+  let previous: string | undefined;
+  try { previous = fs.readFileSync(file, 'utf8'); } catch { previous = undefined; }
+  const plan = planConnectionsFileRefresh(profiles, passwords, includePasswords, previous);
+  if (plan.action === 'delete') fs.rmSync(file, { force: true });
+  else atomicWriteFile(file, plan.json);
+  return plan;
 }

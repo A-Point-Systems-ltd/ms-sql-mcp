@@ -8,7 +8,7 @@ import { registerClaudeCode, powershellCommand } from './claudeCode';
 import { claudeDesktopConfigPaths, cursorConfigPath } from './clientPaths';
 import { atomicWriteFile, writeClientConfig } from './configWriter';
 import { externalClientEnv } from '../connections/serverEnv';
-import { buildConnectionsFile, needsSecretDecision, refreshConfirmationReason } from './connectionsFile';
+import { buildConnectionsFile, needsSecretDecision, refreshConnectionsFileOnDisk } from './connectionsFile';
 import { McpEntry } from './jsonMerge';
 import { SERVER_KEY } from './naming';
 import { copyStableExe } from './stableExe';
@@ -75,25 +75,30 @@ export function registerClientCommand(context: vscode.ExtensionContext, store: C
 }
 
 /**
- * Rewrites an existing connections.json after a profile change. A change that registered clients could not start
- * with (a new ${env:} variable, or no connections left) is not written silently: the user is warned and can re-register.
+ * Rewrites an existing connections.json after a profile change. Close / remove / read-only always take effect; a
+ * profile that needs a new ${env:} variable is left out until the user re-registers, and with no connections left
+ * the file is deleted (registered clients then cannot start until a connection is opened and re-registered).
  */
 async function refreshConnectionsFile(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): Promise<void> {
-  const file = connectionsFilePath(context);
-  if (!fs.existsSync(file)) return;
   const withPasswords = context.globalState.get<boolean>(PASSWORDS_FLAG, false);
-  const next = buildConnectionsFile(store.list(), await store.passwords(), withPasswords);
-  let previous: string | undefined;
-  try { previous = fs.readFileSync(file, 'utf8'); } catch { previous = undefined; }
-  const reason = refreshConfirmationReason(previous, next);
-  if (!reason) {
-    await writeConnectionsFile(context, store, withPasswords);
+  const r = refreshConnectionsFileOnDisk(connectionsFilePath(context), store.list(), await store.passwords(), withPasswords);
+  if (r.action === 'none') return;
+  const pending = r.pending.length
+    ? ` Not added yet (define ${r.pending.map(x => x.envVar).join(', ')}, then re-register): ${r.pending.map(x => `'${x.name}'`).join(', ')}.`
+    : '';
+  if (r.action === 'delete') {
+    log.warn('registerClients', `connections.json deleted: no connections left.${pending}`);
+    const pick = await vscode.window.showWarningMessage(
+      `MSSQL-MCP: no open connections are left, so the connections file for Cursor / Claude was deleted. Registered clients will not start the server until you open a connection and re-register.${pending}`,
+      RE_REGISTER);
+    if (pick === RE_REGISTER) await vscode.commands.executeCommand('msSqlMcp.registerClients');
     return;
   }
-  log.warn('registerClients', `connections.json not refreshed automatically: ${reason}.`);
-  const pick = await vscode.window.showWarningMessage(
-    `MSSQL-MCP: the connections file used by Cursor / Claude was not updated: ${reason}. Re-register to update it.`, RE_REGISTER);
-  if (pick === RE_REGISTER) await vscode.commands.executeCommand('msSqlMcp.registerClients');
+  if (r.pending.length) {
+    log.warn('registerClients', `connections.json updated; pending: ${r.pending.map(x => x.name).join(', ')}.`);
+    const pick = await vscode.window.showWarningMessage(`MSSQL-MCP: the connections file for Cursor / Claude was updated.${pending}`, RE_REGISTER);
+    if (pick === RE_REGISTER) await vscode.commands.executeCommand('msSqlMcp.registerClients');
+  }
 }
 
 async function run(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): Promise<void> {

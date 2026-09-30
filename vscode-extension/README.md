@@ -44,7 +44,7 @@ VS Code agent mode lists **MSSQL-MCP** as an MCP server automatically. It serves
 
 **The multi-connection rule.** With exactly one open connection, agents may omit the `connection` argument. With more than one, every tool call **must** name its connection: there is no default connection. The server tells agents this in its instructions, in each tool's description and in `list_connections`, and an unnamed call returns an error that lists the valid names.
 
-When you add, edit, open or close a connection, or change a setting that affects the server, the server definition gets a new version, and VS Code indicates that the server changed and prompts you to refresh it, so agents see the new set. A changed password alone does not trigger this; restart the server from the MCP server list after changing one.
+When you add, edit, open or close a connection, or change a setting that affects the server, the server definition gets a new version, and VS Code should prompt you to restart the server so agents see the new set. If it does not, restart **MSSQL-MCP** from the MCP server list. A changed password alone does not change the version; restart the server after changing one.
 
 ## Setup
 
@@ -84,7 +84,7 @@ When a connection uses a SQL login, you choose how `connections.json` stores its
 - **Write passwords to a per-user file**: the password is written in clear text to the file (per-user folder). Only after you confirm.
 - **Use `${env:}` placeholders** (recommended): the file contains `Password="${env:MSSQLMCP_PWD_<NAME>}"`, and you define that user environment variable yourself. `<NAME>` is the connection name in upper case with every character other than `A-Z`, `0-9` and `_` replaced by `_`, e.g. `Prod-1` becomes `MSSQLMCP_PWD_PROD_1`. The quotes let the password contain `;`, `=` or `"`.
 
-The extension keeps `connections.json` current when your connections change. If a change would need a new environment variable, or would leave the file with no connections (the server would not start), it does not write it silently: it warns you and offers **Re-register**.
+The extension keeps `connections.json` current when your connections change: closing, removing or making a connection read-only always takes effect in the file (restart the client to pick it up). A new connection that needs a new `MSSQLMCP_PWD_<NAME>` variable is left out of the file until you define the variable and choose **Re-register** (the warning names it), so clients never start with an unset variable. When no open connection is left, the file is deleted and registered clients cannot start the server until you open a connection and re-register.
 
 ## Read-only and Close
 
