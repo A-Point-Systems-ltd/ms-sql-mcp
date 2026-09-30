@@ -100,16 +100,62 @@ public sealed class ScriptingRoundTripTests
         }
         finally
         {
+            await CleanupAsync($"IF DB_ID(N'{db}') IS NOT NULL BEGIN ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}]; END");
+        }
+    }
+
+    [SkippableFact]
+    public async Task Orphaned_sql_user_is_scripted_without_login_with_warning_and_loginless_user_without()
+    {
+        var suffix = Guid.NewGuid().ToString("N")[..12];
+        var db = $"McpScriptUsr_{suffix}";
+        var login = $"McpOrphan_{suffix}";
+        try
+        {
+            await using (var master = new SqlConnection($"{Server};Initial Catalog=master"))
+            {
+                try { await master.OpenAsync(); } catch (SqlException ex) { throw new SkipException($"LocalDB unavailable: {ex.Message}"); }
+                // Throwaway login with a random password on local LocalDB only; dropped again before scripting and in finally.
+                var password = Guid.NewGuid().ToString("N") + "aA1!";
+                await using var create = new SqlCommand(
+                    $"CREATE DATABASE [{db}]; CREATE LOGIN [{login}] WITH PASSWORD = N'{password}', CHECK_POLICY = OFF;", master);
+                await create.ExecuteNonQueryAsync();
+            }
+
+            var cs = $"{Server};Initial Catalog={db}";
+            await ExecBatchesAsync(cs, $"CREATE USER [orphan] FOR LOGIN [{login}]\nGO\nCREATE USER [loginless] WITHOUT LOGIN");
+            await ExecBatchesAsync($"{Server};Initial Catalog=master", $"DROP LOGIN [{login}]");
+
+            var orphan = await ScriptAsync(cs, "DatabaseUser", "orphan");
+            const string OrphanWarning = "user [orphan] has no matching login; scripted as CREATE USER [orphan] WITHOUT LOGIN";
+            Assert.Equal(OrphanWarning, Assert.Single(orphan.Warnings));
+            Assert.Equal($"-- WARNING: {OrphanWarning}\r\nCREATE USER [orphan] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];", orphan.Ddl);
+
+            var loginless = await ScriptAsync(cs, "DatabaseUser", "loginless");
+            Assert.Empty(loginless.Warnings);
+            Assert.Equal("CREATE USER [loginless] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];", loginless.Ddl);
+        }
+        finally
+        {
+            await CleanupAsync(
+                $"IF DB_ID(N'{db}') IS NOT NULL BEGIN ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}]; END; " +
+                $"IF SUSER_ID(N'{login}') IS NOT NULL DROP LOGIN [{login}];");
+        }
+    }
+
+    /// <summary>Best-effort cleanup that never throws, so it cannot mask the test's own failure.</summary>
+    private static async Task CleanupAsync(string sql)
+    {
+        try
+        {
             await using var master = new SqlConnection($"{Server};Initial Catalog=master");
-            try
-            {
-                await master.OpenAsync();
-                await using var drop = new SqlCommand($"IF DB_ID(N'{db}') IS NOT NULL BEGIN ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}]; END", master);
-                await drop.ExecuteNonQueryAsync();
-            }
-            catch (SqlException)
-            {
-            }
+            await master.OpenAsync();
+            await using var cmd = new SqlCommand(sql, master);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Exception)
+        {
+            // Swallowed on purpose: a cleanup failure must not replace the original assertion failure.
         }
     }
 }

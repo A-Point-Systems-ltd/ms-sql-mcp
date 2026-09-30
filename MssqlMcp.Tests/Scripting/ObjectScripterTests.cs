@@ -44,6 +44,30 @@ public sealed class ObjectScripterTests(Xunit.Abstractions.ITestOutputHelper out
         Assert.Contains("Unsupported objectType", error);
     }
 
+    [Theory]
+    [InlineData("Login")]
+    [InlineData("DatabaseUser")]
+    [InlineData("Index")]
+    [InlineData("DatabaseTrigger")]
+    [InlineData("Table")]
+    [InlineData("TableTrigger")]
+    public async Task Names_longer_than_sysname_are_rejected_before_any_query(string type)
+    {
+        using var unopened = new SqlConnection();
+        var (result, error) = await ObjectScripter.ScriptAsync(unopened, type, new string('x', 129), "dbo.t", CancellationToken.None);
+        Assert.Null(result);
+        Assert.Contains("128", error);
+    }
+
+    [Fact]
+    public async Task Index_parent_longer_than_sysname_is_rejected_before_any_query()
+    {
+        using var unopened = new SqlConnection();
+        var (result, error) = await ObjectScripter.ScriptAsync(unopened, "Index", "IX", "dbo." + new string('t', 129), CancellationToken.None);
+        Assert.Null(result);
+        Assert.Contains("128", error);
+    }
+
     /// <summary>
     /// Opt-in, read-only live check against a SQL Server 2008 R2 instance (never runs by default):
     /// set RUN_DCDEV_SCRIPTING_CHECK=1 and optionally DCDEV_CONNECTION_STRING (defaults to DC\DEV, Windows auth, master).

@@ -176,6 +176,23 @@ public sealed class TableDdlRendererTests
     }
 
     [Fact]
+    public void Table_type_reports_alias_collation_and_constraint_warnings()
+    {
+        var alias = Col("Phone", "Phone", 20) with { UserTypeSchema = "dbo", Collation = "Latin1_General_BIN" };
+        var pk = new IndexMeta("PK_TT", 7, true, true, false, null, false, [new("Id", false, false)]);
+        var shape = Orders() with { Columns = [Col("Id", "int", 4, 10, 0, nullable: false), alias], Indexes = [pk], Checks = [], Warnings = ["from reader"] };
+
+        var ddl = TableDdlRenderer.RenderTableType("dbo", "TT", shape, out var warnings);
+
+        Assert.Equal(3, warnings.Count);
+        Assert.Equal("from reader", warnings[0]);
+        Assert.Contains(warnings, w => w.Contains("alias type [dbo].[Phone]", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("constraint [PK_TT] is backed by index type 7", StringComparison.Ordinal));
+        Assert.All(warnings, w => Assert.Contains("-- WARNING: " + w, ddl));
+        Assert.DoesNotContain("COLLATE", ddl);
+    }
+
+    [Fact]
     public void Constraint_with_unexpected_index_type_is_warned_not_mislabelled()
     {
         var pk = new IndexMeta("PK_H", 7, true, true, false, null, false, [new("Id", false, false)]);

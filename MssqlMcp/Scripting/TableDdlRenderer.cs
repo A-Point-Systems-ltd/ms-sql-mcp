@@ -95,42 +95,50 @@ internal static class TableDdlRenderer
     public static string RenderTable(TableMeta t, bool includeDependents) => RenderTable(t, includeDependents, out _);
 
     /// <summary>
-    /// Same as <see cref="RenderTable(TableMeta, bool)"/>; <paramref name="warnings"/> receives every warning the script
-    /// carries as a comment (table-level, alias collation, constraint and index warnings), comment-safe.
+    /// Comment-safe warnings that apply to a table or table-type shape: the metadata's own warnings, alias-typed columns
+    /// whose collation cannot be reproduced, and constraint-backed indexes that cannot be scripted faithfully.
     /// </summary>
-    public static string RenderTable(TableMeta t, bool includeDependents, out IReadOnlyList<string> warnings)
+    private static List<string> ShapeWarnings(TableMeta t)
     {
-        var list = new List<string>();
-        warnings = list;
-        var table = Sql.Qualified(t.Schema, t.Name);
-        var sb = new StringBuilder("SET ANSI_NULLS ON\r\nGO\r\nSET QUOTED_IDENTIFIER ON\r\nGO\r\n");
-        void TopWarning(string w)
-        {
-            var safe = Sql.CommentSafe(w);
-            list.Add(safe);
-            sb.Append("-- WARNING: ").Append(safe).Append("\r\n");
-        }
-
-        foreach (var w in t.Warnings)
-        {
-            TopWarning(w);
-        }
+        var list = t.Warnings.Select(Sql.CommentSafe).ToList();
 
         // COLLATE is invalid on alias-typed columns (Msg 452), so a differing collation can only be reported.
         foreach (var c in t.Columns.Where(c => !c.IsComputed && c.UserTypeSchema is not null && c.Collation is not null
             && !string.Equals(c.Collation, t.DatabaseCollation, StringComparison.OrdinalIgnoreCase)))
         {
-            TopWarning($"column {Sql.Q(c.Name)} uses alias type {Sql.Qualified(c.UserTypeSchema!, c.TypeName)} with collation {c.Collation}; alias-typed columns take the database collation and this cannot be reproduced.");
+            list.Add(Sql.CommentSafe($"column {Sql.Q(c.Name)} uses alias type {Sql.Qualified(c.UserTypeSchema!, c.TypeName)} with collation {c.Collation}; alias-typed columns take the database collation and this cannot be reproduced."));
         }
 
         foreach (var i in t.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint))
         {
-            var cw = ConstraintWarning(i);
-            if (cw is not null)
+            if (ConstraintWarning(i) is { } cw)
             {
-                TopWarning(cw);
+                list.Add(Sql.CommentSafe(cw));
             }
         }
+
+        return list;
+    }
+
+    private static void AppendWarningComments(StringBuilder sb, IEnumerable<string> warnings)
+    {
+        foreach (var w in warnings)
+        {
+            sb.Append("-- WARNING: ").Append(w).Append("\r\n");
+        }
+    }
+
+    /// <summary>
+    /// Same as <see cref="RenderTable(TableMeta, bool)"/>; <paramref name="warnings"/> receives every warning the script
+    /// carries as a comment (table-level, alias collation, constraint and index warnings), comment-safe.
+    /// </summary>
+    public static string RenderTable(TableMeta t, bool includeDependents, out IReadOnlyList<string> warnings)
+    {
+        var list = ShapeWarnings(t);
+        warnings = list;
+        var table = Sql.Qualified(t.Schema, t.Name);
+        var sb = new StringBuilder("SET ANSI_NULLS ON\r\nGO\r\nSET QUOTED_IDENTIFIER ON\r\nGO\r\n");
+        AppendWarningComments(sb, list);
 
         var inlineChecks = t.Checks.Where(c => !includeDependents || !IsUntrustedEnabled(c)).ToList();
         var lines = t.Columns.Select(c => "\t" + RenderColumn(c, t.DatabaseCollation, allowNamedDefault: true)).ToList();
@@ -266,12 +274,23 @@ internal static class TableDdlRenderer
     public static string RenderAliasType(string schema, string name, ColumnMeta baseType) =>
         $"CREATE TYPE {Sql.Qualified(schema, name)} FROM {FormatType(baseType)}{(baseType.IsNullable ? " NULL" : " NOT NULL")};";
 
-    public static string RenderTableType(string schema, string name, TableMeta shape)
+    public static string RenderTableType(string schema, string name, TableMeta shape) => RenderTableType(schema, name, shape, out _);
+
+    /// <summary>
+    /// Renders CREATE TYPE ... AS TABLE. Warnings (shape metadata, alias collation, constraint) are returned in
+    /// <paramref name="warnings"/> and written as <c>-- WARNING:</c> lines before the statement.
+    /// </summary>
+    public static string RenderTableType(string schema, string name, TableMeta shape, out IReadOnlyList<string> warnings)
     {
+        var list = ShapeWarnings(shape);
+        warnings = list;
+        var sb = new StringBuilder();
+        AppendWarningComments(sb, list);
+
         // Table types allow only unnamed constraints.
         var lines = shape.Columns.Select(c => "\t" + RenderColumn(c, shape.DatabaseCollation, allowNamedDefault: false)).ToList();
         lines.AddRange(shape.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint).Select(i => "\t" + KeyClause(i)));
         lines.AddRange(shape.Checks.Select(c => $"\tCHECK {c.Definition}"));
-        return $"CREATE TYPE {Sql.Qualified(schema, name)} AS TABLE(\r\n{string.Join(",\r\n", lines)}\r\n);";
+        return sb.Append($"CREATE TYPE {Sql.Qualified(schema, name)} AS TABLE(\r\n{string.Join(",\r\n", lines)}\r\n);").ToString();
     }
 }

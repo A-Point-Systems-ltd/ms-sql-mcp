@@ -108,7 +108,7 @@ internal static class SecurityDdlRenderer
         var list = new List<string>();
         warnings = list;
         var stmts = new List<string>();
-        if (!r.IsFixed)
+        if (!r.IsFixed && !IsPublic(r.Name))
         {
             if (v.Major >= 11)
             {
@@ -127,7 +127,7 @@ internal static class SecurityDdlRenderer
                 : $"EXEC sys.sp_addsrvrolemember @loginame = {Sql.N(m)}, @rolename = {Sql.N(r.Name)};");
         }
 
-        return string.Join(Sep, stmts);
+        return stmts.Count > 0 ? string.Join(Sep, stmts) : NothingToScript(r.Name);
     }
 
     public static string RenderDatabaseUser(DatabaseUserMeta u, SqlServerVersion v, out IReadOnlyList<string> warnings)
@@ -187,7 +187,7 @@ internal static class SecurityDdlRenderer
 
             stmts.Add(create + ";");
         }
-        else if (!r.IsFixed)
+        else if (!r.IsFixed && !IsPublic(r.Name))
         {
             stmts.Add($"CREATE ROLE {Sql.Q(r.Name)}" + (r.Owner is not null ? $" AUTHORIZATION {Sql.Q(r.Owner)}" : "") + ";");
         }
@@ -197,8 +197,14 @@ internal static class SecurityDdlRenderer
             stmts.Add(DbMember(r.Name, m, v));
         }
 
-        return string.Join(Sep, stmts);
+        return stmts.Count > 0 ? string.Join(Sep, stmts) : NothingToScript(r.Name);
     }
+
+    /// <summary>The built-in <c>public</c> role (database principal_id 0, server principal_id 2) always exists and is never created.</summary>
+    private static bool IsPublic(string roleName) => string.Equals(roleName, "public", StringComparison.OrdinalIgnoreCase);
+
+    private static string NothingToScript(string roleName) =>
+        "-- " + Sql.CommentSafe($"{Sql.Q(roleName)} is a built-in role with no explicit members; nothing to script.");
 
     private static string DbMember(string role, string member, SqlServerVersion v) =>
         v.SupportsAlterRoleAddMember

@@ -175,7 +175,7 @@ internal static class CatalogReader
     public static async Task<DatabaseUserMeta?> ReadDatabaseUserAsync(SqlConnection conn, string name, CancellationToken ct)
     {
         var rows = await QueryAsync(conn, """
-            SELECT dp.name, dp.type, sp.name AS login_name, dp.default_schema_name, CASE WHEN dp.sid IS NULL OR (sp.sid IS NULL AND dp.type = 'S') THEN 1 ELSE 0 END AS without_login
+            SELECT dp.name, dp.type, sp.name AS login_name, dp.default_schema_name, CASE WHEN dp.sid IS NULL OR (dp.type = 'S' AND DATALENGTH(dp.sid) = 28) THEN 1 ELSE 0 END AS without_login
             FROM sys.database_principals dp LEFT JOIN sys.server_principals sp ON sp.sid = dp.sid
             WHERE dp.name = @Name AND dp.type IN ('S','U','G','E','X','C','K');
             """, c => AddName(c, "@Name", name),
@@ -197,7 +197,7 @@ internal static class CatalogReader
     public static async Task<DatabaseRoleMeta?> ReadDatabaseRoleAsync(SqlConnection conn, string name, CancellationToken ct)
     {
         var rows = await QueryAsync(conn, """
-            SELECT dp.name, dp.is_fixed_role, dp.type, o.name AS owner, dp.default_schema_name
+            SELECT dp.name, CONVERT(bit, CASE WHEN dp.is_fixed_role = 1 OR dp.principal_id = 0 THEN 1 ELSE 0 END), dp.type, o.name AS owner, dp.default_schema_name
             FROM sys.database_principals dp LEFT JOIN sys.database_principals o ON o.principal_id = dp.owning_principal_id
             WHERE dp.name = @Name AND dp.type IN ('R','A');
             """, c => AddName(c, "@Name", name),

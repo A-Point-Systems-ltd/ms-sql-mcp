@@ -94,6 +94,22 @@ public sealed class SecurityDdlRendererTests
     }
 
     [Fact]
+    public void Public_role_is_never_created()
+    {
+        // public is reported as non-fixed by the catalog (is_fixed_role = 0), but always exists.
+        var db = SecurityDdlRenderer.RenderDatabaseRole(new("public", false, false, "dbo", null, []), V2019);
+        Assert.DoesNotContain("CREATE", db);
+        Assert.StartsWith("-- ", db);
+
+        var dbWithMember = SecurityDdlRenderer.RenderDatabaseRole(new("public", false, false, "dbo", null, ["app"]), V2008);
+        Assert.Equal("EXEC sys.sp_addrolemember @rolename = N'public', @membername = N'app';", dbWithMember);
+
+        var server = SecurityDdlRenderer.RenderServerRole(new("public", false, []), V2019, out var w);
+        Assert.DoesNotContain("CREATE", server);
+        Assert.Empty(w);
+    }
+
+    [Fact]
     public void Server_role_variants()
     {
         var user = new ServerRoleMeta("ops", false, ["app"]);

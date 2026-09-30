@@ -18,6 +18,8 @@ internal static class ObjectScripter
 
     private const string Go = "\r\nGO\r\n";
 
+    private const int MaxSysnameLength = 128;
+
     public static async Task<(ScriptResult? result, string? error)> ScriptAsync(
         SqlConnection conn, string objectType, string name, string? parent, CancellationToken ct)
     {
@@ -30,6 +32,11 @@ internal static class ObjectScripter
         if (string.IsNullOrWhiteSpace(name))
         {
             return (null, "name is required.");
+        }
+
+        if (ValidateNames(type, name, parent) is { } invalid)
+        {
+            return (null, invalid);
         }
 
         var version = await CatalogReader.GetVersionAsync(conn, ct).ConfigureAwait(false);
@@ -87,6 +94,34 @@ internal static class ObjectScripter
     /// </summary>
     private static string SingleName(string input) =>
         ObjectNameParser.TryParseParts(input, out var parts, out _) && parts.Count == 1 ? parts[0] : input.Trim();
+
+    private static bool IsSingleNameType(string type) =>
+        type is "Index" or "DatabaseTrigger" or "Login" or "ServerRole" or "DatabaseUser" or "DatabaseRole";
+
+    /// <summary>
+    /// Validates name and parent before any query. Names longer than sysname (128) are rejected here so they are never
+    /// silently truncated by an nvarchar(128) parameter; multi-part names use the parser's own per-part limit.
+    /// </summary>
+    private static string? ValidateNames(string type, string name, string? parent)
+    {
+        string? error;
+        if (IsSingleNameType(type))
+        {
+            var single = SingleName(name);
+            if (single.Length > MaxSysnameLength)
+            {
+                return $"Invalid name '{single[..32]}...': {single.Length} characters exceeds the {MaxSysnameLength}-character sysname limit.";
+            }
+        }
+        else if (!(type == "TableTrigger"
+            ? ObjectNameParser.TryParseTrigger(name, out _, out error)
+            : ObjectNameParser.TryParse(name, out _, out error)))
+        {
+            return error;
+        }
+
+        return type == "Index" && !string.IsNullOrWhiteSpace(parent) && !ObjectNameParser.TryParse(parent, out _, out error) ? error : null;
+    }
 
     private static async Task<(ResolvedObject? obj, string? error)> ResolveAsync(
         SqlConnection conn, string type, string name, string[] typeCodes, bool trigger, CancellationToken ct)
@@ -285,15 +320,8 @@ internal static class ObjectScripter
             return (WarningOnly("Type", t.schema, t.name, DdlForm.Create, $"{Sql.Qualified(t.schema, t.name)} is a CLR type and is not scripted."), null);
         }
 
-        var warnings = t.tableShape.Warnings.Select(Sql.CommentSafe).ToList();
-        var sb = new StringBuilder();
-        foreach (var w in warnings)
-        {
-            sb.Append("-- WARNING: ").Append(w).Append("\r\n");
-        }
-
-        sb.Append(TableDdlRenderer.RenderTableType(t.schema, t.name, t.tableShape));
-        return (new ScriptResult("Type", t.schema, t.name, DdlForm.Create, sb.ToString(), warnings), null);
+        var ddl = TableDdlRenderer.RenderTableType(t.schema, t.name, t.tableShape, out var warnings);
+        return (new ScriptResult("Type", t.schema, t.name, DdlForm.Create, ddl, warnings), null);
     }
 
     private static async Task<(ScriptResult?, string?)> ScriptPrincipalAsync(SqlConnection conn, string type, string name, SqlServerVersion version, CancellationToken ct)
