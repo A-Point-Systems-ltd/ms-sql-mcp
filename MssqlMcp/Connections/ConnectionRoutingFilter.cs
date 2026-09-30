@@ -57,12 +57,19 @@ internal static class ConnectionRoutingFilter
         return null;
     }
 
+    /// <summary>
+    /// True for tools bound to a connection. Connection-management tools and names that are not tools at all pass
+    /// straight through, so an unknown tool gets the SDK's unknown-tool error instead of a connection error.
+    /// </summary>
+    public static bool IsRouted(string toolName) =>
+        ToolNames.All.Contains(toolName, StringComparer.Ordinal) && !ToolNames.ConnectionManagementTools.Contains(toolName);
+
     public static McpRequestHandler<CallToolRequestParams, CallToolResult> Create(
         McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>
         async (context, cancellationToken) =>
         {
             var toolName = context.Params?.Name ?? string.Empty;
-            if (ToolNames.ConnectionManagementTools.Contains(toolName))
+            if (!IsRouted(toolName))
             {
                 return await next(context, cancellationToken).ConfigureAwait(false);
             }

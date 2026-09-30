@@ -115,6 +115,36 @@ public sealed class ConnectionConfigLoaderTests
         Assert.True(b.Encrypt == Microsoft.Data.SqlClient.SqlConnectionEncryptOption.Mandatory);
     }
 
+    [Theory]
+    [InlineData("p;w=d'x\"y z")]
+    [InlineData("it's")]
+    [InlineData("''")]
+    [InlineData(" lead;trail ")]
+    [InlineData("plain")]
+    public void Single_quoted_env_placeholder_round_trips_any_password(string password)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { name = "q", connectionString = "Data Source=s;Initial Catalog=d;User ID=u;Password='${env:PWD_Q}';Encrypt=True" },
+        });
+        var p = Assert.Single(Load(new() { ["MSSQL_CONNECTIONS"] = json, ["PWD_Q"] = password }));
+        var b = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(p.ConnectionString);
+        Assert.Equal(password, b.Password);
+        Assert.Equal("s", b.DataSource);
+        Assert.True(b.Encrypt == Microsoft.Data.SqlClient.SqlConnectionEncryptOption.Mandatory);
+    }
+
+    [Fact]
+    public void Mismatched_quotes_around_placeholder_are_not_treated_as_quoted()
+    {
+        var p = Assert.Single(Load(new()
+        {
+            ["MSSQL_CONNECTIONS"] = "[{\"name\":\"r\",\"connectionString\":\"Data Source=s;Application Name='${env:APP}\\\";Initial Catalog=d\"}]",
+            ["APP"] = "x'y",
+        }));
+        Assert.Contains("'x'y\"", p.ConnectionString, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Unquoted_env_placeholder_is_substituted_raw()
     {

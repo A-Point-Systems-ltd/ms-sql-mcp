@@ -52,6 +52,10 @@ internal static class TableDdlRenderer
         if (c.IsIdentity)
         {
             sb.Append($" IDENTITY({c.IdentitySeed},{c.IdentityIncrement})");
+            if (c.IdentityNotForReplication)
+            {
+                sb.Append(" NOT FOR REPLICATION");
+            }
         }
 
         if (c.IsRowGuidCol)
@@ -71,8 +75,18 @@ internal static class TableDdlRenderer
     private static string KeyColumns(IEnumerable<IndexColumnMeta> cols) =>
         string.Join(", ", cols.Where(c => !c.IsIncluded).Select(c => $"{Sql.Q(c.Name)} {(c.IsDescending ? "DESC" : "ASC")}"));
 
-    private static string KeyClause(IndexMeta ix) =>
-        $"{(ix.IsPrimaryKey ? "PRIMARY KEY" : "UNIQUE")} {(ix.Type == 1 ? "CLUSTERED" : "NONCLUSTERED")} ({KeyColumns(ix.Columns)})";
+    /// <summary>PRIMARY KEY / UNIQUE clause; <paramref name="withFileGroup"/> adds <c>ON [fg]</c> (not valid in table types).</summary>
+    private static string KeyClause(IndexMeta ix, bool withFileGroup = true) =>
+        $"{(ix.IsPrimaryKey ? "PRIMARY KEY" : "UNIQUE")} {(ix.Type == 1 ? "CLUSTERED" : "NONCLUSTERED")} ({KeyColumns(ix.Columns)})"
+        + IndexOptions(ix)
+        + (withFileGroup ? OnFileGroup(ix.FileGroup) : "");
+
+    /// <summary>Only non-default options are emitted, so ordinary indexes stay option-free like SSMS output.</summary>
+    private static string IndexOptions(IndexMeta ix) => ix.IgnoreDupKey ? " WITH (IGNORE_DUP_KEY = ON)" : "";
+
+    private static string OnFileGroup(string? fileGroup) => fileGroup is null ? "" : $" ON {Sql.Q(fileGroup)}";
+
+    private static string CheckClause(CheckMeta c) => $"CHECK {(c.NotForReplication ? "NOT FOR REPLICATION " : "")}{c.Definition}";
 
     private static string? ConstraintWarning(IndexMeta ix)
     {
@@ -143,8 +157,9 @@ internal static class TableDdlRenderer
         var inlineChecks = t.Checks.Where(c => !includeDependents || !IsUntrustedEnabled(c)).ToList();
         var lines = t.Columns.Select(c => "\t" + RenderColumn(c, t.DatabaseCollation, allowNamedDefault: true)).ToList();
         lines.AddRange(t.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint).Select(i => $"\tCONSTRAINT {Sql.Q(i.Name)} {KeyClause(i)}"));
-        lines.AddRange(inlineChecks.Select(c => $"\tCONSTRAINT {Sql.Q(c.Name)} CHECK {c.Definition}"));
-        sb.Append("CREATE TABLE ").Append(table).Append("(\r\n").Append(string.Join(",\r\n", lines)).Append("\r\n);");
+        lines.AddRange(inlineChecks.Select(c => $"\tCONSTRAINT {Sql.Q(c.Name)} {CheckClause(c)}"));
+        sb.Append("CREATE TABLE ").Append(table).Append("(\r\n").Append(string.Join(",\r\n", lines)).Append("\r\n)")
+            .Append(OnFileGroup(t.FileGroup)).Append(';');
 
         if (!includeDependents)
         {
@@ -169,7 +184,7 @@ internal static class TableDdlRenderer
 
         foreach (var c in t.Checks.Where(IsUntrustedEnabled))
         {
-            sb.Append(Go).Append($"ALTER TABLE {table} WITH NOCHECK ADD CONSTRAINT {Sql.Q(c.Name)} CHECK {c.Definition};");
+            sb.Append(Go).Append($"ALTER TABLE {table} WITH NOCHECK ADD CONSTRAINT {Sql.Q(c.Name)} {CheckClause(c)};");
         }
 
         foreach (var c in t.Checks.Where(c => c.IsDisabled))
@@ -235,7 +250,7 @@ internal static class TableDdlRenderer
             sb.Append(" WHERE ").Append(ix.FilterDefinition);
         }
 
-        sb.Append(';');
+        sb.Append(IndexOptions(ix)).Append(OnFileGroup(ix.FileGroup)).Append(';');
         return sb.ToString();
     }
 
@@ -289,7 +304,7 @@ internal static class TableDdlRenderer
 
         // Table types allow only unnamed constraints.
         var lines = shape.Columns.Select(c => "\t" + RenderColumn(c, shape.DatabaseCollation, allowNamedDefault: false)).ToList();
-        lines.AddRange(shape.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint).Select(i => "\t" + KeyClause(i)));
+        lines.AddRange(shape.Indexes.Where(i => i.IsPrimaryKey || i.IsUniqueConstraint).Select(i => "\t" + KeyClause(i, withFileGroup: false)));
         lines.AddRange(shape.Checks.Select(c => $"\tCHECK {c.Definition}"));
         return sb.Append($"CREATE TYPE {Sql.Qualified(schema, name)} AS TABLE(\r\n{string.Join(",\r\n", lines)}\r\n);").ToString();
     }

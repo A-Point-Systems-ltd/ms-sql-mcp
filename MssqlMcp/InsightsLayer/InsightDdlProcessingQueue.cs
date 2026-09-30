@@ -70,7 +70,8 @@ public sealed class InsightDdlProcessingQueue(
             {
                 _ = _pending.TryRemove(name, out _);
                 var profile = registry.Find(name);
-                if (profile is null || !registry.IsOpen(name) || !profile.InsightsEnabled)
+                // Read-only profiles never write, so their DDL processing (watermark, archive, baselines) is skipped too.
+                if (profile is null || !registry.IsOpen(name) || !profile.InsightsEnabled || profile.ReadOnly)
                 {
                     continue;
                 }

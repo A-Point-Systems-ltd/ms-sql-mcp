@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using Mssql.McpServer.Connections;
 
@@ -24,12 +25,14 @@ public partial class Tools
 
     [McpServerTool(Name = ToolNames.OpenConnection, Title = "Open Connection", ReadOnly = false, Idempotent = true, Destructive = false, OpenWorld = true),
         Description("Opens a connection so tools can use it. Without connectionString: reopens a configured connection (see " + ToolNames.ListConnections + "). " +
-                    "With connectionString: registers an ad-hoc connection - only allowed when the server runs with MSSQL_ALLOW_ADHOC_CONNECTIONS=true; ad-hoc connections are read-only unless readOnly=false. " +
+                    "With connectionString: registers an ad-hoc connection - only allowed when the server runs with MSSQL_ALLOW_ADHOC_CONNECTIONS=true; ad-hoc connections are read-only unless readOnly=false " +
+                    "(which the operator must allow with MSSQL_ADHOC_ALLOW_WRITE=true). Ad-hoc connections must use SQL authentication unless the operator sets MSSQL_ADHOC_ALLOW_INTEGRATED_AUTH=true, " +
+                    "never AttachDBFilename or User Instance, and may be limited to the hosts in MSSQL_ADHOC_ALLOWED_HOSTS. " +
                     "The connection is tested before it is registered. Adding a second connection makes the 'connection' argument mandatory on every tool - check connectionRequired in the response.")]
     public async Task<DbOperationResult> OpenConnection(
         [Description("Connection name (1-64 letters, digits, '-', '_', '.').")] string name,
         [Description("Optional full SQL Server connection string for an ad-hoc connection. Pass null to reopen a configured one.")] string? connectionString = null,
-        [Description("Ad-hoc only: open as read-only (default true).")] bool readOnly = true,
+        [Description("Ad-hoc only: open as read-only (default true). false requires the operator switch MSSQL_ADHOC_ALLOW_WRITE=true.")] bool readOnly = true,
         CancellationToken cancellationToken = default)
     {
         ConnectionProfile profile;
@@ -60,6 +63,11 @@ public partial class Tools
                 return new DbOperationResult(false, $"'{name}' is a configured connection and cannot be redefined ad hoc.");
             }
 
+            if (AdhocConnectionPolicy.Validate(connectionString, readOnly, Environment.GetEnvironmentVariable) is { } refusal)
+            {
+                return new DbOperationResult(false, refusal);
+            }
+
             profile = new ConnectionProfile(name, connectionString, readOnly, InsightsEnabled: false, ConnectionSource.Adhoc);
         }
 
@@ -75,7 +83,13 @@ public partial class Tools
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return new DbOperationResult(false, $"Connection test failed for '{profile.Name}': {ex.Message}");
+            _logger.LogWarning("Connection test failed for '{Name}' ({Source}, {ConnectionString}): {Error}",
+                profile.Name, profile.Source, ConnectionStringMasker.Mask(profile.ConnectionString), ex.Message);
+
+            // Ad-hoc hosts are chosen by the agent: a detailed reason (unreachable vs login failed) would make this a network probe.
+            return profile.Source == ConnectionSource.Adhoc
+                ? new DbOperationResult(false, $"Connection test failed for '{profile.Name}'.")
+                : new DbOperationResult(false, $"Connection test failed for '{profile.Name}': {ex.Message}");
         }
 
         var registered = _connections.Register(profile);

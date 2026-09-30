@@ -14,9 +14,17 @@ internal static class CatalogReader
 {
     public static async Task<SqlServerVersion> GetVersionAsync(SqlConnection conn, CancellationToken ct)
     {
-        await using var cmd = new SqlCommand("SELECT CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion'));", conn);
-        var value = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        return SqlServerVersion.Parse(value as string ?? string.Empty);
+        await using var cmd = new SqlCommand(
+            "SELECT CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')), CONVERT(int, SERVERPROPERTY('EngineEdition'));", conn);
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return SqlServerVersion.Parse(string.Empty);
+        }
+
+        return SqlServerVersion.Parse(
+            reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+            reader.IsDBNull(1) ? 0 : reader.GetInt32(1));
     }
 
     /// <summary>Reads a table (or the internal table of a table type, via <c>type_table_object_id</c>). Null when the object is not visible.</summary>
@@ -35,7 +43,8 @@ internal static class CatalogReader
                    ut.is_user_defined, c.max_length, c.precision, c.scale, c.is_nullable, c.collation_name,
                    c.is_identity, CONVERT(nvarchar(40), ic.seed_value) AS seed, CONVERT(nvarchar(40), ic.increment_value) AS incr,
                    c.is_computed, cc.definition AS computed_definition, ISNULL(cc.is_persisted, 0) AS is_persisted,
-                   dc.name AS default_name, dc.definition AS default_definition, c.is_rowguidcol, c.is_sparse
+                   dc.name AS default_name, dc.definition AS default_definition, c.is_rowguidcol, c.is_sparse,
+                   ISNULL(ic.is_not_for_replication, 0) AS identity_not_for_replication
             FROM sys.columns c
             JOIN sys.types ut ON ut.user_type_id = c.user_type_id
             LEFT JOIN sys.identity_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id
@@ -48,8 +57,8 @@ internal static class CatalogReader
         var indexes = await ReadIndexesAsync(conn, objectId, null, ct).ConfigureAwait(false);
 
         var checks = await QueryAsync(conn,
-            "SELECT name, definition, is_disabled, is_not_trusted FROM sys.check_constraints WHERE parent_object_id = @Id ORDER BY name;",
-            c => AddId(c, objectId), r => new CheckMeta(r.GetString(0), r.GetString(1), Bool(r, 2), Bool(r, 3)), ct).ConfigureAwait(false);
+            "SELECT name, definition, is_disabled, is_not_trusted, is_not_for_replication FROM sys.check_constraints WHERE parent_object_id = @Id ORDER BY name;",
+            c => AddId(c, objectId), r => new CheckMeta(r.GetString(0), r.GetString(1), Bool(r, 2), Bool(r, 3), Bool(r, 4)), ct).ConfigureAwait(false);
 
         var foreignKeys = await ReadForeignKeysAsync(conn, objectId, byConstraint: false, ct).ConfigureAwait(false);
         var warnings = await ReadStorageWarningsAsync(conn, objectId, Sql.Qualified(schema, name), version, ct).ConfigureAwait(false);
@@ -61,8 +70,19 @@ internal static class CatalogReader
         var collation = await QueryAsync(conn, "SELECT CONVERT(sysname, DATABASEPROPERTYEX(DB_NAME(), 'Collation'));",
             null, r => Str(r, 0), ct).ConfigureAwait(false);
 
-        return new TableMeta(schema, name, collation.FirstOrDefault(), description.FirstOrDefault(), columns, indexes, checks, foreignKeys, warnings);
+        // Heap / clustered data space, only when it is a filegroup other than the default (partition schemes are warnings).
+        var fileGroup = await QueryAsync(conn, $"""
+            SELECT {NonDefaultFileGroup}
+            FROM sys.indexes i JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
+            WHERE i.object_id = @Id AND i.index_id IN (0, 1);
+            """, c => AddId(c, objectId), r => Str(r, 0), ct).ConfigureAwait(false);
+
+        return new TableMeta(schema, name, collation.FirstOrDefault(), description.FirstOrDefault(), columns, indexes, checks, foreignKeys, warnings,
+            fileGroup.FirstOrDefault());
     }
+
+    /// <summary>Select expression over <c>ds</c> (sys.data_spaces): the filegroup name when it is not the database default, else NULL.</summary>
+    private const string NonDefaultFileGroup = "CASE WHEN ds.type = 'FG' AND ds.is_default = 0 THEN ds.name END AS file_group";
 
     public static async Task<(IndexMeta ix, string schema, string table)?> ReadIndexAsync(SqlConnection conn, int parentObjectId, string indexName, CancellationToken ct)
     {
@@ -80,16 +100,19 @@ internal static class CatalogReader
     /// <summary>Indexes (type &gt; 0, i.e. not the heap) of a table or view; <paramref name="indexName"/> narrows to one.</summary>
     public static async Task<IReadOnlyList<IndexMeta>> ReadIndexesAsync(SqlConnection conn, int objectId, string? indexName, CancellationToken ct)
     {
-        var rows = await QueryAsync(conn, """
-            SELECT i.index_id, i.name, i.type, i.is_unique, i.is_primary_key, i.is_unique_constraint, i.filter_definition, i.is_disabled
-            FROM sys.indexes i WHERE i.object_id = @Id AND i.type > 0 AND (@Name IS NULL OR i.name = @Name) ORDER BY i.index_id;
+        var rows = await QueryAsync(conn, $"""
+            SELECT i.index_id, i.name, i.type, i.is_unique, i.is_primary_key, i.is_unique_constraint, i.filter_definition, i.is_disabled,
+                   i.ignore_dup_key, {NonDefaultFileGroup}
+            FROM sys.indexes i LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
+            WHERE i.object_id = @Id AND i.type > 0 AND (@Name IS NULL OR i.name = @Name) ORDER BY i.index_id;
             """,
             c =>
             {
                 AddId(c, objectId);
                 AddName(c, "@Name", indexName);
             },
-            r => (Id: r.GetInt32(0), Name: r.GetString(1), Type: r.GetByte(2), Unique: Bool(r, 3), Pk: Bool(r, 4), Uq: Bool(r, 5), Filter: Str(r, 6), Disabled: Bool(r, 7)),
+            r => (Id: r.GetInt32(0), Name: r.GetString(1), Type: r.GetByte(2), Unique: Bool(r, 3), Pk: Bool(r, 4), Uq: Bool(r, 5), Filter: Str(r, 6), Disabled: Bool(r, 7),
+                  IgnoreDupKey: Bool(r, 8), FileGroup: Str(r, 9)),
             ct).ConfigureAwait(false);
         if (rows.Count == 0)
         {
@@ -103,7 +126,7 @@ internal static class CatalogReader
             """, c => AddId(c, objectId), r => (IndexId: r.GetInt32(0), Col: new IndexColumnMeta(r.GetString(1), Bool(r, 2), Bool(r, 3))), ct).ConfigureAwait(false);
 
         return rows.Select(i => new IndexMeta(i.Name, i.Type, i.Unique, i.Pk, i.Uq, i.Filter, i.Disabled,
-            columns.Where(c => c.IndexId == i.Id).Select(c => c.Col).ToList())).ToList();
+            columns.Where(c => c.IndexId == i.Id).Select(c => c.Col).ToList(), i.IgnoreDupKey, i.FileGroup)).ToList();
     }
 
     public static async Task<ForeignKeyMeta?> ReadForeignKeyAsync(SqlConnection conn, int fkObjectId, CancellationToken ct)
@@ -129,6 +152,32 @@ internal static class CatalogReader
             FROM sys.triggers t JOIN sys.sql_modules m ON m.object_id = t.object_id WHERE t.parent_class = 0 AND t.name = @Name;
             """, c => AddName(c, "@Name", name), MapModule, ct).ConfigureAwait(false);
         return rows.Count == 0 ? null : rows[0];
+    }
+
+    /// <summary>
+    /// DISABLE TRIGGER statement for a disabled trigger, or null when it is enabled / not found. DML triggers are looked up
+    /// by object id (<paramref name="databaseTriggerName"/> null); database DDL triggers by name.
+    /// </summary>
+    public static async Task<string?> ReadTriggerDisableStatementAsync(SqlConnection conn, int? objectId, string? databaseTriggerName, CancellationToken ct)
+    {
+        if (databaseTriggerName is not null)
+        {
+            var ddl = await QueryAsync(conn, "SELECT t.is_disabled FROM sys.triggers t WHERE t.parent_class = 0 AND t.name = @Name;",
+                c => AddName(c, "@Name", databaseTriggerName), r => Bool(r, 0), ct).ConfigureAwait(false);
+            return ddl.Count == 1 && ddl[0] ? $"DISABLE TRIGGER {Sql.Q(databaseTriggerName)} ON DATABASE;" : null;
+        }
+
+        var dml = await QueryAsync(conn, """
+            SELECT t.is_disabled, SCHEMA_NAME(o.schema_id), o.name, SCHEMA_NAME(tro.schema_id), t.name
+            FROM sys.triggers t
+            JOIN sys.objects o ON o.object_id = t.parent_id
+            JOIN sys.objects tro ON tro.object_id = t.object_id
+            WHERE t.object_id = @Id AND t.parent_class = 1;
+            """, c => AddId(c, objectId ?? 0),
+            r => (Disabled: Bool(r, 0), ParentSchema: r.GetString(1), Parent: r.GetString(2), Schema: r.GetString(3), Name: r.GetString(4)), ct).ConfigureAwait(false);
+        return dml.Count == 1 && dml[0].Disabled
+            ? $"DISABLE TRIGGER {Sql.Qualified(dml[0].Schema, dml[0].Name)} ON {Sql.Qualified(dml[0].ParentSchema, dml[0].Parent)};"
+            : null;
     }
 
     public static async Task<LoginMeta?> ReadLoginAsync(SqlConnection conn, string name, CancellationToken ct)
@@ -391,7 +440,8 @@ internal static class CatalogReader
             DefaultName: Str(r, 16),
             DefaultDefinition: Str(r, 17),
             IsRowGuidCol: Bool(r, 18),
-            IsSparse: Bool(r, 19));
+            IsSparse: Bool(r, 19),
+            IdentityNotForReplication: Bool(r, 20));
     }
 
     private static (string? definition, bool ansiNulls, bool quotedIdentifier) MapModule(SqlDataReader r) =>

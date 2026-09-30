@@ -40,7 +40,7 @@ public partial class Tools
     private const string DescribeViewIndexesQuery = @"SELECT i.name, i.type_desc AS type, i.is_unique,
             STUFF((SELECT ',' + c.name FROM sys.index_columns ic
                 INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 1, '') AS keys
+                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 ORDER BY ic.key_ordinal FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '') AS keys
         FROM sys.indexes i
         WHERE i.object_id = @ObjectId AND i.type > 0
         ORDER BY i.index_id";

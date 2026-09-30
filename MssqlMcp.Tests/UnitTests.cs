@@ -101,6 +101,35 @@ namespace MssqlMcp.Tests
         }
 
         [Fact]
+        public async Task DescribeView_and_DescribeTable_return_index_keys_with_raw_characters()
+        {
+            var viewName = $"V_{Guid.NewGuid():N}";
+            Assert.True((await _tools.CreateTable($"CREATE TABLE {_tableName} ([a&b] INT NOT NULL, [c<d] INT NOT NULL, CONSTRAINT PK_{_tableName} PRIMARY KEY ([a&b], [c<d]))")).Success);
+            try
+            {
+                Assert.True((await _tools.ExecuteSQL($"CREATE INDEX IX_T_{_tableName} ON dbo.{_tableName} ([c<d], [a&b])")).Success);
+                Assert.True((await _tools.ExecuteSQL($"CREATE VIEW dbo.{viewName} WITH SCHEMABINDING AS SELECT [a&b], [c<d] FROM dbo.{_tableName}")).Success);
+                Assert.True((await _tools.ExecuteSQL($"CREATE UNIQUE CLUSTERED INDEX IX_{viewName} ON dbo.{viewName} ([a&b], [c<d])")).Success);
+                var relaxed = new System.Text.Json.JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+                var view = await _tools.DescribeView(viewName);
+                Assert.True(view.Success, view.Error);
+                Assert.Contains("\"keys\":\"a&b,c<d\"", System.Text.Json.JsonSerializer.Serialize(view.Data, relaxed));
+
+                var table = await _tools.DescribeTable(_tableName);
+                Assert.True(table.Success, table.Error);
+                var tableJson = System.Text.Json.JsonSerializer.Serialize(table.Data, relaxed);
+                Assert.Contains("\"keys\":\"a&b,c<d\"", tableJson); // primary key constraint
+                Assert.Contains("\"keys\":\"c<d,a&b\"", tableJson); // nonclustered index
+                Assert.DoesNotContain("&amp;", tableJson);
+            }
+            finally
+            {
+                await _tools.ExecuteSQL($"DROP VIEW IF EXISTS dbo.{viewName}");
+            }
+        }
+
+        [Fact]
         public async Task CreateTable_ReturnsSuccess_WhenSqlIsValid()
         {
             var sql = $"CREATE TABLE {_tableName} (Id INT PRIMARY KEY)";

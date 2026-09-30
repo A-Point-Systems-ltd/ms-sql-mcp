@@ -27,7 +27,7 @@ public partial class Tools
     private const string DescribeTableIndexesQuery = @"SELECT i.name, i.type_desc AS type, p.value AS description,
             STUFF((SELECT ',' + c.name FROM sys.index_columns ic
                 INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 1, '') AS keys
+                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id ORDER BY ic.key_ordinal FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '') AS keys
             FROM sys.indexes i
             LEFT JOIN sys.extended_properties p ON p.major_id = i.object_id AND p.minor_id = i.index_id AND p.name = 'MS_Description'
             WHERE i.object_id = @ObjectId AND i.is_primary_key = 0 AND i.is_unique_constraint = 0";
@@ -35,7 +35,7 @@ public partial class Tools
     private const string DescribeTableConstraintsQuery = @"SELECT kc.name, kc.type_desc AS type,
             STUFF((SELECT ',' + c.name FROM sys.index_columns ic
                 INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-                WHERE ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 1, '') AS keys
+                WHERE ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id ORDER BY ic.key_ordinal FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '') AS keys
             FROM sys.key_constraints kc
             WHERE kc.parent_object_id = @ObjectId";
 

@@ -234,20 +234,38 @@ internal static class ObjectScripter
         }
 
         var module = await CatalogReader.ReadModuleAsync(conn, o.ObjectId, ct).ConfigureAwait(false);
-        return (ComposeProgrammable(type, o.Schema, o.Name, module, version), null);
+        var disable = type == "TableTrigger"
+            ? await CatalogReader.ReadTriggerDisableStatementAsync(conn, o.ObjectId, null, ct).ConfigureAwait(false)
+            : null;
+        return (ComposeProgrammable(type, o.Schema, o.Name, module, version, disable), null);
     }
 
     private static async Task<(ScriptResult?, string?)> ScriptDatabaseTriggerAsync(SqlConnection conn, string name, SqlServerVersion version, CancellationToken ct)
     {
         var triggerName = SingleName(name);
         var module = await CatalogReader.ReadDatabaseTriggerAsync(conn, triggerName, ct).ConfigureAwait(false);
-        return module is null
-            ? (null, NotFound("DatabaseTrigger", name))
-            : (ComposeProgrammable("DatabaseTrigger", null, triggerName, module, version), null);
+        if (module is null)
+        {
+            return (null, NotFound("DatabaseTrigger", name));
+        }
+
+        var disable = await CatalogReader.ReadTriggerDisableStatementAsync(conn, null, triggerName, ct).ConfigureAwait(false);
+        return (ComposeProgrammable("DatabaseTrigger", null, triggerName, module, version, disable), null);
     }
 
-    /// <summary>SET headers + GO + the definition with its leading keyword rewritten for the server version + GO.</summary>
-    private static ScriptResult ComposeProgrammable(string type, string? schema, string name, (string? definition, bool ansiNulls, bool quotedIdentifier)? module, SqlServerVersion version)
+    internal const string DisabledTriggerWarning = "trigger is disabled on the source; scripted followed by DISABLE TRIGGER";
+
+    /// <summary>
+    /// SET headers + GO + the definition with its leading keyword rewritten for the server version + GO. A disabled trigger
+    /// (<paramref name="disableStatement"/> set) is followed by its DISABLE TRIGGER batch, with a warning.
+    /// </summary>
+    internal static ScriptResult ComposeProgrammable(
+        string type,
+        string? schema,
+        string name,
+        (string? definition, bool ansiNulls, bool quotedIdentifier)? module,
+        SqlServerVersion version,
+        string? disableStatement = null)
     {
         var form = ModuleFormRewriter.ProgrammableFormFor(version);
         if (UnavailableModule(type, schema, name, module, form) is { } unavailable)
@@ -259,14 +277,22 @@ internal static class ObjectScripter
         var body = ModuleFormRewriter.Rewrite(definition!, form, quotedIdentifier, out var warning);
         var warnings = new List<string>();
         var sb = new StringBuilder();
-        if (warning is not null)
+        foreach (var w in new[] { warning, disableStatement is null ? null : DisabledTriggerWarning })
         {
-            var safe = Sql.CommentSafe(warning);
-            warnings.Add(safe);
-            sb.Append("-- WARNING: ").Append(safe).Append("\r\n");
+            if (w is not null)
+            {
+                var safe = Sql.CommentSafe(w);
+                warnings.Add(safe);
+                sb.Append("-- WARNING: ").Append(safe).Append("\r\n");
+            }
         }
 
         sb.Append(SetHeader(ansiNulls, quotedIdentifier)).Append(body).Append("\r\nGO");
+        if (disableStatement is not null)
+        {
+            sb.Append("\r\n").Append(disableStatement).Append("\r\nGO");
+        }
+
         return new ScriptResult(type, schema, name, form, sb.ToString(), warnings);
     }
 

@@ -45,6 +45,22 @@ public sealed class ConnectionRoutingFilterTests
         Assert.Contains("read-only", error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("no_such_tool", false)]
+    [InlineData("", false)]
+    [InlineData("READ_DATA", false)]
+    [InlineData(ToolNames.ListConnections, false)]
+    [InlineData(ToolNames.OpenConnection, false)]
+    [InlineData(ToolNames.CloseConnection, false)]
+    [InlineData(ToolNames.ReadData, true)]
+    [InlineData(ToolNames.ExecuteSql, true)]
+    public void Only_known_data_tools_are_routed(string tool, bool routed) =>
+        Assert.Equal(routed, ConnectionRoutingFilter.IsRouted(tool));
+
+    [Fact]
+    public void Every_non_management_tool_is_routed() =>
+        Assert.All(ToolNames.All.Where(t => !ToolNames.ConnectionManagementTools.Contains(t)), t => Assert.True(ConnectionRoutingFilter.IsRouted(t), t));
+
     [Fact]
     public void Read_tools_are_allowed_on_read_only_connection()
     {

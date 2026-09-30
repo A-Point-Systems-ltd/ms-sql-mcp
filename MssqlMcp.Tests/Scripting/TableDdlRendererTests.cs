@@ -220,6 +220,65 @@ public sealed class TableDdlRendererTests
     }
 
     [Fact]
+    public void Ignore_dup_key_is_emitted_on_constraints_and_indexes_only_when_set()
+    {
+        var pk = Orders().Indexes[0] with { IgnoreDupKey = true };
+        var uq = Orders().Indexes[1];
+        var ix = new IndexMeta("UX_Sku", 2, true, false, false, null, false, [new("Sku", false, false)], IgnoreDupKey: true);
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { Indexes = [pk, uq, ix] }, includeDependents: true);
+
+        Assert.Contains("CONSTRAINT [PK_OL] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (IGNORE_DUP_KEY = ON)", ddl);
+        Assert.Contains("CONSTRAINT [UQ_OL_Sku] UNIQUE NONCLUSTERED ([OrderId] ASC, [Sku] DESC)", ddl);
+        Assert.DoesNotContain("[Sku] DESC) WITH", ddl);
+        Assert.Contains("CREATE UNIQUE NONCLUSTERED INDEX [UX_Sku] ON [sales].[Order Lines] ([Sku] ASC) WITH (IGNORE_DUP_KEY = ON);", ddl);
+        Assert.Equal(
+            "ALTER TABLE [sales].[Order Lines] ADD CONSTRAINT [PK_OL] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (IGNORE_DUP_KEY = ON);",
+            TableDdlRenderer.RenderIndex("sales", "Order Lines", pk, out _));
+        Assert.Contains("PRIMARY KEY CLUSTERED ([Id] ASC) WITH (IGNORE_DUP_KEY = ON)",
+            TableDdlRenderer.RenderTableType("dbo", "TT", Orders() with { Indexes = [pk], Checks = [], ForeignKeys = [] }));
+    }
+
+    [Fact]
+    public void Not_for_replication_on_identity_and_check()
+    {
+        var id = Col("Id", "int", 4, 10, 0, nullable: false) with { IsIdentity = true, IdentitySeed = "5", IdentityIncrement = "2", IdentityNotForReplication = true };
+        var t = Orders() with
+        {
+            Columns = [id],
+            Indexes = [],
+            ForeignKeys = [],
+            Checks = [new("CK_T", "([Id]>(0))", false, false, NotForReplication: true), new("CK_U", "([Id]>(1))", false, true, NotForReplication: true)],
+        };
+        var ddl = TableDdlRenderer.RenderTable(t, includeDependents: true);
+
+        Assert.Contains("[Id] [int] IDENTITY(5,2) NOT FOR REPLICATION NOT NULL", ddl);
+        Assert.Contains("CONSTRAINT [CK_T] CHECK NOT FOR REPLICATION ([Id]>(0))", ddl);
+        Assert.Contains("WITH NOCHECK ADD CONSTRAINT [CK_U] CHECK NOT FOR REPLICATION ([Id]>(1));", ddl);
+    }
+
+    [Fact]
+    public void Non_default_filegroup_is_emitted_on_table_constraints_and_indexes()
+    {
+        var pk = Orders().Indexes[0] with { FileGroup = "DATA" };
+        var ix = Orders().Indexes[2] with { FileGroup = "IDX]1" };
+        var ddl = TableDdlRenderer.RenderTable(Orders() with { Indexes = [pk, ix], FileGroup = "DATA" }, includeDependents: true);
+
+        Assert.Contains("CONSTRAINT [PK_OL] PRIMARY KEY CLUSTERED ([Id] ASC) ON [DATA]", ddl);
+        Assert.Contains("\r\n) ON [DATA];", ddl);
+        Assert.Contains("CREATE NONCLUSTERED INDEX [IX_OL_Order] ON [sales].[Order Lines] ([OrderId] ASC) INCLUDE ([Qty]) WHERE ([Qty]>(0)) ON [IDX]]1];", ddl);
+        Assert.DoesNotContain(" ON [DATA]", TableDdlRenderer.RenderTableType("dbo", "TT", Orders() with { Indexes = [pk], Checks = [], ForeignKeys = [] }));
+    }
+
+    [Fact]
+    public void Default_options_add_nothing()
+    {
+        var ddl = TableDdlRenderer.RenderTable(Orders(), includeDependents: true);
+        Assert.DoesNotContain("IGNORE_DUP_KEY", ddl);
+        Assert.DoesNotContain("NOT FOR REPLICATION", ddl);
+        Assert.Contains("\r\n);", ddl);
+    }
+
+    [Fact]
     public void Alias_and_table_types()
     {
         Assert.Equal("CREATE TYPE [dbo].[Phone] FROM [varchar](20) NOT NULL;",

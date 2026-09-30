@@ -136,6 +136,9 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 | `MSSQL_CONNECTIONS` | One of the three connection variables | — | JSON array of named connections. See [Multiple connections](#multiple-connections). |
 | `MSSQL_CONNECTIONS_FILE` | One of the three connection variables | — | Path to a file holding the same JSON array. |
 | `MSSQL_ALLOW_ADHOC_CONNECTIONS` | No | disabled | Set to `true` to let `open_connection` register new connections from a raw connection string at runtime. |
+| `MSSQL_ADHOC_ALLOW_INTEGRATED_AUTH` | No | disabled | Set to `true` to allow ad-hoc connections that use `Integrated Security` / `Trusted_Connection` or any `Authentication=Active Directory*` method (they send the server's own identity to the target host). |
+| `MSSQL_ADHOC_ALLOW_WRITE` | No | disabled | Set to `true` to allow `open_connection` with `readOnly=false`. Without it, writable ad-hoc connections are refused. |
+| `MSSQL_ADHOC_ALLOWED_HOSTS` | No | any host | Comma-separated host names. When set, ad-hoc connections are refused unless the host part of `Data Source` (without `tcp:`, instance or port) matches one of them, case-insensitively. |
 | `USE_INSIGHTS_LAYER` | No | enabled | Opt-**out** switch. Set to `false`, `0`, `no`, `off`, or `disabled` to disable the AI Insights layer. Any other value (including unset) leaves it enabled. |
 | `INSIGHTS_AUTOPOPULATE` | No | enabled | Opt-out. When enabled (and insights layer is on), introspection auto-creates mechanical baseline insights and attaches enrichment directives. Set to a falsey value to disable auto-population only. |
 | `LOG_FILE_PATH` | No | `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/macOS) | Full file path, or a directory (timestamped log files are created inside it). |
@@ -192,7 +195,7 @@ When `USE_INSIGHTS_LAYER=false`, insight-specific tools return errors or empty s
 | Tool | MCP flags | Purpose |
 |------|-----------|---------|
 | **list_connections** | read-only | Lists every registered connection: name, open/closed, read-only, server, database (never credentials), plus `connectionRequired` and `count`. Call it first in a session. |
-| **open_connection** | write | Reopens a configured connection, or (only with `MSSQL_ALLOW_ADHOC_CONNECTIONS=true`) registers an ad-hoc one from `connectionString`. Ad-hoc connections are read-only unless `readOnly=false`. The connection is tested (5 s cap) before it is registered. |
+| **open_connection** | write | Reopens a configured connection, or (only with `MSSQL_ALLOW_ADHOC_CONNECTIONS=true`) registers an ad-hoc one from `connectionString`. Ad-hoc connections are read-only unless `readOnly=false` (which needs `MSSQL_ADHOC_ALLOW_WRITE=true`); see [ad-hoc limits](#5-mssql_allow_adhoc_connections). The connection is tested (5 s cap) before it is registered. |
 | **close_connection** | write | Closes a connection. Ad-hoc connections are forgotten; configured ones stay listed as closed and can be reopened. The last open connection cannot be closed. |
 
 These three tools take no `connection` argument. Every other tool accepts an optional `connection` argument; see [Multiple connections](#multiple-connections).
@@ -245,18 +248,19 @@ Path to a file containing the same JSON array. Connection strings may contain `$
 ]
 ```
 
-**Quoting.** A placeholder can sit unquoted or inside double quotes:
+**Quoting.** A placeholder can sit unquoted, inside double quotes or inside single quotes:
 
 ```text
 Password=${env:CRM_PASSWORD}      (unquoted: value substituted raw)
 Password="${env:CRM_PASSWORD}"    (quoted: any " in the value is doubled to "")
+Password='${env:CRM_PASSWORD}'    (quoted: any ' in the value is doubled to '')
 ```
 
-Use the quoted form for passwords. An unquoted value is inserted as is, so a password containing `;`, `=`, `"` or leading/trailing spaces breaks the connection string. When the placeholder is enclosed in double quotes, the server doubles every `"` in the substituted value, which is the ADO.NET escape rule, so the value is read back exactly as stored.
+Use a quoted form for passwords. An unquoted value is inserted as is, so a password containing `;`, `=`, `"` or leading/trailing spaces breaks the connection string. When the placeholder is enclosed in double (or single) quotes, the server doubles every `"` (or `'`) in the substituted value, which is the ADO.NET escape rule, so the value is read back exactly as stored.
 
 Inside a JSON string the quotes must be escaped: `"connectionString": "Server=sql01;Database=Crm;User Id=mcp_reader;Password=\"${env:CRM_PASSWORD}\""`.
 
-> **Unreleased:** quoted placeholders (`Password="${env:X}"`) are escaped as described above; unquoted placeholders behave as before.
+> **Unreleased:** quoted placeholders (`Password="${env:X}"` and `Password='${env:X}'`) are escaped as described above; unquoted placeholders behave as before.
 
 ### 4. The rule: when is `connection` required?
 
@@ -271,7 +275,18 @@ Startup in multi-connection mode: all targets are probed in parallel with a 5 s 
 
 ### 5. `MSSQL_ALLOW_ADHOC_CONNECTIONS`
 
-Off by default. When set to `true`, `open_connection` accepts a `name` plus a raw `connectionString` and registers it at runtime. Because this lets an agent point the server at arbitrary hosts (an SSRF-like capability), ad-hoc connections are **read-only by default** (`readOnly=false` must be passed explicitly), have the Insights layer disabled, and are probed with a 5 s timeout before registration. A configured connection cannot be redefined ad hoc. Adding an ad-hoc connection to a single-connection server makes `connection` mandatory from then on.
+Off by default. When set to `true`, `open_connection` accepts a `name` plus a raw `connectionString` and registers it at runtime. Because this lets an agent point the server at arbitrary hosts (an SSRF-like capability), ad-hoc connections are **read-only by default**, have the Insights layer disabled, and are probed with a 5 s timeout before registration. A configured connection cannot be redefined ad hoc. Adding an ad-hoc connection to a single-connection server makes `connection` mandatory from then on.
+
+The connection string is parsed before anything is sent, and the operator controls what the agent may do:
+
+| Agent asks for | Default | Operator switch |
+|----------------|---------|-----------------|
+| `Integrated Security` / `Trusted_Connection` / `Authentication=Active Directory*` | refused | `MSSQL_ADHOC_ALLOW_INTEGRATED_AUTH=true` |
+| `readOnly=false` | refused | `MSSQL_ADHOC_ALLOW_WRITE=true` |
+| Any host | allowed | `MSSQL_ADHOC_ALLOWED_HOSTS=host1,host2` limits it |
+| `AttachDBFilename`, `User Instance` | always refused | none |
+
+An unparsable string is refused without echoing it. When the connection test fails, the agent only gets `Connection test failed for '<name>'.` (so the tool cannot be used to probe the network); the detail is written to the server log with the password masked. Re-opening an ad-hoc name with a new connection string replaces the entry and clears the old entry's connection pool.
 
 ### 6. Read-only profiles
 
@@ -279,7 +294,7 @@ A connection with `"readOnly": true` refuses these tools with an error:
 
 `execute_sql`, `insert_data`, `update_data`, `create_table`, `drop_table`, `upsert_insight`, `install_insights_layer`, `refresh_insights`, `rebuild_baseline_insights`.
 
-Inspection tools, `read_data`, `get_insight`, `list_insights`, `get_insight_history` and `insights_check` still work. Read-only is enforced by this server, not by SQL Server: also use a least-privilege database login for connections that must never write.
+Inspection tools, `read_data`, `get_insight`, `list_insights`, `get_insight_history` and `insights_check` still work. A read-only connection makes **no writes at all**, including to the `AIInsights` tables: inspection tools still return cached insights, but on a read-only connection they never create a baseline, never archive a stale insight (it is reported as `StaleArchived` and left in place for a writable connection to archive), and background DDL processing is skipped. Read-only is enforced by this server, not by SQL Server: also use a least-privilege database login for connections that must never write.
 
 ### 7. Full `mcp.json` example
 
@@ -369,7 +384,7 @@ flowchart LR
 |-------|---------|
 | `Fresh` | Cached insight matches live object definition. |
 | `Absent` | No row in `SchemaInsights` (baseline may be created on next introspection if auto-pop is on). |
-| `StaleArchived` | Row was archived due to DDL or fingerprint drift. |
+| `StaleArchived` | Row was archived due to DDL or fingerprint drift. On a read-only connection the row is reported stale but not archived. |
 | `LayerDisabled` | `USE_INSIGHTS_LAYER=false`. |
 | `AccessDenied` | Could not read live definition (permissions). |
 | `DefinitionUnavailable` | Object exists but definition could not be resolved. |

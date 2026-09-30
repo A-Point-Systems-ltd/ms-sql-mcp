@@ -42,6 +42,15 @@ public sealed class InsightsLayerService(
 
     public bool IsEnabled => InsightsLayerEnvironment.IsInsightsLayerEnabled && CurrentConnection.Value is not { InsightsEnabled: false };
 
+    /// <summary>
+    /// False on a read-only profile: the layer then only reads (cached insights are still returned) and
+    /// never inserts, updates, archives or advances the watermark, so read-only means zero writes.
+    /// </summary>
+    private static bool CanWrite => CurrentConnection.Value is not { ReadOnly: true };
+
+    private static DbOperationResult ReadOnlyRefusal() =>
+        new(success: false, error: "The connection is read-only; the AI Insights layer does not write on read-only connections.");
+
     public async Task<LayerStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
         if (!IsEnabled)
@@ -139,6 +148,11 @@ public sealed class InsightsLayerService(
         if (!IsEnabled)
         {
             return await NoOpInsightsLayerService.Instance.InstallLayerAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!CanWrite)
+        {
+            return ReadOnlyRefusal();
         }
 
         try
@@ -292,7 +306,12 @@ public sealed class InsightsLayerService(
                 return (insight, InsightFreshness.AccessDenied);
             }
 
-            await ArchiveInsightAsync(conn, insight.InsightId, "ObjectMissing", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            // Read-only: report the row as stale without archiving it.
+            if (CanWrite)
+            {
+                await ArchiveInsightAsync(conn, insight.InsightId, "ObjectMissing", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            }
+
             return (null, InsightFreshness.StaleArchived);
         }
 
@@ -314,7 +333,11 @@ public sealed class InsightsLayerService(
                 live.ModifyDate,
                 live.Fingerprint))
         {
-            await ArchiveInsightAsync(conn, insight.InsightId, "FingerprintMismatch", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            if (CanWrite)
+            {
+                await ArchiveInsightAsync(conn, insight.InsightId, "FingerprintMismatch", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            }
+
             return (null, InsightFreshness.StaleArchived);
         }
 
@@ -363,7 +386,7 @@ public sealed class InsightsLayerService(
         string objectName,
         CancellationToken cancellationToken = default)
     {
-        if (!IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled)
+        if (!IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled || !CanWrite)
         {
             return await GetInsightForObjectAsync(objectType, schemaName, objectName, cancellationToken).ConfigureAwait(false);
         }
@@ -417,6 +440,11 @@ public sealed class InsightsLayerService(
         if (!IsEnabled)
         {
             return await NoOpInsightsLayerService.Instance.UpsertInsightAsync(input, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!CanWrite)
+        {
+            return ReadOnlyRefusal();
         }
 
         var schema = NormalizeSchema(input.SchemaName);
@@ -599,7 +627,7 @@ public sealed class InsightsLayerService(
 
     private async Task<DdlProcessingOutcome> RunDdlProcessingAsync(CancellationToken cancellationToken)
     {
-        if (!IsEnabled)
+        if (!IsEnabled || !CanWrite)
         {
             return DdlProcessingOutcome.Disabled;
         }

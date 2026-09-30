@@ -6,6 +6,7 @@ using Mssql.McpServer.InsightsLayer;
 
 namespace MssqlMcp.Tests.Connections;
 
+[Collection(EnvVarLock.Name)]
 public sealed class ConnectionToolsTests
 {
     private static (Tools tools, ConnectionRegistry reg) Create(params ConnectionProfile[] profiles)

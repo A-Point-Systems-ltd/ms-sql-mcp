@@ -12,12 +12,16 @@ internal static class Sql
 
     public static string Qualified(string schema, string name) => Q(schema) + "." + Q(name);
 
-    /// <summary>Makes text safe to place after a <c>--</c> comment marker by replacing control characters (CR, LF, ...) with spaces.</summary>
+    /// <summary>
+    /// Makes text safe to place after a <c>--</c> comment marker by replacing control characters (CR, LF, ...) and the
+    /// Unicode line/paragraph separators (U+2028, U+2029) with spaces.
+    /// </summary>
     public static string CommentSafe(string text) => string.Create(text.Length, text, static (span, src) =>
     {
         for (var i = 0; i < src.Length; i++)
         {
-            span[i] = char.IsControl(src[i]) ? ' ' : src[i];
+            var c = src[i];
+            span[i] = char.IsControl(c) || c is '\u2028' or '\u2029' ? ' ' : c;
         }
     });
 }

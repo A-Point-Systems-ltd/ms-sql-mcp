@@ -110,10 +110,113 @@ public sealed class McpProtocolTests
         });
     }
 
+    [SkippableFact]
+    public async Task Unknown_tool_in_multi_connection_mode_gets_unknown_tool_error_not_connection_error()
+    {
+        await using var client = await StartClientAsync(multiConnection: true);
+
+        string text;
+        try
+        {
+            text = Text(await client.CallToolAsync("no_such_tool", new Dictionary<string, object?>()));
+        }
+        catch (ModelContextProtocol.McpException ex)
+        {
+            text = ex.Message;
+        }
+
+        Assert.DoesNotContain("connection", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no_such_tool", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Two throwaway LocalDB databases, the real server over stdio, the Insights layer ON:
+    /// concurrent calls land on the database they name, and a read-only profile writes nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task Two_databases_route_by_name_and_read_only_profile_writes_nothing_with_insights_on()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(2);
+        var (csA, csB) = (scratch.ConnectionStrings[0], scratch.ConnectionStrings[1]);
+        var connections = System.Text.Json.JsonSerializer.Serialize(new object[]
+        {
+            new { name = "a", connectionString = csA, insights = true },
+            new { name = "b", connectionString = csB, insights = true },
+            new { name = "ro", connectionString = csA, readOnly = true, insights = true },
+        });
+
+        await using var client = await StartClientAsync(connections, insights: true);
+
+        // (1) Isolation: every concurrent call returns the database it named.
+        var calls = Enumerable.Range(0, 20).SelectMany(_ => new[] { "a", "b" }).Select(async name =>
+        {
+            var r = await client.CallToolAsync(ToolNames.ReadData, new Dictionary<string, object?> { ["sql"] = "SELECT DB_NAME() AS db", ["connection"] = name });
+            return (name, text: Text(r));
+        });
+        foreach (var (name, text) in await Task.WhenAll(calls))
+        {
+            var expected = name == "a" ? scratch.Names[0] : scratch.Names[1];
+            var other = name == "a" ? scratch.Names[1] : scratch.Names[0];
+            Assert.Contains(expected, text, StringComparison.Ordinal);
+            Assert.DoesNotContain(other, text, StringComparison.Ordinal);
+        }
+
+        // (2) Zero writes: the layer is installed and populated through the writable profile only.
+        var install = await client.CallToolAsync(ToolNames.InstallInsightsLayer, new Dictionary<string, object?> { ["connection"] = "a" });
+        Assert.Contains("\"success\":true", Text(install), StringComparison.OrdinalIgnoreCase);
+        await ScratchDatabases.ExecAsync(csA, "CREATE TABLE dbo.Orders (Id INT NOT NULL PRIMARY KEY, Amount DECIMAL(10,2) NULL);");
+        await ScratchDatabases.ExecAsync(csA, "CREATE VIEW dbo.vOrders AS SELECT Id, Amount FROM dbo.Orders;");
+        await ScratchDatabases.ExecAsync(csA, "CREATE PROCEDURE dbo.GetOrders AS SELECT Id FROM dbo.Orders;");
+        var seeded = await client.CallToolAsync(ToolNames.DescribeTable, new Dictionary<string, object?> { ["name"] = "dbo.Orders", ["connection"] = "a" });
+        Assert.Contains("\"success\":true", Text(seeded), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(csA, "SELECT COUNT(*) FROM AIInsights.SchemaInsights WHERE ObjectName = N'Orders';"));
+
+        // The table insight is now stale (archived on read before the fix); the view and procedure have
+        // none (a baseline was inserted on read before the fix).
+        await ScratchDatabases.ExecAsync(csA, "ALTER TABLE dbo.Orders ADD Note NVARCHAR(20) NULL;");
+        var before = await CountInsightRowsAsync(csA);
+
+        foreach (var (tool, args) in new (string Tool, Dictionary<string, object?> Args)[]
+        {
+            (ToolNames.DescribeTable, new() { ["name"] = "dbo.Orders" }),
+            (ToolNames.DescribeView, new() { ["name"] = "dbo.vOrders" }),
+            (ToolNames.GetObject, new() { ["objectType"] = "StoredProcedure", ["name"] = "dbo.GetOrders" }),
+            (ToolNames.GetInsight, new() { ["objectName"] = "Orders", ["schemaName"] = "dbo" }),
+            (ToolNames.GetInsight, new() { ["objectName"] = "vOrders", ["schemaName"] = "dbo", ["objectType"] = "View" }),
+        })
+        {
+            args["connection"] = "ro";
+            var r = await client.CallToolAsync(tool, args);
+            Assert.True(Text(r).Contains("\"success\":true", StringComparison.OrdinalIgnoreCase), $"{tool}: {Text(r)}");
+        }
+
+        Assert.Equal(before, await CountInsightRowsAsync(csA));
+    }
+
+    private static async Task<(int Insights, int History, int Watermark)> CountInsightRowsAsync(string cs) => (
+        await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM AIInsights.SchemaInsights;"),
+        await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM AIInsights.InsightHistory;"),
+        await ScratchDatabases.ScalarAsync<int>(cs, "SELECT ISNULL(MAX(LastProcessedAuditID), 0) FROM AIInsights.DdlChangeWatermark;"));
+
     private static string Text(ModelContextProtocol.Protocol.CallToolResult r) =>
         string.Concat(r.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().Select(c => c.Text));
 
-    private static async Task<McpClient> StartClientAsync(bool multiConnection = false)
+    private static Task<McpClient> StartClientAsync(bool multiConnection = false)
+    {
+        TestConnectionString.EnsureInitialized();
+        var connections = multiConnection
+            ? System.Text.Json.JsonSerializer.Serialize(new object[]
+            {
+                new { name = "main", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING") },
+                new { name = "ro", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING"), readOnly = true },
+            })
+            : null;
+        return StartClientAsync(connections, insights: false);
+    }
+
+    /// <param name="connectionsJson">MSSQL_CONNECTIONS value; null runs the single CONNECTION_STRING profile.</param>
+    /// <param name="insights">Value of USE_INSIGHTS_LAYER for the server process.</param>
+    private static async Task<McpClient> StartClientAsync(string? connectionsJson, bool insights)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -125,15 +228,10 @@ public sealed class McpProtocolTests
             Command = exe!,
             EnvironmentVariables = new Dictionary<string, string?>
             {
-                ["CONNECTION_STRING"] = multiConnection ? null : Environment.GetEnvironmentVariable("CONNECTION_STRING"),
-                ["MSSQL_CONNECTIONS"] = multiConnection
-                    ? System.Text.Json.JsonSerializer.Serialize(new object[]
-                    {
-                        new { name = "main", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING") },
-                        new { name = "ro", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING"), readOnly = true },
-                    })
-                    : null,
-                ["USE_INSIGHTS_LAYER"] = "false",
+                ["CONNECTION_STRING"] = connectionsJson is null ? Environment.GetEnvironmentVariable("CONNECTION_STRING") : null,
+                ["MSSQL_CONNECTIONS"] = connectionsJson,
+                ["MSSQL_CONNECTIONS_FILE"] = null,
+                ["USE_INSIGHTS_LAYER"] = insights ? "true" : "false",
                 ["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log"),
             },
         });

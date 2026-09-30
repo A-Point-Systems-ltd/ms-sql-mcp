@@ -85,4 +85,32 @@ public sealed class InsightsQueueRoutingTests
 
         Assert.Equal(new[] { "on" }, seen.ToArray());
     }
+
+    [Fact]
+    public async Task Read_only_connection_is_not_processed()
+    {
+        var reg = new ConnectionRegistry(
+        [
+            new("ro", "Server=a", true, true, ConnectionSource.Configured),
+            new("rw", "Server=b", false, true, ConnectionSource.Configured),
+        ]);
+        var seen = new System.Collections.Concurrent.ConcurrentQueue<string?>();
+        var svc = new Mock<IInsightsLayerService>();
+        svc.SetupGet(s => s.IsEnabled).Returns(true);
+        svc.Setup(s => s.ProcessDdlChangesAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => seen.Enqueue(CurrentConnection.Value?.Name))
+            .ReturnsAsync(true);
+        var queue = new InsightDdlProcessingQueue(svc.Object, NullLogger<InsightDdlProcessingQueue>.Instance, reg);
+        await queue.StartAsync(CancellationToken.None);
+
+        using (CurrentConnection.Use(reg.Find("ro")!)) { queue.RequestProcessing(); }
+        using (CurrentConnection.Use(reg.Find("rw")!)) { queue.RequestProcessing(); }
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (seen.IsEmpty && DateTime.UtcNow < deadline) { await Task.Delay(20); }
+        await Task.Delay(200);
+        await queue.StopAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { "rw" }, seen.ToArray());
+    }
 }

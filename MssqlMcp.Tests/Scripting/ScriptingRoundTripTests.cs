@@ -105,6 +105,90 @@ public sealed class ScriptingRoundTripTests
     }
 
     [SkippableFact]
+    public async Task Ignore_dup_key_not_for_replication_and_filegroup_survive_replay()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        var db = scratch.Names[0];
+        await ExecBatchesAsync(cs, $"""
+            DECLARE @path nvarchar(4000) = CONVERT(nvarchar(4000), SERVERPROPERTY('InstanceDefaultDataPath')) + N'{db}_fg2.ndf';
+            EXEC(N'ALTER DATABASE [{db}] ADD FILEGROUP [FG2]');
+            EXEC(N'ALTER DATABASE [{db}] ADD FILE (NAME = N''{db}_fg2'', FILENAME = N''' + @path + N''') TO FILEGROUP [FG2]');
+            GO
+            CREATE TABLE dbo.R (
+                Id int IDENTITY(1,1) NOT FOR REPLICATION NOT NULL CONSTRAINT PK_R PRIMARY KEY CLUSTERED WITH (IGNORE_DUP_KEY = ON) ON [FG2],
+                Code int NOT NULL,
+                CONSTRAINT CK_R CHECK NOT FOR REPLICATION (Code > 0)) ON [FG2]
+            GO
+            CREATE UNIQUE NONCLUSTERED INDEX UX_R_Code ON dbo.R (Code) WITH (IGNORE_DUP_KEY = ON) ON [FG2]
+            """);
+        const string Probe = """
+            SELECT CONCAT(
+                (SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.R') AND ignore_dup_key = 1), '|',
+                (SELECT COUNT(*) FROM sys.identity_columns WHERE object_id = OBJECT_ID(N'dbo.R') AND is_not_for_replication = 1), '|',
+                (SELECT COUNT(*) FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'dbo.R') AND is_not_for_replication = 1), '|',
+                (SELECT COUNT(*) FROM sys.indexes i JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
+                 WHERE i.object_id = OBJECT_ID(N'dbo.R') AND ds.name = N'FG2'));
+            """;
+        async Task<string> ProbeAsync()
+        {
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync();
+            await using var cmd = new SqlCommand(Probe, conn);
+            return (string)(await cmd.ExecuteScalarAsync())!;
+        }
+
+        var before = await ProbeAsync();
+        Assert.Equal("2|1|1|2", before);
+        var table = await ScriptAsync(cs, "Table", "dbo.R");
+        Assert.Empty(table.Warnings);
+
+        await ExecBatchesAsync(cs, "DROP TABLE dbo.R");
+        await ExecBatchesAsync(cs, table.Ddl);
+        Assert.Equal(before, await ProbeAsync());
+        Assert.Equal(table.Ddl, (await ScriptAsync(cs, "Table", "dbo.R")).Ddl);
+    }
+
+    [SkippableFact]
+    public async Task Disabled_dml_and_ddl_triggers_replay_as_disabled()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ExecBatchesAsync(cs, """
+            CREATE TABLE dbo.T (Id int NOT NULL)
+            GO
+            CREATE TRIGGER dbo.trOff ON dbo.T AFTER INSERT AS SET NOCOUNT ON
+            GO
+            CREATE TRIGGER dbo.trOn ON dbo.T AFTER UPDATE AS SET NOCOUNT ON
+            GO
+            CREATE TRIGGER trDdlOff ON DATABASE FOR CREATE_PROCEDURE AS SET NOCOUNT ON
+            GO
+            DISABLE TRIGGER dbo.trOff ON dbo.T
+            GO
+            DISABLE TRIGGER trDdlOff ON DATABASE
+            """);
+
+        var dml = await ScriptAsync(cs, "TableTrigger", "dbo.trOff");
+        var ddl = await ScriptAsync(cs, "DatabaseTrigger", "trDdlOff");
+        var enabled = await ScriptAsync(cs, "TableTrigger", "dbo.trOn");
+        Assert.EndsWith("\r\nGO\r\nDISABLE TRIGGER [dbo].[trOff] ON [dbo].[T];\r\nGO", dml.Ddl);
+        Assert.EndsWith("\r\nGO\r\nDISABLE TRIGGER [trDdlOff] ON DATABASE;\r\nGO", ddl.Ddl);
+        Assert.Contains(Mssql.McpServer.Scripting.ObjectScripter.DisabledTriggerWarning, dml.Warnings);
+        Assert.Contains(Mssql.McpServer.Scripting.ObjectScripter.DisabledTriggerWarning, ddl.Warnings);
+        Assert.DoesNotContain("DISABLE", enabled.Ddl, StringComparison.Ordinal);
+        Assert.DoesNotContain("ENABLE TRIGGER", enabled.Ddl, StringComparison.Ordinal);
+        Assert.Empty(enabled.Warnings);
+
+        await ExecBatchesAsync(cs, "DROP TRIGGER dbo.trOff\nGO\nDROP TRIGGER trDdlOff ON DATABASE");
+        await ExecBatchesAsync(cs, dml.Ddl);
+        await ExecBatchesAsync(cs, ddl.Ddl);
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync();
+        await using var cmd = new SqlCommand("SELECT COUNT(*) FROM sys.triggers WHERE name IN (N'trOff', N'trDdlOff') AND is_disabled = 1;", conn);
+        Assert.Equal(2, (int)(await cmd.ExecuteScalarAsync())!);
+    }
+
+    [SkippableFact]
     public async Task Orphaned_sql_user_is_scripted_without_login_with_warning_and_loginless_user_without()
     {
         var suffix = Guid.NewGuid().ToString("N")[..12];

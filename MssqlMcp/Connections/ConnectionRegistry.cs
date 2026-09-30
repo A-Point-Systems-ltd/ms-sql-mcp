@@ -158,18 +158,27 @@ public sealed class ConnectionRegistry
     public ConnectionStatus Register(ConnectionProfile profile)
     {
         ConnectionProfile stored;
+        ConnectionProfile? replaced = null;
         lock (_gate)
         {
-            if (_entries.TryGetValue(profile.Name, out var existing) && existing.Profile.Source != ConnectionSource.Adhoc)
+            var found = _entries.TryGetValue(profile.Name, out var existing);
+            if (found && existing.Profile.Source != ConnectionSource.Adhoc)
             {
                 stored = existing.Profile;
             }
             else
             {
                 stored = profile;
+                replaced = found ? existing.Profile : null;
             }
 
             _entries[stored.Name] = (stored, true);
+        }
+
+        // A replaced ad-hoc entry must not leave its pooled sessions (possibly another host or login) behind.
+        if (replaced is not null)
+        {
+            ClearPoolQuietly(replaced.ConnectionString);
         }
 
         return ToStatus(stored, open: true);
@@ -218,17 +227,21 @@ public sealed class ConnectionRegistry
             }
         }
 
+        ClearPoolQuietly(profile.ConnectionString);
+        return CloseResult.Closed;
+    }
+
+    private static void ClearPoolQuietly(string connectionString)
+    {
         try
         {
-            using var conn = new SqlConnection(profile.ConnectionString);
+            using var conn = new SqlConnection(connectionString);
             SqlConnection.ClearPool(conn);
         }
         catch (Exception)
         {
-            // A malformed string has no pool to clear; the state change above already happened.
+            // A malformed string has no pool to clear; the registry state change already happened.
         }
-
-        return CloseResult.Closed;
     }
 
     private static SqlConnectionStringBuilder? TryParse(string cs)
