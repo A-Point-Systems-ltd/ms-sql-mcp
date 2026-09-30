@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT license.
+
 using Mssql.McpServer.Connections;
 
 namespace MssqlMcp.Tests.Connections;
@@ -62,6 +65,8 @@ public sealed class ConnectionConfigLoaderTests
     [InlineData("""[{"name":"a","connectionString":"Server=.","default":true}]""", "no default connection")]
     [InlineData("""{"name":"a"}""", "array")]
     [InlineData("""[{"name":"a","connectionString":"Password=${env:MISSING}"}]""", "MISSING")]
+    [InlineData("""[null]""", "MSSQL_CONNECTIONS")]
+    [InlineData("""[{"name":"a","connectionString":"Server=.","read_only":true}]""", "JSON array")]
     public void Invalid_config_throws_with_actionable_message(string json, string expectedFragment)
     {
         var ex = Assert.Throws<InvalidOperationException>(() => Load(new() { ["MSSQL_CONNECTIONS"] = json }));
@@ -72,5 +77,23 @@ public sealed class ConnectionConfigLoaderTests
     public void No_configuration_returns_empty_list()
     {
         Assert.Empty(Load(new()));
+    }
+
+    [Fact]
+    public void File_read_failure_is_wrapped_with_variable_and_path()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => ConnectionConfigLoader.Load(
+            k => k == "MSSQL_CONNECTIONS_FILE" ? @"C:\missing.json" : null,
+            p => throw new FileNotFoundException("nope")));
+        Assert.Contains("MSSQL_CONNECTIONS_FILE", ex.Message);
+        Assert.Contains(@"C:\missing.json", ex.Message);
+    }
+
+    [Fact]
+    public void Profile_ToString_does_not_leak_password()
+    {
+        var p = new ConnectionProfile("a", "Server=.;Database=x;User ID=u;Password=topsecret", false, true, ConnectionSource.Configured);
+        Assert.DoesNotContain("topsecret", p.ToString(), StringComparison.Ordinal);
+        Assert.Contains("***MASKED***", p.ToString(), StringComparison.Ordinal);
     }
 }

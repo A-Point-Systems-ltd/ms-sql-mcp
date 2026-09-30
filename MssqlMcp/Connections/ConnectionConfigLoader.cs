@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Mssql.McpServer.Connections;
@@ -13,7 +14,11 @@ internal static partial class ConnectionConfigLoader
 
     private sealed record ProfileDto(string? Name, string? ConnectionString, bool? ReadOnly, bool? Insights, JsonElement? Default);
 
-    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+    };
 
     public static IReadOnlyList<ConnectionProfile> Load(Func<string, string?> getEnv, Func<string, string> readFile)
     {
@@ -33,7 +38,17 @@ internal static partial class ConnectionConfigLoader
         var file = getEnv("MSSQL_CONNECTIONS_FILE");
         if (!string.IsNullOrWhiteSpace(file))
         {
-            profiles.AddRange(Parse(readFile(file), $"MSSQL_CONNECTIONS_FILE ({file})", getEnv));
+            string content;
+            try
+            {
+                content = readFile(file);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException($"MSSQL_CONNECTIONS_FILE ({file}) cannot be read: {ex.Message}");
+            }
+
+            profiles.AddRange(Parse(content, $"MSSQL_CONNECTIONS_FILE ({file})", getEnv));
         }
 
         var duplicate = profiles.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
@@ -59,6 +74,11 @@ internal static partial class ConnectionConfigLoader
 
         foreach (var dto in dtos ?? [])
         {
+            if (dto is null)
+            {
+                throw new InvalidOperationException($"{source}: the array contains a null entry; every entry must be an object {{name, connectionString, readOnly?, insights?}}.");
+            }
+
             if (string.IsNullOrWhiteSpace(dto.Name) || !NameRegex().IsMatch(dto.Name))
             {
                 throw new InvalidOperationException($"{source}: connection name '{dto.Name}' is invalid. Use 1-64 letters, digits, '-', '_' or '.'.");

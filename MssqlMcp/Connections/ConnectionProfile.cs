@@ -13,4 +13,11 @@ public sealed record ConnectionProfile(
     string ConnectionString,
     bool ReadOnly,
     bool InsightsEnabled,
-    ConnectionSource Source);
+    ConnectionSource Source)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append($"Name = {Name}, ReadOnly = {ReadOnly}, InsightsEnabled = {InsightsEnabled}, Source = {Source}, ConnectionString = {ConnectionStringMasker.Mask(ConnectionString)}");
+        return true;
+    }
+}
