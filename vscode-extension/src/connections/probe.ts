@@ -16,6 +16,7 @@ export async function probeConnection(
   profile: ConnectionProfile,
   passwords: Map<string, string>,
   log: Logger,
+  signal?: AbortSignal,
 ): Promise<string> {
   const exe = resolveExe(extensionUri);
   if (!exe.ok) throw new Error(exe.reason);
@@ -27,10 +28,18 @@ export async function probeConnection(
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
   }, log);
+  // Aborting disposes the client, which fails the in-flight request and kills the process.
+  const onAbort = () => client.dispose();
+  if (signal?.aborted) throw signal.reason;
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
     await client.initialize();
     return describeServerInfo(await client.callTool('get_server_info', { connection: profile.name }));
+  } catch (err) {
+    if (signal?.aborted) throw signal.reason;
+    throw err;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     client.dispose();
   }
 }

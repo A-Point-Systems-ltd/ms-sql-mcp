@@ -4,6 +4,16 @@ import { AuthKind, ConnectionProfile, validateProfile } from './profile';
 import { ConnectionStore } from './store';
 import { probeConnection } from './probe';
 import { missingPasswordMessage, missingPasswords } from './serverEnv';
+import { withConnectionHint } from './serverInfo';
+
+const TEST_TIMEOUT_MS = 30_000;
+
+const ENCRYPTION_OPTIONS: Array<{ label: string; detail: string; encrypt: ConnectionProfile['encrypt']; trust: boolean }> = [
+  { label: 'Mandatory (verify certificate)', detail: 'Encrypted; the server certificate must be trusted by this machine.', encrypt: 'mandatory', trust: false },
+  { label: 'Mandatory, trust server certificate (self-signed / on-prem)', detail: 'Encrypted, but the certificate is not verified: safe against sniffing, not against a man-in-the-middle. Use on trusted networks.', encrypt: 'mandatory', trust: true },
+  { label: 'Optional (no encryption)', detail: 'Traffic may be unencrypted, including credentials on SQL login. Legacy servers only.', encrypt: 'optional', trust: true },
+  { label: 'Strict (TDS 8)', detail: 'TLS 1.3 from the first byte; requires SQL Server 2022+ with a trusted certificate.', encrypt: 'strict', trust: false },
+];
 
 const AUTH_LABELS: Array<{ label: string; kind: AuthKind }> = [
   { label: 'Windows integrated', kind: 'windows' },
@@ -25,7 +35,11 @@ function argName(arg: unknown): string | undefined {
 async function pickProfile(store: ConnectionStore, arg: unknown, placeHolder: string, filter?: (p: ConnectionProfile) => boolean): Promise<ConnectionProfile | undefined> {
   const all = store.list();
   const wanted = argName(arg);
-  if (wanted) return all.find(p => p.name === wanted);
+  if (wanted) {
+    const found = all.find(p => p.name.toLowerCase() === wanted.toLowerCase());
+    if (!found) void vscode.window.showErrorMessage(`MSSQL-MCP: connection '${wanted}' was not found.`);
+    return found;
+  }
   const items = all.filter(p => !filter || filter(p));
   if (!items.length) {
     void vscode.window.showInformationMessage('MSSQL-MCP: no matching connections.');
@@ -97,6 +111,18 @@ async function runWizard(store: ConnectionStore, existing?: ConnectionProfile): 
     }
   }
 
+  let encrypt: ConnectionProfile['encrypt'] = existing?.encrypt ?? 'mandatory';
+  let trustServerCertificate = existing?.trustServerCertificate ?? true;
+  if (auth !== 'raw') {
+    const current = ENCRYPTION_OPTIONS.find(o => o.encrypt === encrypt && o.trust === trustServerCertificate) ?? ENCRYPTION_OPTIONS[1];
+    const enc = await vscode.window.showQuickPick(
+      [current, ...ENCRYPTION_OPTIONS.filter(o => o !== current)].map(o => ({ label: o.label, detail: o.detail, opt: o })),
+      { title, placeHolder: 'Encryption' });
+    if (!enc) return undefined;
+    encrypt = enc.opt.encrypt;
+    trustServerCertificate = enc.opt.trust;
+  }
+
   let password: string | undefined;
   if (auth === 'sql') {
     const hasSaved = !!existing && (await store.passwords()).has(existing.name);
@@ -117,8 +143,8 @@ async function runWizard(store: ConnectionStore, existing?: ConnectionProfile): 
   const profile: ConnectionProfile = {
     name, server, database, auth, user, readOnly, insights,
     open: existing?.open ?? true,
-    encrypt: existing?.encrypt ?? 'mandatory',
-    trustServerCertificate: existing?.trustServerCertificate ?? false,
+    encrypt,
+    trustServerCertificate,
     rawConnectionString,
   };
   return { profile, password };
@@ -168,12 +194,20 @@ export function registerConnectionCommands(context: vscode.ExtensionContext, sto
       void vscode.window.showWarningMessage(missingPasswordMessage(p.name));
       return;
     }
-    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Testing '${p.name}'...` }, async () => {
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Testing '${p.name}'...`, cancellable: true }, async (_progress, token) => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(new Error(`Timed out after ${TEST_TIMEOUT_MS / 1000} s.`)), TEST_TIMEOUT_MS);
+      const sub = token.onCancellationRequested(() => ac.abort(new Error('Cancelled.')));
       try {
-        void vscode.window.showInformationMessage(`MSSQL-MCP '${p.name}': ${await probeConnection(context.extensionUri, p, passwords, log)}`);
+        const summary = await probeConnection(context.extensionUri, p, passwords, log, ac.signal);
+        void vscode.window.showInformationMessage(`MSSQL-MCP '${p.name}': ${summary}`);
       } catch (err) {
+        if (token.isCancellationRequested) return;
         log.error('testConnection', `Test of '${p.name}' failed`, err);
-        void vscode.window.showErrorMessage(`MSSQL-MCP '${p.name}' failed: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showErrorMessage(`MSSQL-MCP '${p.name}' failed: ${withConnectionHint(err instanceof Error ? err.message : String(err))}`);
+      } finally {
+        clearTimeout(timer);
+        sub.dispose();
       }
     });
   });

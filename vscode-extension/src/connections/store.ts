@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionProfile, validateProfile } from './profile';
 
 const KEY = 'msSqlMcp.connections';
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const secretKey = (name: string) => `msSqlMcp.password.${name}`;
 
 export class ConnectionStore {
@@ -17,20 +18,22 @@ export class ConnectionStore {
   async upsert(p: ConnectionProfile, password?: string): Promise<void> {
     const errors = validateProfile(p);
     if (errors.length) throw new Error(errors.join(' '));
-    const others = this.list().filter(x => x.name.toLowerCase() !== p.name.toLowerCase());
+    const others = this.list().filter(x => !same(x.name, p.name));
     await this.state.update(KEY, [...others, p].sort((a, b) => a.name.localeCompare(b.name)));
-    if (password !== undefined) await this.secrets.store(secretKey(p.name), password);
+    if (p.auth !== 'sql') await this.secrets.delete(secretKey(p.name));
+    else if (password !== undefined) await this.secrets.store(secretKey(p.name), password);
     this.emitter.fire();
   }
 
   async remove(name: string): Promise<void> {
-    await this.state.update(KEY, this.list().filter(x => x.name !== name));
-    await this.secrets.delete(secretKey(name));
+    const target = this.list().find(x => same(x.name, name));
+    await this.state.update(KEY, this.list().filter(x => !same(x.name, name)));
+    await this.secrets.delete(secretKey(target?.name ?? name));
     this.emitter.fire();
   }
 
   async setOpen(name: string, open: boolean): Promise<void> {
-    await this.state.update(KEY, this.list().map(x => (x.name === name ? { ...x, open } : x)));
+    await this.state.update(KEY, this.list().map(x => (same(x.name, name) ? { ...x, open } : x)));
     this.emitter.fire();
   }
 
