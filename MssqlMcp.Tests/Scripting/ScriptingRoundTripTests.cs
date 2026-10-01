@@ -105,6 +105,71 @@ public sealed class ScriptingRoundTripTests
     }
 
     [SkippableFact]
+    public async Task View_alter_form_scripts_run_and_the_indexed_view_keeps_its_index()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+
+        async Task<ScriptRunResult> RunAsync(string script)
+        {
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync();
+            var run = await ScriptRunner.RunAsync(conn, script, readOnly: false, 1000, CancellationToken.None);
+            Assert.False(run.HadErrors, string.Join(" | ", run.Messages.Select(m => m.Text)));
+            return run;
+        }
+
+        async Task<ScriptResult> AlterScriptAsync(string name)
+        {
+            await using var conn = new SqlConnection(cs);
+            await conn.OpenAsync();
+            var (result, error) = await ObjectScripter.ScriptAsync(conn, "View", name, null, CancellationToken.None, "alter");
+            Assert.True(result is not null, error);
+            return result!;
+        }
+
+        Task<int> IndexCountAsync(string view) => ScratchDatabases.ScalarAsync<int>(
+            cs, $"SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID(N'{view}') AND name = N'IX_{view[4..]}'");
+
+        await RunAsync("""
+            CREATE TABLE dbo.Items (Id int NOT NULL PRIMARY KEY, Name nvarchar(40) NOT NULL)
+            GO
+            -- plain view
+            CREATE VIEW dbo.vPlain AS SELECT Id, Name FROM dbo.Items
+            GO
+            CREATE VIEW dbo.vIdx WITH SCHEMABINDING AS SELECT Id, Name FROM dbo.Items
+            GO
+            CREATE UNIQUE CLUSTERED INDEX IX_vIdx ON dbo.vIdx (Id)
+            """);
+        Assert.Equal(1, await IndexCountAsync("dbo.vIdx"));
+
+        var plain = await AlterScriptAsync("dbo.vPlain");
+        Assert.Equal(DdlForm.CreateOrAlter, plain.Form);   // LocalDB is 2016 SP1+
+        Assert.Contains("CREATE OR ALTER VIEW dbo.vPlain", plain.Ddl);
+        Assert.Contains("-- plain view", plain.Ddl);
+        Assert.Empty(plain.Warnings);
+        await RunAsync(plain.Ddl);
+
+        var indexed = await AlterScriptAsync("dbo.vIdx");
+        Assert.Equal(DdlForm.CreateOrAlter, indexed.Form);
+        Assert.Contains("CREATE OR ALTER VIEW dbo.vIdx", indexed.Ddl);
+        Assert.Contains("Altering an indexed view drops its indexes; the index statements below recreate them.", indexed.Warnings);
+        Assert.StartsWith("-- WARNING: Altering an indexed view drops its indexes", indexed.Ddl);
+
+        // The view statement alone drops the index (the reason for the warning) ...
+        var indexStart = indexed.Ddl.IndexOf("CREATE UNIQUE CLUSTERED INDEX", StringComparison.Ordinal);
+        Assert.True(indexStart > 0);
+        await RunAsync(indexed.Ddl[..indexStart]);
+        Assert.Equal(0, await IndexCountAsync("dbo.vIdx"));
+
+        // ... and the complete script recreates it, and can be re-run.
+        await RunAsync(indexed.Ddl);
+        Assert.Equal(1, await IndexCountAsync("dbo.vIdx"));
+        await RunAsync(indexed.Ddl);
+        Assert.Equal(1, await IndexCountAsync("dbo.vIdx"));
+    }
+
+    [SkippableFact]
     public async Task Ignore_dup_key_not_for_replication_and_filegroup_survive_replay()
     {
         await using var scratch = await ScratchDatabases.CreateAsync(1);

@@ -20,13 +20,27 @@ internal static class ObjectScripter
 
     private const int MaxSysnameLength = 128;
 
+    internal const string InvalidFormError = "form must be 'create' or 'alter'.";
+
+    internal const string AlterUnsupportedError =
+        "form='alter' is supported only for View, StoredProcedure, TableFunction, ScalarFunction, TableTrigger and DatabaseTrigger.";
+
+    internal const string IndexedViewAlterWarning =
+        "Altering an indexed view drops its indexes; the index statements below recreate them.";
+
+    /// <param name="form">Null or "create" (default): as-stored CREATE for views, version-dependent form for modules. "alter": views are rewritten like modules.</param>
     public static async Task<(ScriptResult? result, string? error)> ScriptAsync(
-        SqlConnection conn, string objectType, string name, string? parent, CancellationToken ct)
+        SqlConnection conn, string objectType, string name, string? parent, CancellationToken ct, string? form = null)
     {
         var type = NormalizeObjectType(objectType);
         if (type is null)
         {
             return (null, $"Unsupported objectType '{objectType}'. Use one of: {SupportedTypes}.");
+        }
+
+        if (ParseAlter(form, type, out var formError) is not { } alter)
+        {
+            return (null, formError);
         }
 
         if (string.IsNullOrWhiteSpace(name))
@@ -43,7 +57,7 @@ internal static class ObjectScripter
         return type switch
         {
             "Table" => await ScriptTableAsync(conn, name, version, ct).ConfigureAwait(false),
-            "View" => await ScriptViewAsync(conn, name, ct).ConfigureAwait(false),
+            "View" => await ScriptViewAsync(conn, name, version, alter, ct).ConfigureAwait(false),
             "Index" => await ScriptIndexAsync(conn, name, parent, ct).ConfigureAwait(false),
             "ForeignKey" => await ScriptForeignKeyAsync(conn, name, ct).ConfigureAwait(false),
             "TableTrigger" => await ScriptModuleAsync(conn, type, name, Tools.TriggerObjectTypes, version, ct).ConfigureAwait(false),
@@ -84,6 +98,33 @@ internal static class ObjectScripter
             "databaserole" or "databaseroles" or "role" or "roles" => "DatabaseRole",
             _ => null,
         };
+    }
+
+    /// <summary>True for "alter", false for null / "create" (case-insensitive); null with <paramref name="error"/> otherwise.</summary>
+    private static bool? ParseAlter(string? form, string type, out string? error)
+    {
+        error = null;
+        if (form is null)
+        {
+            return false;
+        }
+
+        switch (form.Trim().ToLowerInvariant())
+        {
+            case "create":
+                return false;
+            case "alter":
+                if (type is "View" or "StoredProcedure" or "TableFunction" or "ScalarFunction" or "TableTrigger" or "DatabaseTrigger")
+                {
+                    return true;
+                }
+
+                error = AlterUnsupportedError;
+                return null;
+            default:
+                error = InvalidFormError;
+                return null;
+        }
     }
 
     private static string NotFound(string type, string name) => $"{type} '{name.Trim()}' not found (or not visible to this login).";
@@ -156,7 +197,8 @@ internal static class ObjectScripter
         return (new ScriptResult("Table", o.Schema, o.Name, DdlForm.Create, ddl, warnings), null);
     }
 
-    private static async Task<(ScriptResult?, string?)> ScriptViewAsync(SqlConnection conn, string name, CancellationToken ct)
+    private static async Task<(ScriptResult?, string?)> ScriptViewAsync(
+        SqlConnection conn, string name, SqlServerVersion version, bool alter, CancellationToken ct)
     {
         var (obj, error) = await ResolveAsync(conn, "View", name, Tools.ViewObjectTypes, false, ct).ConfigureAwait(false);
         if (obj is not { } o)
@@ -165,24 +207,71 @@ internal static class ObjectScripter
         }
 
         var module = await CatalogReader.ReadModuleAsync(conn, o.ObjectId, ct).ConfigureAwait(false);
-        if (UnavailableModule("View", o.Schema, o.Name, module, DdlForm.Create) is { } unavailable)
+        var indexes = new List<(string Ddl, string? Warning)>();
+        if (module is { definition: not null })
         {
-            return (unavailable, null);
+            foreach (var ix in await CatalogReader.ReadIndexesAsync(conn, o.ObjectId, null, ct).ConfigureAwait(false))
+            {
+                indexes.Add((TableDdlRenderer.RenderIndex(o.Schema, o.Name, ix, out var w), w));
+            }
+        }
+
+        return (ComposeView(o.Schema, o.Name, module, indexes, version, alter), null);
+    }
+
+    /// <summary>
+    /// SET headers + GO + the view definition + GO + its index statements (each + GO). With <paramref name="alter"/> the leading
+    /// CREATE becomes CREATE OR ALTER / ALTER for the server version; an indexed view then gets a warning, because ALTER drops its
+    /// indexes (the trailing index statements recreate them).
+    /// </summary>
+    internal static ScriptResult ComposeView(
+        string schema,
+        string name,
+        (string? definition, bool ansiNulls, bool quotedIdentifier)? module,
+        IReadOnlyList<(string Ddl, string? Warning)> indexes,
+        SqlServerVersion version,
+        bool alter)
+    {
+        var form = alter ? ModuleFormRewriter.ProgrammableFormFor(version) : DdlForm.Create;
+        if (UnavailableModule("View", schema, name, module, form) is { } unavailable)
+        {
+            return unavailable;
         }
 
         var (definition, ansiNulls, quotedIdentifier) = module!.Value;
         var warnings = new List<string>();
-        var sb = new StringBuilder(SetHeader(ansiNulls, quotedIdentifier)).Append(definition).Append("\r\nGO");
-        foreach (var ix in await CatalogReader.ReadIndexesAsync(conn, o.ObjectId, null, ct).ConfigureAwait(false))
+        var comments = new StringBuilder();
+        void AddWarning(string? warning, bool comment)
         {
-            sb.Append("\r\n").Append(TableDdlRenderer.RenderIndex(o.Schema, o.Name, ix, out var w)).Append("\r\nGO");
-            if (w is not null)
+            if (warning is null)
             {
-                warnings.Add(Sql.CommentSafe(w));
+                return;
+            }
+
+            var safe = Sql.CommentSafe(warning);
+            warnings.Add(safe);
+            if (comment)
+            {
+                comments.Append("-- WARNING: ").Append(safe).Append("\r\n");
             }
         }
 
-        return (new ScriptResult("View", o.Schema, o.Name, DdlForm.Create, sb.ToString(), warnings), null);
+        var body = definition!;
+        if (alter)
+        {
+            body = ModuleFormRewriter.Rewrite(body, form, quotedIdentifier, out var rewriteWarning);
+            AddWarning(rewriteWarning, comment: true);
+            AddWarning(indexes.Count > 0 ? IndexedViewAlterWarning : null, comment: true);
+        }
+
+        var sb = new StringBuilder(comments.ToString()).Append(SetHeader(ansiNulls, quotedIdentifier)).Append(body).Append("\r\nGO");
+        foreach (var (ddl, warning) in indexes)
+        {
+            sb.Append("\r\n").Append(ddl).Append("\r\nGO");
+            AddWarning(warning, comment: false);
+        }
+
+        return new ScriptResult("View", schema, name, form, sb.ToString(), warnings);
     }
 
     private static async Task<(ScriptResult?, string?)> ScriptIndexAsync(SqlConnection conn, string name, string? parent, CancellationToken ct)

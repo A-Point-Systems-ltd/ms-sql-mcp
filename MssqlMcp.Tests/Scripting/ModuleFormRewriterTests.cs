@@ -26,6 +26,18 @@ public sealed class ModuleFormRewriterTests
     }
 
     [Theory]
+    [InlineData("CREATE VIEW dbo.v AS SELECT 1 AS a", DdlForm.CreateOrAlter, "CREATE OR ALTER VIEW dbo.v AS SELECT 1 AS a")]
+    [InlineData("CREATE VIEW dbo.v AS SELECT 1 AS a", DdlForm.Alter, "ALTER VIEW dbo.v AS SELECT 1 AS a")]
+    [InlineData("/* v1 */\r\n-- note\r\n  create\r\n\tview [dbo].[v] with schemabinding as select 1 as a", DdlForm.Alter, "/* v1 */\r\n-- note\r\n  ALTER\r\n\tview [dbo].[v] with schemabinding as select 1 as a")]
+    [InlineData("CREATE /* x */ OR /* y */ ALTER VIEW dbo.v AS SELECT 'CREATE VIEW'", DdlForm.Alter, "ALTER VIEW dbo.v AS SELECT 'CREATE VIEW'")]
+    [InlineData("ALTER VIEW dbo.v AS SELECT 1 AS a", DdlForm.CreateOrAlter, "CREATE OR ALTER VIEW dbo.v AS SELECT 1 AS a")]
+    public void Rewrites_the_leading_keyword_of_a_view(string definition, DdlForm form, string expected)
+    {
+        Assert.Equal(expected, ModuleFormRewriter.Rewrite(definition, form, quotedIdentifier: true, out var warning));
+        Assert.Null(warning);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void Quoted_identifier_setting_does_not_change_leading_keyword_rewrite(bool quotedIdentifier)

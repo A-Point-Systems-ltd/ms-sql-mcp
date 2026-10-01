@@ -68,6 +68,89 @@ public sealed class ObjectScripterTests(Xunit.Abstractions.ITestOutputHelper out
         Assert.Contains("128", error);
     }
 
+    [Theory]
+    [InlineData("View", "bogus")]
+    [InlineData("Table", "")]
+    [InlineData("StoredProcedure", "create or alter")]
+    public async Task Invalid_form_value_is_rejected_before_any_query(string type, string form)
+    {
+        using var unopened = new SqlConnection();
+        var (result, error) = await ObjectScripter.ScriptAsync(unopened, type, "dbo.x", null, CancellationToken.None, form);
+        Assert.Null(result);
+        Assert.Equal("form must be 'create' or 'alter'.", error);
+    }
+
+    [Theory]
+    [InlineData("Table")]
+    [InlineData("Index")]
+    [InlineData("ForeignKey")]
+    [InlineData("Type")]
+    [InlineData("Login")]
+    [InlineData("ServerRole")]
+    [InlineData("DatabaseUser")]
+    [InlineData("DatabaseRole")]
+    public async Task Alter_form_is_rejected_for_types_that_have_no_alter_script(string type)
+    {
+        using var unopened = new SqlConnection();
+        var (result, error) = await ObjectScripter.ScriptAsync(unopened, type, "dbo.x", "dbo.t", CancellationToken.None, "alter");
+        Assert.Null(result);
+        Assert.Equal("form='alter' is supported only for View, StoredProcedure, TableFunction, ScalarFunction, TableTrigger and DatabaseTrigger.", error);
+    }
+
+    [Theory]
+    [InlineData("13.0.4001.0", DdlForm.CreateOrAlter, "CREATE OR ALTER VIEW")]
+    [InlineData("12.0.2000.8", DdlForm.Alter, "ALTER VIEW")]
+    public void View_alter_form_rewrites_the_leading_create_and_keeps_leading_comments(string version, DdlForm form, string keyword)
+    {
+        var module = ("-- owner: sales\r\nCREATE VIEW [dbo].[v] AS SELECT 1 AS a", true, true);
+        var result = ObjectScripter.ComposeView("dbo", "v", module, [], SqlServerVersion.Parse(version), alter: true);
+
+        Assert.Equal(form, result.Form);
+        Assert.Empty(result.Warnings);
+        Assert.Equal(
+            $"SET ANSI_NULLS ON\r\nGO\r\nSET QUOTED_IDENTIFIER ON\r\nGO\r\n-- owner: sales\r\n{keyword} [dbo].[v] AS SELECT 1 AS a\r\nGO",
+            result.Ddl);
+    }
+
+    [Fact]
+    public void View_default_form_keeps_the_stored_create_on_every_version()
+    {
+        var module = ("CREATE VIEW [dbo].[v] AS SELECT 1 AS a", true, true);
+        foreach (var version in new[] { "13.0.4001.0", "12.0.2000.8", "10.50.6560.0" })
+        {
+            var result = ObjectScripter.ComposeView("dbo", "v", module, [], SqlServerVersion.Parse(version), alter: false);
+            Assert.Equal(DdlForm.Create, result.Form);
+            Assert.Contains("\r\nCREATE VIEW [dbo].[v] AS", result.Ddl);
+        }
+    }
+
+    [Fact]
+    public void Indexed_view_alter_form_warns_that_indexes_are_dropped_and_recreated()
+    {
+        var module = ("CREATE VIEW [dbo].[v] WITH SCHEMABINDING AS SELECT 1 AS a", true, true);
+        IReadOnlyList<(string, string?)> indexes = [("CREATE UNIQUE CLUSTERED INDEX [IX_v] ON [dbo].[v] ([a]);", null)];
+        const string Warning = "Altering an indexed view drops its indexes; the index statements below recreate them.";
+
+        var alter = ObjectScripter.ComposeView("dbo", "v", module, indexes, SqlServerVersion.Parse("13.0.4001.0"), alter: true);
+        Assert.Equal(Warning, Assert.Single(alter.Warnings));
+        Assert.StartsWith($"-- WARNING: {Warning}\r\nSET ANSI_NULLS ON", alter.Ddl);
+        Assert.Contains("\r\nCREATE OR ALTER VIEW [dbo].[v] WITH SCHEMABINDING AS", alter.Ddl);
+        Assert.EndsWith("\r\nGO\r\nCREATE UNIQUE CLUSTERED INDEX [IX_v] ON [dbo].[v] ([a]);\r\nGO", alter.Ddl);
+
+        var create = ObjectScripter.ComposeView("dbo", "v", module, indexes, SqlServerVersion.Parse("13.0.4001.0"), alter: false);
+        Assert.Empty(create.Warnings);
+        Assert.DoesNotContain("-- WARNING", create.Ddl);
+    }
+
+    [Fact]
+    public void Encrypted_view_alter_form_returns_a_warning_only_result_with_the_alter_form()
+    {
+        var result = ObjectScripter.ComposeView("dbo", "v", (null, true, true), [], SqlServerVersion.Parse("13.0.4001.0"), alter: true);
+        Assert.Equal(DdlForm.CreateOrAlter, result.Form);
+        Assert.StartsWith("-- WARNING:", result.Ddl);
+        Assert.Single(result.Warnings);
+    }
+
     /// <summary>
     /// Opt-in, read-only live check against a SQL Server 2008 R2 instance (never runs by default):
     /// set RUN_DCDEV_SCRIPTING_CHECK=1 and optionally DCDEV_CONNECTION_STRING (defaults to DC\DEV, Windows auth, master).
