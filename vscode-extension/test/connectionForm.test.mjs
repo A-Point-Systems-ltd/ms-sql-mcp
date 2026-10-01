@@ -202,8 +202,9 @@ test('html: the DDL history checkbox is off by default, shown for every auth, wi
   assert.match(tagOf(html, 'ddlHistory'), /type="checkbox"/);
   assert.doesNotMatch(tagOf(html, 'ddlHistory'), /\bchecked\b/);
   assert.match(html, /DDL history \(audit trigger\)/);
-  assert.ok(html.includes('Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object&#39;s history. If they are missing, they are created on read-write connections (you are asked first).')
-    || html.includes("Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object's history. If they are missing, they are created on read-write connections (you are asked first)."));
+  // The help text is HTML-escaped: the apostrophe appears only as &#39;.
+  assert.ok(html.includes('Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object&#39;s history. If they are missing, they are created on read-write connections (you are asked first).'));
+  assert.ok(!html.includes("diff an object's history"));
   assert.match(tagOf(render({ ...defaultFormValues(), ddlHistory: true }), 'ddlHistory'), /\bchecked\b/);
   const raw = render({ ...defaultFormValues(), auth: 'raw' });
   assert.doesNotMatch(wrapperClass(raw, 'flags'), /\bhidden\b/);

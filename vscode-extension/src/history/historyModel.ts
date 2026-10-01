@@ -42,6 +42,10 @@ export const NOT_LOADED_TEXT = `-- No earlier version loaded (only the newest ${
 export const CURRENT_UNAVAILABLE_TEXT = '-- The current definition is not available (the object no longer exists, or it is a CLR or encrypted module).';
 
 export const disabledWarning = (where: string): string => `DDL_Audit exists on ${where} but is disabled; changes are not recorded.`;
+export const incompatibleWarning = (where: string): string =>
+  `dbo.DDL_AuditLog on ${where} does not have the columns the DDL_Audit trigger writes, so DDL history cannot be set up here. Ask a DBA to align or rename the existing table.`;
+export const triggerMissingWarning = (where: string): string =>
+  `The DDL_Audit trigger is not installed on ${where}, so changes are not recorded.`;
 export const readOnlyWarning = (where: string): string =>
   `DDL history needs dbo.DDL_AuditLog and the DDL_Audit database trigger on ${where}. This connection is read-only, so they were not created — ask a DBA or set it up from a read-write connection.`;
 export const setUpMessage = (where: string): string => `DDL history is set up on ${where}.`;
@@ -80,26 +84,35 @@ export function parseHistoryStatus(data: unknown): HistoryStatus {
   };
 }
 
-export type InstallDecision = 'none' | 'warnDisabled' | 'warnReadOnly' | 'confirmInstall';
+export type InstallDecision = 'none' | 'warnDisabled' | 'warnReadOnly' | 'warnIncompatible' | 'confirmInstall';
 
 /**
- * What the form does after a save: nothing when the table and an enabled trigger exist; a warning when the trigger
- * exists but is disabled (it is never enabled for the user); when something is missing, a warning on a read-only
- * connection, else a modal confirmation before `install`.
+ * What the form does after a save, in order:
+ * - an existing table the trigger cannot insert into: a warning (whether or not the trigger exists); nothing is created;
+ * - table and trigger exist: nothing when the trigger is enabled, else a warning (it is never enabled for the user);
+ * - something is missing: a modal confirmation before `install` only when the server reports `canInstall`; otherwise
+ *   the read-only warning (the server refuses to install on connections it serves read-only).
  */
 export function installDecision(status: HistoryStatus, readOnly: boolean): InstallDecision {
+  if (status.tableExists && !status.tableCompatible) return 'warnIncompatible';
   if (status.tableExists && status.triggerExists) return status.triggerEnabled ? 'none' : 'warnDisabled';
-  return readOnly ? 'warnReadOnly' : 'confirmInstall';
+  return !readOnly && status.canInstall ? 'confirmInstall' : 'warnReadOnly';
 }
 
-/** The modal text: names server/db and lists exactly what will be created. */
-export function installPrompt(status: HistoryStatus, where: string): { message: string; detail: string } {
+/** Why an object's history list came back empty: the trigger is missing or disabled, or nothing was recorded yet. */
+export function emptyHistoryOutcome(status: HistoryStatus): 'triggerMissing' | 'triggerDisabled' | 'noHistory' {
+  if (!status.triggerExists) return 'triggerMissing';
+  return status.triggerEnabled ? 'noHistory' : 'triggerDisabled';
+}
+
+/** The modal text: names server/db and the connection, and lists exactly what will be created. */
+export function installPrompt(status: HistoryStatus, where: string, connection: string): { message: string; detail: string } {
   const parts = [
     ...(status.tableExists ? [] : ['table dbo.DDL_AuditLog']),
     ...(status.triggerExists ? [] : ['database trigger DDL_Audit']),
   ];
   return {
-    message: `Create DDL history on ${where}?`,
+    message: `Create DDL history on ${where} (connection '${connection}')?`,
     detail: `This creates ${parts.join(' and ')}. The trigger records every DDL change in this database.`,
   };
 }
@@ -170,7 +183,41 @@ export interface HistoryPickItem {
   action: HistoryPickAction;
 }
 
-/** Quick pick items, newest first; a module's list starts with "Compare … with the current definition". */
+/** The audit `ObjectType` values (EVENTDATA) of each script type. Unknown script types have no filter. */
+export const AUDIT_OBJECT_TYPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  Table: ['TABLE'],
+  View: ['VIEW'],
+  StoredProcedure: ['PROCEDURE'],
+  TableFunction: ['FUNCTION'],
+  ScalarFunction: ['FUNCTION'],
+  TableTrigger: ['TRIGGER'],
+  DatabaseTrigger: ['TRIGGER'],
+  Type: ['TYPE'],
+});
+
+/**
+ * The entries that belong to an object of `scriptType` (the server matches by name and schema only): the audit
+ * ObjectType must be one of {@link AUDIT_OBJECT_TYPES} (case-insensitive; entries with no ObjectType are kept), and a
+ * database trigger's entries have no schema. Order is kept (newest first).
+ */
+export function filterEntries(entries: readonly HistoryEntry[], scriptType: string): HistoryEntry[] {
+  const types = AUDIT_OBJECT_TYPES[scriptType];
+  return entries.filter(e => {
+    if (types && e.objectType && !types.includes(e.objectType.toUpperCase())) return false;
+    if (scriptType === 'DatabaseTrigger' && e.schemaName) return false;
+    return true;
+  });
+}
+
+/** The newest entry that is not a DROP (its command text is a definition), for "Compare with current". */
+export function latestDefinitionEntry(entries: readonly HistoryEntry[]): HistoryEntry | undefined {
+  return entries.find(e => !/^DROP/i.test(e.eventType ?? ''));
+}
+
+/**
+ * Quick pick items, newest first. A module's list starts with "Compare … with the current definition" when it has a
+ * non-DROP entry to compare.
+ */
 export function historyPickItems(entries: readonly HistoryEntry[], isModule: boolean): HistoryPickItem[] {
   if (!entries.length) return [];
   const items = entries.map((e, index): HistoryPickItem => ({
@@ -179,7 +226,7 @@ export function historyPickItems(entries: readonly HistoryEntry[], isModule: boo
     detail: `${e.hostName ?? '?'} · ${e.programName ?? '?'} · ${e.length ?? '?'} chars`,
     action: { kind: 'entry', index },
   }));
-  return isModule ? [{ label: COMPARE_CURRENT_LABEL, action: { kind: 'current' } }, ...items] : items;
+  return isModule && latestDefinitionEntry(entries) ? [{ label: COMPARE_CURRENT_LABEL, action: { kind: 'current' } }, ...items] : items;
 }
 
 /** The entry recorded just before `entries[index]` (the list is newest first); undefined for the oldest. */
@@ -215,23 +262,24 @@ export function currentDefinitionSql(ref: Pick<ObjectRef, 'scriptType' | 'schema
 
 /** What an `mssql-history:` document shows. `label` is display only (the path); the query is the source of truth. */
 export type HistoryDocRef =
-  | { kind: 'entry'; connection: string; id: number; label: string }
+  | { kind: 'entry'; connection: string; target: string; id: number; label: string }
   | { kind: 'empty'; label: string; more: boolean }
-  | { kind: 'current'; connection: string; object: ObjectRef; label: string; nonce: string };
+  | { kind: 'current'; connection: string; target: string; object: ObjectRef; label: string; nonce: string };
 
 /**
- * `mssql-history:/<label>.sql?v=entry&c=..&i=..`, `?v=empty&m=0|1`, or `?v=current&c=..&t=..&n=..[&s=..]&r=..`.
- * Query values use sqlText's URI-unreserved encoding (as ddlUri). `r` (current) makes each comparison a new document,
- * so the definition is read again instead of a cached copy.
+ * `mssql-history:/<label>.sql?v=entry&c=..&w=..&i=..`, `?v=empty&m=0|1`, or `?v=current&c=..&w=..&t=..&n=..[&s=..]&r=..`.
+ * Query values use sqlText's URI-unreserved encoding (as ddlUri). `w` is the connection's `<server>/<db>` target, so an
+ * edited connection never reuses text VS Code cached for the old database; `r` (current) makes each comparison a new
+ * document, so the definition is read again instead of a cached copy.
  */
 export function historyUri(ref: HistoryDocRef): string {
   let q: string;
   switch (ref.kind) {
-    case 'entry': q = `v=entry&c=${qEnc(ref.connection)}&i=${ref.id}`; break;
+    case 'entry': q = `v=entry&c=${qEnc(ref.connection)}&w=${qEnc(ref.target)}&i=${ref.id}`; break;
     case 'empty': q = `v=empty&m=${ref.more ? 1 : 0}`; break;
     case 'current': {
       const o = ref.object;
-      q = `v=current&c=${qEnc(ref.connection)}&t=${qEnc(o.scriptType)}&n=${qEnc(o.name)}`
+      q = `v=current&c=${qEnc(ref.connection)}&w=${qEnc(ref.target)}&t=${qEnc(o.scriptType)}&n=${qEnc(o.name)}`
         + `${o.schema !== undefined ? `&s=${qEnc(o.schema)}` : ''}&r=${qEnc(ref.nonce)}`;
       break;
     }
@@ -245,11 +293,12 @@ export function parseHistoryUri(uri: string): HistoryDocRef | undefined {
   if (!params) return undefined;
   const label = labelOf(uri);
   const connection = params.get('c') ?? '';
+  const target = params.get('w') ?? '';
   switch (params.get('v')) {
     case 'entry': {
       const raw = params.get('i') ?? '';
       if (!connection || !/^\d{1,10}$/.test(raw)) return undefined;
-      return { kind: 'entry', connection, id: Number(raw), label };
+      return { kind: 'entry', connection, target, id: Number(raw), label };
     }
     case 'empty':
       return { kind: 'empty', label, more: params.get('m') === '1' };
@@ -258,7 +307,7 @@ export function parseHistoryUri(uri: string): HistoryDocRef | undefined {
       const name = params.get('n') ?? '';
       if (!connection || !scriptType || !name) return undefined;
       const object: ObjectRef = { connection, scriptType, ...(params.has('s') ? { schema: params.get('s')! } : {}), name };
-      return { kind: 'current', connection, object, label, nonce: params.get('r') ?? '' };
+      return { kind: 'current', connection, target, object, label, nonce: params.get('r') ?? '' };
     }
     default:
       return undefined;

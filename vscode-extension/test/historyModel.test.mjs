@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { URI } from 'vscode-uri';
 import {
-  HISTORY_SCHEME, NO_EARLIER_TEXT, currentDefinitionSql, currentDiffTitle, entryDiffTitle, formatPostTime, historyDocKeys,
+  HISTORY_SCHEME, NO_EARLIER_TEXT, AUDIT_OBJECT_TYPES, emptyHistoryOutcome, filterEntries, incompatibleWarning, latestDefinitionEntry,
+  triggerMissingWarning, currentDefinitionSql, currentDiffTitle, entryDiffTitle, formatPostTime, historyDocKeys,
   historyPickItems, historyUri, installDecision, installPrompt, isModuleType, isNotInstalledError, parseHistoryCommand,
   parseHistoryEntries, parseHistoryStatus, parseHistoryUri, previousEntry, runsHistorySetup, supportsHistory, targetText,
 } from '../out/history/historyModel.js';
@@ -45,28 +46,100 @@ test('parseHistoryStatus: case-insensitive booleans, missing ones are false', ()
   assert.deepEqual(parseHistoryStatus(undefined), { tableExists: false, tableCompatible: false, triggerExists: false, triggerEnabled: false, canInstall: false });
 });
 
-test('installDecision: none, warnDisabled, warnReadOnly, confirmInstall', () => {
-  assert.equal(installDecision(status(), false), 'none');
-  assert.equal(installDecision(status(), true), 'none');
-  assert.equal(installDecision(status({ triggerEnabled: false }), false), 'warnDisabled');
-  assert.equal(installDecision(status({ triggerEnabled: false }), true), 'warnDisabled');
-  assert.equal(installDecision(status({ tableExists: false, tableCompatible: false }), true), 'warnReadOnly');
-  assert.equal(installDecision(status({ triggerExists: false, triggerEnabled: false }), true), 'warnReadOnly');
-  assert.equal(installDecision(status({ tableExists: false, tableCompatible: false, triggerExists: false, triggerEnabled: false }), false), 'confirmInstall');
-  assert.equal(installDecision(status({ triggerExists: false, triggerEnabled: false }), false), 'confirmInstall');
-  assert.equal(installDecision(status({ tableExists: false, tableCompatible: false }), false), 'confirmInstall');
+test('installDecision: every table x trigger x read-only combination (canInstall as the server computes it)', () => {
+  const tables = { missing: { tableExists: false, tableCompatible: false }, compatible: { tableExists: true, tableCompatible: true }, incompatible: { tableExists: true, tableCompatible: false } };
+  const triggers = { missing: { triggerExists: false, triggerEnabled: false }, enabled: { triggerExists: true, triggerEnabled: true }, disabled: { triggerExists: true, triggerEnabled: false } };
+  const expected = {
+    'missing/missing': ['confirmInstall', 'warnReadOnly'],
+    'missing/enabled': ['confirmInstall', 'warnReadOnly'],
+    'missing/disabled': ['confirmInstall', 'warnReadOnly'],
+    'compatible/missing': ['confirmInstall', 'warnReadOnly'],
+    'compatible/enabled': ['none', 'none'],
+    'compatible/disabled': ['warnDisabled', 'warnDisabled'],
+    'incompatible/missing': ['warnIncompatible', 'warnIncompatible'],
+    'incompatible/enabled': ['warnIncompatible', 'warnIncompatible'],
+    'incompatible/disabled': ['warnIncompatible', 'warnIncompatible'],
+  };
+  for (const [tk, t] of Object.entries(tables)) {
+    for (const [gk, g] of Object.entries(triggers)) {
+      for (const readOnly of [false, true]) {
+        // The server's formula (DdlAudit.GetStatusAsync).
+        const canInstall = !readOnly && (!t.tableExists || (t.tableCompatible && !g.triggerExists));
+        const got = installDecision({ ...t, ...g, canInstall }, readOnly);
+        assert.equal(got, expected[`${tk}/${gk}`][readOnly ? 1 : 0], `${tk}/${gk} readOnly=${readOnly}`);
+      }
+    }
+  }
+});
+
+test('installDecision: confirmInstall only when the server reports canInstall', () => {
+  assert.equal(installDecision(status({ tableExists: false, tableCompatible: false, canInstall: false }), false), 'warnReadOnly');
+  assert.equal(installDecision(status({ triggerExists: false, triggerEnabled: false, canInstall: false }), false), 'warnReadOnly');
+  assert.equal(installDecision(status({ tableExists: false, tableCompatible: false, canInstall: true }), false), 'confirmInstall');
+  assert.equal(installDecision(status({ tableExists: false, tableCompatible: false, canInstall: true }), true), 'warnReadOnly');
+});
+
+test('incompatible-table and missing-trigger texts', () => {
+  assert.equal(incompatibleWarning('S/D'), 'dbo.DDL_AuditLog on S/D does not have the columns the DDL_Audit trigger writes, so DDL history cannot be set up here. Ask a DBA to align or rename the existing table.');
+  assert.equal(triggerMissingWarning('S/D'), 'The DDL_Audit trigger is not installed on S/D, so changes are not recorded.');
+});
+
+test('emptyHistoryOutcome: missing trigger, disabled trigger, or simply nothing recorded', () => {
+  assert.equal(emptyHistoryOutcome(status({ triggerExists: false, triggerEnabled: false })), 'triggerMissing');
+  assert.equal(emptyHistoryOutcome(status({ tableExists: false, triggerExists: false, triggerEnabled: false })), 'triggerMissing');
+  assert.equal(emptyHistoryOutcome(status({ triggerEnabled: false })), 'triggerDisabled');
+  assert.equal(emptyHistoryOutcome(status()), 'noHistory');
+});
+
+test('filterEntries: by audit ObjectType (null kept); database triggers only without a schema', () => {
+  assert.deepEqual(AUDIT_OBJECT_TYPES.StoredProcedure, ['PROCEDURE']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.TableFunction, ['FUNCTION']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.ScalarFunction, ['FUNCTION']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.View, ['VIEW']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.Table, ['TABLE']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.TableTrigger, ['TRIGGER']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.DatabaseTrigger, ['TRIGGER']);
+  assert.deepEqual(AUDIT_OBJECT_TYPES.Type, ['TYPE']);
+  const all = [
+    entry(6, 'a', { objectType: 'PROCEDURE' }),
+    entry(5, 'b', { objectType: 'TABLE' }),
+    entry(4, 'c', { objectType: undefined }),
+    entry(3, 'd', { objectType: 'procedure' }),
+    entry(2, 'e', { objectType: 'VIEW' }),
+  ];
+  assert.deepEqual(filterEntries(all, 'StoredProcedure').map(e => e.id), [6, 4, 3]);
+  assert.deepEqual(filterEntries(all, 'Table').map(e => e.id), [5, 4]);
+  assert.deepEqual(filterEntries(all, 'View').map(e => e.id), [4, 2]);
+  assert.deepEqual(filterEntries(all, 'Unknown').map(e => e.id), [6, 5, 4, 3, 2]);
+  const trg = [
+    entry(9, 'a', { objectType: 'TRIGGER', schemaName: undefined }),
+    entry(8, 'b', { objectType: 'TRIGGER', schemaName: '' }),
+    entry(7, 'c', { objectType: 'TRIGGER', schemaName: 'dbo' }),
+    entry(6, 'd', { objectType: 'TABLE', schemaName: undefined }),
+  ];
+  assert.deepEqual(filterEntries(trg, 'DatabaseTrigger').map(e => e.id), [9, 8]);
+  assert.deepEqual(filterEntries(trg, 'TableTrigger').map(e => e.id), [9, 8, 7]);
+});
+
+test('latestDefinitionEntry: the newest non-DROP entry; the compare item needs one', () => {
+  const entries = [entry(9, 'a', { eventType: 'DROP_PROCEDURE' }), entry(8, 'b', { eventType: 'ALTER_PROCEDURE' }), entry(7, 'c', { eventType: 'CREATE_PROCEDURE' })];
+  assert.equal(latestDefinitionEntry(entries).id, 8);
+  assert.equal(latestDefinitionEntry([entry(1, 'a', { eventType: 'drop_view' })]), undefined);
+  assert.equal(latestDefinitionEntry([entry(1, 'a', { eventType: undefined })]).id, 1);
+  assert.equal(historyPickItems([entry(1, 'a', { eventType: 'DROP_VIEW' })], true).length, 1, 'no compare item with only a DROP');
+  assert.equal(historyPickItems(entries, true)[0].action.kind, 'current');
 });
 
 test('installPrompt names server/db and lists only what is missing', () => {
-  const both = installPrompt(status({ tableExists: false, triggerExists: false, triggerEnabled: false }), 'DC\\DEV/Sales');
-  assert.equal(both.message, 'Create DDL history on DC\\DEV/Sales?');
+  const both = installPrompt(status({ tableExists: false, triggerExists: false, triggerEnabled: false }), 'DC\\DEV/Sales', 'dev');
+  assert.equal(both.message, "Create DDL history on DC\\DEV/Sales (connection 'dev')?");
   assert.match(both.detail, /table dbo\.DDL_AuditLog/);
   assert.match(both.detail, /database trigger DDL_Audit/);
   assert.match(both.detail, /The trigger records every DDL change in this database\./);
-  const table = installPrompt(status({ tableExists: false }), 'x/y');
+  const table = installPrompt(status({ tableExists: false }), 'x/y', 'c');
   assert.match(table.detail, /table dbo\.DDL_AuditLog/);
   assert.doesNotMatch(table.detail, /database trigger DDL_Audit/);
-  const trig = installPrompt(status({ triggerExists: false, triggerEnabled: false }), 'x/y');
+  const trig = installPrompt(status({ triggerExists: false, triggerEnabled: false }), 'x/y', 'c');
   assert.doesNotMatch(trig.detail, /table dbo\.DDL_AuditLog/);
   assert.match(trig.detail, /database trigger DDL_Audit/);
 });
@@ -148,11 +221,11 @@ test('diff titles', () => {
 
 test('history uri: encode / parse round-trip, also through vscode-uri', () => {
   const refs = [
-    { kind: 'entry', connection: 'dev&x=1#%~', id: 42, label: 'dbo.p #42' },
+    { kind: 'entry', connection: 'dev&x=1#%~', target: 'DC\\DEV/Sales', id: 42, label: 'dbo.p #42' },
     { kind: 'empty', label: 'dbo.p (none)', more: false },
     { kind: 'empty', label: 'a/b?c', more: true },
-    { kind: 'current', connection: 'c', object: { connection: 'c', scriptType: 'StoredProcedure', schema: 'd b?', name: "n'&=%" }, label: 'x', nonce: 'r1' },
-    { kind: 'current', connection: 'c', object: { connection: 'c', scriptType: 'DatabaseTrigger', name: 'trg' }, label: 'trg', nonce: '2' },
+    { kind: 'current', connection: 'c', target: 's/d', object: { connection: 'c', scriptType: 'StoredProcedure', schema: 'd b?', name: "n'&=%" }, label: 'x', nonce: 'r1' },
+    { kind: 'current', connection: 'c', target: 's,1433/d?', object: { connection: 'c', scriptType: 'DatabaseTrigger', name: 'trg' }, label: 'trg', nonce: '2' },
   ];
   for (const ref of refs) {
     const s = historyUri(ref);
@@ -167,6 +240,10 @@ test('history uri: encode / parse round-trip, also through vscode-uri', () => {
     assert.deepEqual(strip(parseHistoryUri(u.toString())), expected, 'toString');
     assert.deepEqual(strip(parseHistoryUri(u.toString(true))), expected, 'toString(true)');
   }
+  // Same entry id, another server/db (an edited connection): another document, so no cached text is reused.
+  const a = historyUri({ kind: 'entry', connection: 'c', target: 'S1/D', id: 1, label: 'x' });
+  const b = historyUri({ kind: 'entry', connection: 'c', target: 'S2/D', id: 1, label: 'x' });
+  assert.notEqual(URI.parse(a).toString(), URI.parse(b).toString());
   assert.equal(parseHistoryUri('mssql-history:/x.sql?v=entry&c=a&i=abc'), undefined);
   assert.equal(parseHistoryUri('mssql-history:/x.sql?v=entry&c=a&i=-1'), undefined);
   assert.equal(parseHistoryUri('mssql-history:/x.sql?v=nope'), undefined);

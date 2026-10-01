@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type { ServerProcessClient } from '../client/serverProcessClient';
 import { pick } from '../client/parse';
 import { parseReadData } from '../dataTable';
+import { errorMessage } from '../errorFormat';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import { Logger } from '../logger';
 import {
@@ -32,7 +33,7 @@ export class HistoryDocumentProvider implements vscode.TextDocumentContentProvid
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       this.log.warn('history', `Loading DDL history text (${ref.kind}) on '${'connection' in ref ? ref.connection : ''}' failed: ${message}`);
       return ['-- MSSQL-MCP could not load this DDL history text:', ...message.split(/\r?\n/).map(l => `-- ${l}`)].join('\n');
     }

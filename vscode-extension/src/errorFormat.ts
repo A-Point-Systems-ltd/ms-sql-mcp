@@ -16,3 +16,8 @@ export function formatError(err: unknown): string[] {
   }
   return err === undefined ? [] : [String(err)];
 }
+
+/** The message of `err` for user-facing text: an Error's message, else its string form. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

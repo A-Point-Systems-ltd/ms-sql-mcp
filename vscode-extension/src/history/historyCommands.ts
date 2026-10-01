@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import type { ServerProcessClient } from '../client/serverProcessClient';
+import type { ConnectionProfile } from '../connections/profile';
 import type { ConnectionStore } from '../connections/store';
+import { errorMessage } from '../errorFormat';
 import type { ObjectRef } from '../explorer/catalog';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import type { ExplorerNode } from '../explorer/treeModel';
@@ -12,15 +14,14 @@ import { openDocumentUris } from '../query/sqlDocFs';
 import { SQL_DOC_SCHEME, objectDisplayName } from '../query/sqlDocNames';
 import { HistoryDocumentProvider } from './historyDocs';
 import {
-  HISTORY_SCHEME, HISTORY_TOOL, HistoryEntry, LIST_TOP, SET_UP_BUTTON, currentDiffTitle, entryDiffTitle, historyDocKeys,
-  historyPickItems, historyUri, isModuleType, isNotInstalledError, noHistoryMessage, parseHistoryEntries, previousEntry,
-  supportsHistory,
+  HISTORY_SCHEME, HISTORY_TOOL, HistoryEntry, LIST_TOP, SET_UP_BUTTON, currentDiffTitle, disabledWarning, emptyHistoryOutcome,
+  entryDiffTitle, filterEntries, historyDocKeys, historyPickItems, historyUri, isModuleType, isNotInstalledError,
+  latestDefinitionEntry, noHistoryMessage, parseHistoryEntries, parseHistoryStatus, previousEntry, supportsHistory, targetText,
+  triggerMissingWarning,
 } from './historyModel';
 
 /** Per-document key for the editor title's Show DDL History button (`resource in msSqlMcp.historyDocs`). */
 const HISTORY_DOCS_KEY = 'msSqlMcp.historyDocs';
-
-const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** The object of a tree node (object and child nodes only). */
 function refOfNode(arg: unknown): ObjectRef | undefined {
@@ -115,25 +116,34 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
     const obj = objectDisplayName(ref);
     const connection = profile.name;
 
+    const where = targetText(profile);
+    const offerSetUp = async (message: string) => {
+      const choice = await vscode.window.showWarningMessage(message, SET_UP_BUTTON);
+      if (choice === SET_UP_BUTTON) await vscode.commands.executeCommand('msSqlMcp.editConnection', { name: connection, setUpHistory: true });
+    };
+
     let entries: HistoryEntry[];
+    let listed: number;
     try {
       entries = parseHistoryEntries(await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Window, title: `Loading DDL history of ${obj}` },
         () => runner.call(connection, HISTORY_TOOL, { action: 'list', name: ref.name, ...(ref.schema ? { schema: ref.schema } : {}), top: LIST_TOP })));
+      listed = entries.length;
+      // The server matches by name and schema only: keep this object type's entries.
+      entries = filterEntries(entries, ref.scriptType);
     } catch (err) {
       const message = errorMessage(err);
       if (isNotInstalledError(message)) {
-        const choice = await vscode.window.showWarningMessage(`MSSQL-MCP '${connection}': ${message}`, SET_UP_BUTTON);
-        if (choice === SET_UP_BUTTON) await vscode.commands.executeCommand('msSqlMcp.editConnection', { name: connection, setUpHistory: true });
+        await offerSetUp(`MSSQL-MCP '${connection}': ${message}`);
         return;
       }
       log.warn('history', `ddl_history list for ${obj} on '${connection}' failed: ${message}`);
       void vscode.window.showErrorMessage(`MSSQL-MCP: DDL history of ${obj} on '${connection}' failed: ${message}`);
       return;
     }
-    log.debug('history', `ddl_history list for ${obj} on '${connection}': ${entries.length} entries`);
+    log.debug('history', `ddl_history list for ${obj} on '${connection}': ${entries.length} of ${listed} entries`);
     if (!entries.length) {
-      void vscode.window.showInformationMessage(noHistoryMessage(obj, connection));
+      await explainEmpty(profile, obj, where, offerSetUp);
       return;
     }
 
@@ -143,13 +153,16 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
     });
     if (!picked) return;
 
-    const entryUri = (e: HistoryEntry) => vscode.Uri.parse(historyUri({ kind: 'entry', connection, id: e.id, label: `${obj} #${e.id}` }));
+    // The target is part of the uri: an edited connection (another server/db) never reuses cached text.
+    const entryUri = (e: HistoryEntry) => vscode.Uri.parse(historyUri({ kind: 'entry', connection, target: where, id: e.id, label: `${obj} #${e.id}` }));
     if (picked.action.kind === 'current') {
+      const latest = latestDefinitionEntry(entries);
+      if (!latest) return;
       const current = vscode.Uri.parse(historyUri({
-        kind: 'current', connection, object: { ...ref, connection }, label: `${obj} (current)`,
+        kind: 'current', connection, target: where, object: { ...ref, connection }, label: `${obj} (current)`,
         nonce: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
       }));
-      await vscode.commands.executeCommand('vscode.diff', entryUri(entries[0]), current, currentDiffTitle(obj, entries[0]), { preview: true });
+      await vscode.commands.executeCommand('vscode.diff', entryUri(latest), current, currentDiffTitle(obj, latest), { preview: true });
       return;
     }
     const index = picked.action.index;
@@ -158,5 +171,21 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
       ? entryUri(prev)
       : vscode.Uri.parse(historyUri({ kind: 'empty', label: `${obj} (none)`, more: entries.length >= LIST_TOP }));
     await vscode.commands.executeCommand('vscode.diff', left, entryUri(entries[index]), entryDiffTitle(obj, entries, index), { preview: true });
+  }
+
+  /**
+   * No entry for the object: says why when the trigger is missing (with "Set up…") or disabled, else that nothing was
+   * recorded. A failed status check falls back to the plain "no history" message.
+   */
+  async function explainEmpty(profile: ConnectionProfile, obj: string, where: string, offerSetUp: (message: string) => Promise<void>): Promise<void> {
+    let outcome: ReturnType<typeof emptyHistoryOutcome> = 'noHistory';
+    try {
+      outcome = emptyHistoryOutcome(parseHistoryStatus(await runner.call(profile.name, HISTORY_TOOL, { action: 'status' })));
+    } catch (err) {
+      log.warn('history', `ddl_history status on '${profile.name}' failed: ${errorMessage(err)}`);
+    }
+    if (outcome === 'triggerMissing') await offerSetUp(triggerMissingWarning(where));
+    else if (outcome === 'triggerDisabled') void vscode.window.showWarningMessage(disabledWarning(where));
+    else void vscode.window.showInformationMessage(noHistoryMessage(obj, profile.name));
   }
 }
