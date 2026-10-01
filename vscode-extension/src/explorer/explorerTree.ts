@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
+import { findProfile } from '../query/editorState';
 import { normalizeFilter } from '../tree/filter';
 import { CATEGORIES, parseObjectList } from './catalog';
 import { qualified } from './sqlText';
@@ -75,7 +76,9 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
   }
 
   getTreeItem(node: ExplorerNode): vscode.TreeItem {
-    return toTreeItem(node, describeNode(node, this.counts(node)));
+    const connection = node.kind === 'object' || node.kind === 'child' ? node.ref.connection : undefined;
+    const history = connection !== undefined && findProfile(this.store.list(), connection)?.ddlHistory === true;
+    return toTreeItem(node, describeNode(node, this.counts(node), { history }));
   }
 
   async getChildren(node?: ExplorerNode): Promise<ExplorerNode[]> {

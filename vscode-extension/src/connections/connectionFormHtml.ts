@@ -1,7 +1,7 @@
 // HTML of the add / edit connection form. No 'vscode' import (unit-testable).
 
 import { escapeHtml } from '../webviewUtil';
-import { AUTH_OPTIONS, ENCRYPTION_HELP, ENCRYPTION_OPTIONS, FormValues, TRUST_HELP } from './connectionFormModel';
+import { AUTH_OPTIONS, DDL_HISTORY_HELP, DDL_HISTORY_LABEL, ENCRYPTION_HELP, ENCRYPTION_OPTIONS, FormValues, TRUST_HELP } from './connectionFormModel';
 
 export interface RenderOptions {
   mode: 'add' | 'edit';
@@ -43,7 +43,7 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
       ${hint ? `<div class="hint">${hint}</div>` : ''}
       <div class="err" data-err="${key}"></div>
     </div>`;
-  const check = (key: 'readOnly' | 'insights' | 'open' | 'trustServerCertificate', label: string, hint: string): string =>
+  const check = (key: 'readOnly' | 'insights' | 'open' | 'trustServerCertificate' | 'ddlHistory', label: string, hint: string): string =>
     `<label class="check"><input type="checkbox" id="${key}"${v[key] ? ' checked' : ''}> <span>${label}</span></label>
       <div class="hint indent">${hint}</div>`;
 
@@ -125,6 +125,7 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
     ${check('readOnly', 'Read-only', 'Refuses write tools and connects with ApplicationIntent=ReadOnly.')}
     ${check('insights', 'AI Insights', 'Adds schema-insight tools for agents (also requires the msSqlMcp.insights setting).')}
     ${check('open', 'Open (expose to agents)', 'Closed connections stay in the list but agents and the explorer cannot use them.')}
+    ${check('ddlHistory', e(DDL_HISTORY_LABEL), e(DDL_HISTORY_HELP))}
   </div>
   <div class="actions">
     <button type="submit" class="primary" id="save">Save</button>
@@ -145,7 +146,8 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
         name: el('name').value, auth: el('auth').value, server: el('server').value, database: el('database').value,
         user: el('user').value, password: el('password').value, rawConnectionString: el('rawConnectionString').value,
         encrypt: el('encrypt').value, trustServerCertificate: el('trustServerCertificate').checked,
-        readOnly: el('readOnly').checked, insights: el('insights').checked, open: el('open').checked
+        readOnly: el('readOnly').checked, insights: el('insights').checked, open: el('open').checked,
+        ddlHistory: el('ddlHistory').checked
       };
     }
     function applyAuth() {

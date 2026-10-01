@@ -40,7 +40,19 @@ export async function pickProfile(store: ConnectionStore, arg: unknown, placeHol
   return picked ? all.find(p => p.name === picked.label) : undefined;
 }
 
-export function registerConnectionCommands(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger, explorer: ExplorerClient): void {
+/** True for the editConnection argument of Show DDL History's "Set up…" button: `{ name, setUpHistory: true }`. */
+function wantsHistorySetup(arg: unknown): boolean {
+  return !!arg && typeof arg === 'object' && (arg as { setUpHistory?: unknown }).setUpHistory === true;
+}
+
+/**
+ * Registers the connection commands. `setUpHistory` runs the DDL history set-up after a form save that turned
+ * `ddlHistory` on (the runner process serves it).
+ */
+export function registerConnectionCommands(
+  context: vscode.ExtensionContext, store: ConnectionStore, log: Logger, explorer: ExplorerClient,
+  setUpHistory?: (profile: ConnectionProfile) => Promise<void>,
+): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void>) =>
     context.subscriptions.push(vscode.commands.registerCommand(`msSqlMcp.${id}`, async (arg?: unknown) => {
       try { await fn(arg); }
@@ -50,13 +62,13 @@ export function registerConnectionCommands(context: vscode.ExtensionContext, sto
       }
     }));
 
-  const form = new ConnectionFormManager(context.extensionUri, store, log);
+  const form = new ConnectionFormManager(context.extensionUri, store, log, setUpHistory);
   context.subscriptions.push(form);
 
   reg('addConnection', () => form.open());
   reg('editConnection', async arg => {
     const p = await pickProfile(store, arg, 'Connection to edit');
-    if (p) await form.open(p);
+    if (p) await form.open(p, { setUpHistory: wantsHistorySetup(arg) });
   });
   reg('removeConnection', async arg => {
     const p = await pickProfile(store, arg, 'Connection to remove');

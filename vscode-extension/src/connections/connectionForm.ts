@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { pick } from '../client/parse';
 import { parseReadData } from '../dataTable';
+import { runsHistorySetup } from '../history/historyModel';
 import { Logger } from '../logger';
 import { makeNonce } from '../webviewUtil';
 import { renderConnectionForm } from './connectionFormHtml';
@@ -20,6 +21,16 @@ interface OpenForm {
   /** True while a message is being handled; further clicks are ignored (the buttons are disabled meanwhile). */
   working: boolean;
   closed: boolean;
+  /**
+   * `ddlHistory` before this form's edits (undefined when adding). A save that turns it on relative to this runs the
+   * DDL history set-up; a form opened by "Set up…" uses false, so its save runs it whenever the box is checked.
+   */
+  historyBaseline: boolean | undefined;
+}
+
+export interface FormOpenOptions {
+  /** Opened from Show DDL History's "Set up…": Save runs the DDL history set-up while the box is checked. */
+  setUpHistory?: boolean;
 }
 
 /**
@@ -33,13 +44,16 @@ export class ConnectionFormManager implements vscode.Disposable {
     private readonly extensionUri: vscode.Uri,
     private readonly store: ConnectionStore,
     private readonly log: Logger,
+    /** Runs after a successful save that turned `ddlHistory` on (see {@link runsHistorySetup}); never awaited by the save. */
+    private readonly setUpHistory?: (profile: ConnectionProfile) => Promise<void>,
   ) {}
 
   /** Opens the form (existing undefined = add), or reveals the panel that is already open for it. */
-  async open(existing?: ConnectionProfile): Promise<void> {
+  async open(existing?: ConnectionProfile, opts: FormOpenOptions = {}): Promise<void> {
     const key = existing ? existing.name.toLowerCase() : ADD_KEY;
     const open = this.forms.get(key);
     if (open) {
+      if (opts.setUpHistory) open.historyBaseline = false;
       open.panel.reveal();
       return;
     }
@@ -51,7 +65,8 @@ export class ConnectionFormManager implements vscode.Disposable {
       vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
-    const form: OpenForm = { panel, working: false, closed: false };
+    const historyBaseline = !existing ? undefined : opts.setUpHistory ? false : existing.ddlHistory === true;
+    const form: OpenForm = { panel, working: false, closed: false, historyBaseline };
     this.forms.set(key, form);
     panel.onDidDispose(() => {
       form.closed = true;
@@ -149,5 +164,8 @@ export class ConnectionFormManager implements vscode.Disposable {
     await this.store.upsert(profile, password);
     void vscode.window.showInformationMessage(`MSSQL-MCP: connection '${profile.name}' saved.`);
     form.panel.dispose();
+    // After the store change: the runner's debounced reset is pending, and its next call applies it first, so the
+    // status check runs against the saved profile set.
+    if (this.setUpHistory && runsHistorySetup(form.historyBaseline, profile)) void this.setUpHistory(profile);
   }
 }

@@ -9,7 +9,7 @@ const filled = (over = {}) => ({ ...defaultFormValues(), name: 'dev', server: 'D
 test('defaults', () => {
   assert.deepEqual(defaultFormValues(), {
     name: '', auth: 'windows', server: '', database: '', user: '', password: '', rawConnectionString: '',
-    encrypt: 'mandatory', trustServerCertificate: true, readOnly: true, insights: true, open: true,
+    encrypt: 'mandatory', trustServerCertificate: true, readOnly: true, insights: true, open: true, ddlHistory: false,
   });
   assert.deepEqual(AUTH_OPTIONS.map(a => a.kind), ['windows', 'sql', 'entraInteractive', 'entraDefault', 'raw']);
   assert.deepEqual(Object.keys(ENCRYPTION_HELP).sort(), ['mandatory', 'optional', 'strict']);
@@ -21,7 +21,7 @@ test('a valid windows form becomes a profile without a password', () => {
   assert.equal(r.password, undefined);
   assert.deepEqual(r.profile, {
     name: 'dev', server: 'DC\\DEV', database: 'Sales', auth: 'windows', user: undefined, readOnly: true, insights: true, open: true,
-    encrypt: 'mandatory', trustServerCertificate: true, rawConnectionString: undefined,
+    encrypt: 'mandatory', trustServerCertificate: true, rawConnectionString: undefined, ddlHistory: false,
   });
 });
 
@@ -99,7 +99,8 @@ test('profileToFormValues never carries a password and round-trips the profile',
   const p = { name: 'p', server: 's', database: 'd', auth: 'sql', user: 'u', readOnly: false, insights: false, open: false, encrypt: 'strict', trustServerCertificate: false };
   const v = profileToFormValues(p);
   assert.equal(v.password, '');
-  assert.deepEqual(v, { name: 'p', auth: 'sql', server: 's', database: 'd', user: 'u', password: '', rawConnectionString: '', encrypt: 'strict', trustServerCertificate: false, readOnly: false, insights: false, open: false });
+  assert.deepEqual(v, { name: 'p', auth: 'sql', server: 's', database: 'd', user: 'u', password: '', rawConnectionString: '', encrypt: 'strict', trustServerCertificate: false, readOnly: false, insights: false, open: false, ddlHistory: false });
+  assert.equal(profileToFormValues({ ...p, ddlHistory: true }).ddlHistory, true);
 });
 
 test('parseFormMessage validates the webview message shape', () => {
@@ -113,6 +114,10 @@ test('parseFormMessage validates the webview message shape', () => {
   assert.equal(parseFormMessage({ type: 'save', values: { ...values, encrypt: 'x' } }), undefined);
   assert.equal(parseFormMessage({ type: 'save', values: { ...values, readOnly: 'yes' } }), undefined);
   assert.equal(parseFormMessage({ type: 'save', values: { ...values, server: 5 } }), undefined);
+  assert.equal(parseFormMessage({ type: 'save', values: { ...values, ddlHistory: 'yes' } }), undefined);
+  const { ddlHistory, ...withoutHistory } = values;
+  assert.equal(parseFormMessage({ type: 'save', values: withoutHistory }), undefined);
+  assert.equal(parseFormMessage({ type: 'save', values: { ...values, ddlHistory: true } })?.values.ddlHistory, true);
   assert.equal(parseFormMessage(null), undefined);
   assert.equal(parseFormMessage('x'), undefined);
 });
@@ -184,4 +189,24 @@ test('html: checkboxes and selects reflect the values', () => {
   assert.match(tagOf(render(defaultFormValues()), 'insights'), /\bchecked\b/);
   assert.match(html, /<option value="strict" selected>/);
   assert.match(html, /<option value="entraDefault" selected>/);
+});
+
+test('ddlHistory: carried from the form to the profile, off by default', () => {
+  assert.equal(formToProfile(filled({ ddlHistory: true }), ctx()).profile.ddlHistory, true);
+  assert.equal(formToProfile(filled(), ctx()).profile.ddlHistory, false);
+  assert.equal(formToProfile(filled({ auth: 'raw', rawConnectionString: 'Server=x', ddlHistory: true }), ctx()).profile.ddlHistory, true);
+});
+
+test('html: the DDL history checkbox is off by default, shown for every auth, with its help text', () => {
+  const html = render(defaultFormValues());
+  assert.match(tagOf(html, 'ddlHistory'), /type="checkbox"/);
+  assert.doesNotMatch(tagOf(html, 'ddlHistory'), /\bchecked\b/);
+  assert.match(html, /DDL history \(audit trigger\)/);
+  assert.ok(html.includes('Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object&#39;s history. If they are missing, they are created on read-write connections (you are asked first).')
+    || html.includes("Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object's history. If they are missing, they are created on read-write connections (you are asked first)."));
+  assert.match(tagOf(render({ ...defaultFormValues(), ddlHistory: true }), 'ddlHistory'), /\bchecked\b/);
+  const raw = render({ ...defaultFormValues(), auth: 'raw' });
+  assert.doesNotMatch(wrapperClass(raw, 'flags'), /\bhidden\b/);
+  assert.match(raw, /id="ddlHistory"/);
+  assert.match(html, /ddlHistory: el\('ddlHistory'\)\.checked/);
 });

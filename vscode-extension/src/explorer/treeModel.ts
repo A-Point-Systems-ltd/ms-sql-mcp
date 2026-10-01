@@ -2,6 +2,7 @@
 // No 'vscode' import — unit-testable with plain Node; explorerTree.ts maps ItemSpec onto vscode.TreeItem.
 import { pick } from '../client/parse';
 import type { ConnectionProfile } from '../connections/profile';
+import { supportsHistory } from '../history/historyModel';
 import { matchesFilter } from '../tree/filter';
 import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
 import { previewSql, qualified } from './sqlText';
@@ -155,8 +156,21 @@ export function nodeId(node: ExplorerNode): string | undefined {
   }
 }
 
-/** Item presentation per node kind. `counts` (category only) is shown as "n of m" while a filter is active. */
-export function describeNode(node: ExplorerNode, counts?: { shown: number; total: number }): ItemSpec {
+/** Presentation options that depend on the node's connection profile. */
+export interface DescribeOptions {
+  /** The connection has `ddlHistory`: objects with a DDL history get the `.history` contextValue suffix (Show DDL History). */
+  history?: boolean;
+}
+
+/** Suffix of object / child contextValues whose Show DDL History menu entry is offered. */
+export const HISTORY_SUFFIX = '.history';
+
+/**
+ * Item presentation per node kind. `counts` (category only) is shown as "n of m" while a filter is active. A tree
+ * `when` clause cannot see the node's connection, so the history menu matches the {@link HISTORY_SUFFIX} instead.
+ */
+export function describeNode(node: ExplorerNode, counts?: { shown: number; total: number }, opts: DescribeOptions = {}): ItemSpec {
+  const historySuffix = (ref: ObjectRef) => (opts.history && supportsHistory(ref.scriptType) ? HISTORY_SUFFIX : '');
   const id = nodeId(node);
   switch (node.kind) {
     case 'connection': {
@@ -177,7 +191,8 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
       const label = display(node.ref);
       return {
         id, label, ...(node.detail ? { description: node.detail } : {}), tooltip: `${node.def.label}: ${label}`,
-        contextValue: node.def.id === 'tables' ? 'msSqlMcp.obj.table' : node.def.id === 'views' ? 'msSqlMcp.obj.view' : `msSqlMcp.obj.${node.ref.scriptType}`,
+        contextValue: (node.def.id === 'tables' ? 'msSqlMcp.obj.table' : node.def.id === 'views' ? 'msSqlMcp.obj.view' : `msSqlMcp.obj.${node.ref.scriptType}`)
+          + historySuffix(node.ref),
         collapsible: hasChildren, icon: node.def.icon, ...(hasChildren ? {} : { command: SHOW_DDL }),
       };
     }
@@ -186,7 +201,7 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
     case 'child':
       return {
         id, label: node.ref.name, tooltip: `${node.ref.scriptType}: ${display(node.ref)}`,
-        contextValue: 'msSqlMcp.obj.child', collapsible: false, icon: CHILD_ICONS[node.ref.scriptType] ?? 'symbol-misc', command: SHOW_DDL,
+        contextValue: `msSqlMcp.obj.child${historySuffix(node.ref)}`, collapsible: false, icon: CHILD_ICONS[node.ref.scriptType] ?? 'symbol-misc', command: SHOW_DDL,
       };
     case 'message':
       return {

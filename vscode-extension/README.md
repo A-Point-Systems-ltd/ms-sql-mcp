@@ -148,6 +148,21 @@ Show DDL on a view, stored procedure, table-valued function or scalar function o
 - **Upgrading from an earlier build**: object scripts used to be `.sql` files under the storage folder's `edits/` folder. That folder and its bindings are removed about 15 seconds after the first start; open the object again from the tree. Copy any unsaved work out of an old `edits/` tab before you update.
 - Tables, indexes, foreign keys, triggers, types and security objects stay read-only.
 
+## DDL history
+
+Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default, available for every authentication type) to see how an object's script changed over time, as a side-by-side diff.
+
+- **What it uses**: the `dbo.DDL_AuditLog` table and the `DDL_Audit` database trigger, which records every schema change (CREATE / ALTER / DROP) in that database with its time, login, host, program and full command text. A database that already has them (for example from your existing set-up) is used as is.
+- **When something is missing, you are asked first**: after you save a connection with the option newly turned on, the extension checks the database. If the table or the trigger is missing on a read/write connection, a modal dialog asks "Create DDL history on <server>/<db>?" and lists exactly what will be created. Only **Create** creates them; nothing is created otherwise ("you can enable it later from Edit Connection").
+- **Existing objects are never changed**: an existing table or trigger is never altered, dropped or enabled. If `DDL_Audit` exists but is disabled, you get a warning that changes are not recorded, and it stays disabled. If an existing `dbo.DDL_AuditLog` does not have the columns the trigger writes, nothing is created and the error says which columns are missing.
+- **Read-only connections** never create anything: if the table or trigger is missing, a warning asks you to have a DBA set it up, or to set it up from a read-write connection to the same database. The history itself can be read from a read-only connection.
+- **Closed connections**: the check runs only on an open connection ("Open the connection to set up DDL history.").
+- **Show DDL History** (history icon): in the editor title of an object's SQL document (the editable script of a view, procedure or function, or the read-only DDL of a table, trigger or type), and in the right-click menu of tables, views, procedures, functions, triggers and types in the tree, for connections with the option on. It lists the recorded changes newest first (date, event, login, host, program and size). Pick one to open a diff of that version against the version recorded before it (an empty side when it is the oldest). For views, procedures, functions and triggers, the first entry compares the latest recorded version with the definition currently in the database.
+- If the table is missing when you open the history, the warning offers **Set up…**, which opens Edit Connection; saving it with the box checked runs the check again.
+- **Only changes made after installation are recorded**: an object that has not changed since the trigger was created has no history yet.
+- The diff documents are read-only. Command texts and logins are never written to the extension's log (trace logging records only counts and lengths).
+- The trigger prints a short "last modified" message for each DDL statement; it appears in the Messages tab of a query window and is harmless.
+
 ## Settings
 
 | Setting | Default | Description |

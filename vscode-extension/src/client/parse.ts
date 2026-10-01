@@ -101,7 +101,8 @@ export function errorText(payload: unknown): string | undefined {
 /**
  * What trace logging may record for a tool result. read_data and run_script rows can hold client personal data, so
  * only counts are kept for them (read_data: row count and truncation flag; run_script: result sets, returned rows,
- * messages and the error flag). Other results are returned unchanged.
+ * messages and the error flag; ddl_history list / get: the entry count, or the id and command text length). Other
+ * results are returned unchanged.
  */
 export function traceablePayload(tool: string, payload: unknown): unknown {
   if (tool === 'run_script') {
@@ -113,6 +114,17 @@ export function traceablePayload(tool: string, payload: unknown): unknown {
       messages: asArray(pick(data, 'messages')).length,
       hadErrors: pick(data, 'hadErrors') === true,
     };
+  }
+  if (tool === 'ddl_history') {
+    // list rows carry logins and hosts, get carries the command text: only an entry count / id and text length.
+    // status and install results are flags (and a server warning), traced unchanged.
+    const data = pick(payload, 'data');
+    if (Array.isArray(data)) return { entries: data.length };
+    const commandText = pick(data, 'commandText');
+    if (commandText !== undefined) {
+      return { id: pick(data, 'id'), commandTextLength: typeof commandText === 'string' ? commandText.length : 0 };
+    }
+    return payload;
   }
   if (tool !== 'read_data') {
     return payload;

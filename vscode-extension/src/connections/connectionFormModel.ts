@@ -16,6 +16,7 @@ export interface FormValues {
   readOnly: boolean;
   insights: boolean;
   open: boolean;
+  ddlHistory: boolean;
 }
 
 export type FormErrors = Partial<Record<keyof FormValues, string>>;
@@ -51,13 +52,16 @@ export const ENCRYPTION_HELP: Record<ConnectionProfile['encrypt'], string> = {
 
 export const TRUST_HELP = 'Skips certificate verification (self-signed / on-prem servers).';
 
+export const DDL_HISTORY_LABEL = 'DDL history (audit trigger)';
+export const DDL_HISTORY_HELP = "Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object's history. If they are missing, they are created on read-write connections (you are asked first).";
+
 const AUTH_KINDS = AUTH_OPTIONS.map(a => a.kind);
 const ENCRYPT_KINDS = ENCRYPTION_OPTIONS.map(o => o.value);
 
 export function defaultFormValues(): FormValues {
   return {
     name: '', auth: 'windows', server: '', database: '', user: '', password: '', rawConnectionString: '',
-    encrypt: 'mandatory', trustServerCertificate: true, readOnly: true, insights: true, open: true,
+    encrypt: 'mandatory', trustServerCertificate: true, readOnly: true, insights: true, open: true, ddlHistory: false,
   };
 }
 
@@ -66,7 +70,7 @@ export function profileToFormValues(p: ConnectionProfile): FormValues {
     name: p.name, auth: p.auth, server: p.server, database: p.database, user: p.user ?? '', password: '',
     rawConnectionString: p.rawConnectionString ?? '',
     encrypt: p.encrypt, trustServerCertificate: p.trustServerCertificate,
-    readOnly: p.readOnly, insights: p.insights, open: p.open,
+    readOnly: p.readOnly, insights: p.insights, open: p.open, ddlHistory: p.ddlHistory === true,
   };
 }
 
@@ -136,6 +140,7 @@ export function formToProfile(v: FormValues, ctx: FormContext): { profile?: Conn
     encrypt: v.encrypt,
     trustServerCertificate: v.trustServerCertificate,
     rawConnectionString: v.auth === 'raw' ? raw : undefined,
+    ddlHistory: v.ddlHistory,
   };
   // Final guard: the store throws on a profile validateProfile rejects.
   const leftover = validateProfile(profile);
@@ -160,7 +165,7 @@ export type FormMessage =
   | { type: 'test' | 'listDatabases' | 'save'; values: FormValues };
 
 const STRING_FIELDS = ['name', 'server', 'database', 'user', 'password', 'rawConnectionString'] as const;
-const BOOL_FIELDS = ['trustServerCertificate', 'readOnly', 'insights', 'open'] as const;
+const BOOL_FIELDS = ['trustServerCertificate', 'readOnly', 'insights', 'open', 'ddlHistory'] as const;
 
 /** Validates an untrusted webview message; undefined when it is not one of the known shapes. */
 export function parseFormMessage(raw: unknown): FormMessage | undefined {
@@ -179,6 +184,7 @@ export function parseFormMessage(raw: unknown): FormMessage | undefined {
     user: v.user as string, password: v.password as string, rawConnectionString: v.rawConnectionString as string,
     encrypt: v.encrypt as ConnectionProfile['encrypt'], trustServerCertificate: v.trustServerCertificate as boolean,
     readOnly: v.readOnly as boolean, insights: v.insights as boolean, open: v.open as boolean,
+    ddlHistory: v.ddlHistory as boolean,
   };
   return { type: m.type, values };
 }

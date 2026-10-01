@@ -9,6 +9,8 @@ import { DdlDocumentProvider } from './explorer/ddlDocuments';
 import { ExplorerClient } from './explorer/explorerClient';
 import { ExplorerTreeProvider } from './explorer/explorerTree';
 import { DDL_SCHEME } from './explorer/sqlText';
+import { registerHistoryCommands } from './history/historyCommands';
+import { setUpDdlHistory } from './history/historySetup';
 import { Logger } from './logger';
 import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, duplicateEntryAction, hasMsSqlEntry } from './cursorMcp';
 import { resolveExePath } from './exe';
@@ -31,10 +33,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new ConnectionStore(context.globalState, context.secrets);
   const explorer = new ExplorerClient(context, store, log);
   context.subscriptions.push(explorer);
-  registerConnectionCommands(context, store, log, explorer);
-  // Query windows run scripts in a third private process that keeps each profile's own read-only flag.
+  // Query windows run scripts in a third private process that keeps each profile's own read-only flag. It also serves
+  // the extension-only ddl_history tool (the connection form's DDL history set-up, Show DDL History).
   const runner = new ServerProcessClient(context, store, log, RUNNER_OPTIONS);
   context.subscriptions.push(runner);
+  registerConnectionCommands(context, store, log, explorer, profile => setUpDdlHistory(runner, profile, log));
 
   // Query windows and editable object scripts are mssql-sql: documents (titled tabs, no programmatic text edits),
   // registered before the commands that open them.
@@ -57,6 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: disposeDataPanel },
   );
   registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs);
+  registerHistoryCommands(context, { store, docs: queryDocs, runner, explorer, log });
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);

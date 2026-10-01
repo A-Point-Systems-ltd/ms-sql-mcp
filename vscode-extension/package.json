@@ -124,6 +124,12 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "msSqlMcp.showHistory",
+        "title": "Show DDL History",
+        "category": "APoint-ms-sql",
+        "icon": "$(history)"
+      },
+      {
         "command": "msSqlMcp.registerClients",
         "title": "Register with Cursor / Claude...",
         "category": "APoint-ms-sql",
@@ -220,13 +226,18 @@
         },
         {
           "command": "msSqlMcp.dataView",
-          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\.(table|view)$/",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\.(table|view)(\\.history)?$/",
           "group": "inline@1"
         },
         {
           "command": "msSqlMcp.showDdl",
           "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
           "group": "inline@2"
+        },
+        {
+          "command": "msSqlMcp.showHistory",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\..*\\.history$/",
+          "group": "0@2"
         },
         {
           "command": "msSqlMcp.refresh",
@@ -269,6 +280,10 @@
           "when": "false"
         },
         {
+          "command": "msSqlMcp.showHistory",
+          "when": "resource in msSqlMcp.historyDocs"
+        },
+        {
           "command": "msSqlMcp.changeConnection",
           "when": "editorLangId == sql || msSqlMcp.editorConnected"
         },
@@ -305,6 +320,11 @@
           "command": "msSqlMcp.cancelQuery",
           "when": "resource in msSqlMcp.runningDocs",
           "group": "navigation@2"
+        },
+        {
+          "command": "msSqlMcp.showHistory",
+          "when": "resource in msSqlMcp.historyDocs",
+          "group": "navigation@3"
         }
       ]
     },
