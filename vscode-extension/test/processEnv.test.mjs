@@ -25,15 +25,18 @@ test('explorer / probe env blanks inherited connection sources and forces safe f
     MSSQL_CONNECTIONS_FILE: '',
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
+    MSSQL_SCRIPT_RUNNER: '',
   });
-  assert.ok(!('MSSQL_SCRIPT_RUNNER' in env), 'the explorer process never sets the script-runner flag');
   assert.equal(explorerProcessEnv('[]', { LOG_FILE_PATH: 'x' }).LOG_FILE_PATH, 'x');
+  // Only the runner turns the script runner on, through its extra env.
+  assert.equal(explorerProcessEnv('[]', { MSSQL_SCRIPT_RUNNER: 'true' }).MSSQL_SCRIPT_RUNNER, 'true');
 });
 
 test('explorer env wins over an inherited process env when spread last', () => {
-  const inherited = { CONNECTION_STRING: 'Server=evil', MSSQL_CONNECTIONS_FILE: 'C:\\evil.json', PATH: 'p' };
+  const inherited = { CONNECTION_STRING: 'Server=evil', MSSQL_CONNECTIONS_FILE: 'C:\\evil.json', MSSQL_SCRIPT_RUNNER: 'true', PATH: 'p' };
   const merged = { ...inherited, ...explorerProcessEnv('[]') };
   assert.equal(merged.CONNECTION_STRING, '');
+  assert.equal(merged.MSSQL_SCRIPT_RUNNER, '', 'an inherited script-runner flag never reaches the explorer');
   assert.equal(merged.MSSQL_CONNECTIONS_FILE, '');
   assert.equal(merged.PATH, 'p');
 });

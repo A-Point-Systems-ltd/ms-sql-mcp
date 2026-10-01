@@ -1,5 +1,5 @@
 // Tiny fake MCP server for McpStdioClient tests: newline-delimited JSON-RPC over stdio.
-// - `initialize` gets an immediate result;
+// - `initialize` gets a result after FAKE_INIT_DELAY_MS (default 0) ms;
 // - `tools/call` `slow` answers after `arguments.ms` (default 500) ms, even when cancelled (to exercise late responses);
 // - `tools/call` `echo` answers at once with its arguments;
 // - every notification received is written to stderr as `NOTIFY <json>`.
@@ -17,7 +17,9 @@ rl.on('line', line => {
     return;
   }
   if (msg.method === 'initialize') {
-    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '0' } } });
+    const delay = Number(process.env.FAKE_INIT_DELAY_MS ?? 0);
+    const reply = () => send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '0' } } });
+    if (delay > 0) setTimeout(reply, delay); else reply();
     return;
   }
   if (msg.method === 'tools/call') {

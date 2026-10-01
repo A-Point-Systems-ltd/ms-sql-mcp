@@ -67,3 +67,30 @@ test('prune drops the entries the predicate rejects; rename moves an entry', asy
   await docs.rename('file:///zzz.sql', 'file:///y.sql');
   assert.equal(docs.get('file:///y.sql'), undefined);
 });
+
+test('mssql-ddl documents are never bound; other schemes are bindable', async () => {
+  const { isNeverBound } = await import('../out/query/queryDocuments.js');
+  assert.equal(isNeverBound('mssql-ddl'), true);
+  assert.equal(isNeverBound('file'), false);
+  assert.equal(isNeverBound('untitled'), false);
+  assert.equal(isNeverBound('vscode-remote'), false);
+});
+
+test('closing a document drops its association unless it is a file', async () => {
+  const { dropOnClose } = await import('../out/query/queryDocuments.js');
+  assert.equal(dropOnClose('file'), false);
+  assert.equal(dropOnClose('untitled'), true);
+  assert.equal(dropOnClose('vscode-userdata'), true);
+  assert.equal(dropOnClose('mssql-ddl'), true);
+});
+
+test('activation pruning: files must exist, other documents must be open, mssql-ddl never stays', async () => {
+  const { keepOnActivation } = await import('../out/query/queryDocuments.js');
+  assert.equal(keepOnActivation('file', false, () => true), true);
+  assert.equal(keepOnActivation('file', true, () => false), false);
+  assert.equal(keepOnActivation('untitled', true, () => false), true);
+  assert.equal(keepOnActivation('untitled', false, () => true), false);
+  assert.equal(keepOnActivation('vscode-remote', true, () => false), true);
+  assert.equal(keepOnActivation('vscode-remote', false, () => true), false);
+  assert.equal(keepOnActivation('mssql-ddl', true, () => true), false);
+});

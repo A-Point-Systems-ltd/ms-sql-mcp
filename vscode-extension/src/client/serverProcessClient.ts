@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { CallCounter, cancelledError, raceAbort } from './callTracking';
 import type { CallToolOptions } from './mcpClient';
 import { McpStdioClient } from './mcpStdioClient';
 import { pick } from './parse';
@@ -36,9 +37,16 @@ class SupersededError extends Error {}
  * A private MssqlMcp process of the extension (separate from the agent-facing one), e.g. the object tree's
  * read-only explorer or the query runner. Spawned lazily with a single-flight guard; every call carries
  * `connection`. Only OPEN profiles are served; the Insights layer is off.
+ *
+ * A restart (profile set or server path changed) never kills a running call: new calls go to a fresh process at
+ * once, and the old one is retired when its last in-flight call ends. Only dispose() kills at once.
  */
 export class ServerProcessClient implements vscode.Disposable {
   private client?: McpStdioClient;
+  /** In-flight calls per process. */
+  private readonly calls = new WeakMap<McpStdioClient, CallCounter>();
+  /** Replaced processes that still have calls running; disposed when idle (or by dispose()). */
+  private readonly retiring = new Set<McpStdioClient>();
   private starting?: Promise<McpStdioClient>;
   private generation = 0;
   private timer?: NodeJS.Timeout;
@@ -75,14 +83,24 @@ export class ServerProcessClient implements vscode.Disposable {
    * for results whose top-level fields matter (read_data truncation). `opts` ({timeoutMs, signal}) go to callTool.
    */
   async callResult(connection: string, tool: string, args: Record<string, unknown>, opts?: CallToolOptions): Promise<unknown> {
+    if (opts?.signal?.aborted) throw cancelledError();
     // A pending debounced reset means the running process has a stale profile set: apply it first.
     if (this.timer) this.reset();
-    const client = await this.ensure();
+    // Starting the process can take seconds: a Cancel during that time rejects at once (the start goes on).
+    const client = await raceAbort(this.ensure(), opts?.signal);
     this.log.debug(this.options.label, `${tool} connection='${connection}'`);
-    return client.callTool(tool, { ...args, connection }, opts);
+    const end = this.counterOf(client).begin();
+    try {
+      return await client.callTool(tool, { ...args, connection }, opts);
+    } finally {
+      end();
+    }
   }
 
-  /** Restarts the process (lazily) so it picks up the current profile set. */
+  /**
+   * Restarts the process (lazily) so it picks up the current profile set. Calls still running on the old process
+   * finish there; it is disposed after the last one.
+   */
   reset(): void {
     clearTimeout(this.timer);
     this.timer = undefined;
@@ -90,16 +108,41 @@ export class ServerProcessClient implements vscode.Disposable {
     this.starting = undefined;
     const old = this.client;
     this.client = undefined;
-    old?.dispose();
+    if (old) this.retire(old);
     if (!this.disposed) this.resetEmitter.fire();
   }
 
+  /** Kills the process at once, including replaced processes whose calls are still running. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.sub.dispose();
     this.reset();
+    for (const client of this.retiring) client.dispose();
+    this.retiring.clear();
     this.resetEmitter.dispose();
+  }
+
+  private counterOf(client: McpStdioClient): CallCounter {
+    let counter = this.calls.get(client);
+    if (!counter) {
+      counter = new CallCounter();
+      this.calls.set(client, counter);
+    }
+    return counter;
+  }
+
+  /** Disposes a replaced process once no call is running on it. */
+  private retire(client: McpStdioClient): void {
+    const counter = this.counterOf(client);
+    if (counter.inFlight > 0) {
+      this.log.info(this.options.label, `Restart: the old process is kept until its ${counter.inFlight} running call(s) end.`);
+      this.retiring.add(client);
+    }
+    counter.whenIdle(() => {
+      this.retiring.delete(client);
+      client.dispose();
+    });
   }
 
   private scheduleReset(): void {

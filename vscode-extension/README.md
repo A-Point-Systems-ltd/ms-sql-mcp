@@ -112,6 +112,9 @@ The object explorer never uses the agent's server process. It starts its own pri
 - The status bar shows the connection of the active SQL editor (a lock marks a read-only connection). Click it, or run **Change Connection**, to bind the editor to another open connection.
 - On a read-only connection a query window runs only read-only single-SELECT batches.
 - Bindings are kept per workspace; an untitled editor loses its binding when it is closed.
+- **Run** with F5 or the play button in the editor title runs the selection, or the whole document when nothing is selected. Results appear in the **MSSQL-MCP Results** panel at the bottom: a **Results** tab with one grid per result set and a **Messages** tab (errors in red; click a message with a line to jump to it). **Cancel** (the stop button in the editor title or in the panel) stops the run.
+- A running query is never killed by a connection change: the runner process is restarted for new runs, and the old one ends when its last run finishes.
+- DDL views (`mssql-ddl:` documents) are never bound to a connection.
 
 ## Settings
 
@@ -120,6 +123,7 @@ The object explorer never uses the agent's server process. It starts its own pri
 | `msSqlMcp.insights` | `true` | AI Insights layer for the agent server (the explorer never uses it). |
 | `msSqlMcp.allowAdhocConnections` | `false` | Lets agents open ad-hoc connections from a raw connection string. The server still refuses Windows / Entra identity, writable and file-attach connections unless the operator enables them (see the server README). |
 | `msSqlMcp.dataViewRows` | `500` | Rows loaded by Data View (1-10000). |
+| `msSqlMcp.query.maxRows` | `1000` | Rows kept per result set when a query window runs (1-10000); further rows are only counted. |
 | `msSqlMcp.serverPath` | bundled | Path to a different `MssqlMcp.exe`. |
 | `msSqlMcp.logLevel` | `error` (installed) | Output channel verbosity: `off`, `error`, `warn`, `info`, `debug`, `trace`. |
 

@@ -34,6 +34,13 @@
           "title": "MSSQL-MCP",
           "icon": "media/db.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "msSqlMcpResults",
+          "title": "MSSQL-MCP Results",
+          "icon": "media/db.svg"
+        }
       ]
     },
     "views": {
@@ -47,6 +54,13 @@
         {
           "id": "msSqlMcp.explorer",
           "name": "Connections"
+        }
+      ],
+      "msSqlMcpResults": [
+        {
+          "id": "msSqlMcp.results",
+          "name": "Results",
+          "type": "webview"
         }
       ]
     },
@@ -134,6 +148,25 @@
         "title": "Change Connection",
         "category": "MSSQL-MCP",
         "icon": "$(database)"
+      },
+      {
+        "command": "msSqlMcp.runQuery",
+        "title": "Run (F5)",
+        "category": "MSSQL-MCP",
+        "icon": "$(play)"
+      },
+      {
+        "command": "msSqlMcp.cancelQuery",
+        "title": "Cancel Query",
+        "category": "MSSQL-MCP",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "msSqlMcp.runQueryReadOnly",
+        "title": "Run (F5) - disabled: read-only connection. Apply changes on a read-write connection.",
+        "category": "MSSQL-MCP",
+        "icon": "$(play)",
+        "enablement": "false"
       }
     ],
     "menus": {
@@ -218,6 +251,18 @@
         {
           "command": "msSqlMcp.changeConnection",
           "when": "editorLangId == sql || msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.runQuery",
+          "when": "msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.cancelQuery",
+          "when": "msSqlMcp.queryRunning"
+        },
+        {
+          "command": "msSqlMcp.runQueryReadOnly",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -225,6 +270,21 @@
           "command": "msSqlMcp.refresh",
           "when": "resourceScheme == mssql-ddl",
           "group": "navigation"
+        },
+        {
+          "command": "msSqlMcp.runQuery",
+          "when": "msSqlMcp.editorCanRun",
+          "group": "navigation@1"
+        },
+        {
+          "command": "msSqlMcp.runQueryReadOnly",
+          "when": "msSqlMcp.editorRunBlockedReadOnly",
+          "group": "navigation@1"
+        },
+        {
+          "command": "msSqlMcp.cancelQuery",
+          "when": "msSqlMcp.queryRunning",
+          "group": "navigation@2"
         }
       ]
     },
@@ -253,6 +313,13 @@
           "maximum": 10000,
           "description": "Rows loaded by Data View."
         },
+        "msSqlMcp.query.maxRows": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Rows kept per result set when a query window runs (F5). Further rows are counted but not shown."
+        },
         "msSqlMcp.logLevel": {
           "type": "string",
           "enum": [
@@ -266,7 +333,14 @@
           "description": "Log verbosity. When unset: error in a normal (Production) install, debug when running in Development or Test mode."
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "msSqlMcp.runQuery",
+        "key": "f5",
+        "when": "editorTextFocus && msSqlMcp.editorConnected"
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

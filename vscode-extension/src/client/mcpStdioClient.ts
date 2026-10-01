@@ -219,7 +219,8 @@ export class McpStdioClient implements McpClient {
     if (this.abandoned.size > MAX_ABANDONED_IDS) {
       this.abandoned.delete(this.abandoned.values().next().value as number);
     }
-    this.notify('notifications/cancelled', { requestId: id, reason });
+    // MCP forbids cancelling `initialize`; its late response is still dropped quietly.
+    if (pending.method !== 'initialize') this.notify('notifications/cancelled', { requestId: id, reason });
     pending.reject(error);
   }
 

@@ -1,0 +1,140 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { renderResults } from '../out/query/resultsHtml.js';
+
+const NONCE = 'abc123nonce';
+const CSP = 'vscode-webview://x';
+const render = state => renderResults(state, NONCE, CSP);
+
+const result = (over = {}) => ({ resultSets: [], messages: [], hadErrors: false, batches: 1, elapsedMs: 12, ...over });
+const set = (over = {}) => ({ batch: 1, columns: [{ name: 'Id', type: 'int' }], rows: [[1]], rowCount: 1, truncated: false, ...over });
+const done = (r, lineOffset = 0) => ({ kind: 'done', connection: 'dev', result: r, lineOffset });
+
+/** The id of the tab button marked as selected. */
+const selectedTab = html => /<button[^>]*class="tab selected"[^>]*data-tab="(\w+)"/.exec(html)?.[1];
+
+test('every state renders a full document with the CSP and its nonce', () => {
+  const states = [
+    { kind: 'empty' },
+    { kind: 'running', connection: 'dev', startedAt: 1_700_000_000_000 },
+    done(result({ resultSets: [set()] })),
+    { kind: 'failed', connection: 'dev', error: 'Server process exited.' },
+    { kind: 'cancelled', connection: 'dev' },
+  ];
+  for (const s of states) {
+    const html = render(s);
+    assert.match(html, /^<!DOCTYPE html>/, s.kind);
+    assert.ok(html.includes(`content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${NONCE}';"`), s.kind);
+    assert.ok(html.includes(`<script nonce="${NONCE}">`), s.kind);
+    assert.ok(!/https?:\/\//.test(html), `${s.kind}: no network resources`);
+    assert.ok(!html.includes('innerHTML'), `${s.kind}: the client script never uses innerHTML`);
+  }
+});
+
+test('state texts: empty, running (timer + Cancel), completed, errors, failed, cancelled', () => {
+  assert.match(render({ kind: 'empty' }), /Run a query with F5 or the Run button\./);
+
+  const running = render({ kind: 'running', connection: 'dev', startedAt: 1_700_000_000_000 });
+  assert.match(running, /Running/);
+  assert.match(running, /data-started="1700000000000"/);
+  assert.match(running, /<button[^>]*id="cancel"[^>]*>Cancel<\/button>/);
+  assert.match(running, /dev/);
+
+  assert.match(render(done(result({ elapsedMs: 41 }))), /Completed in 41 ms/);
+  const withErrors = render(done(result({ hadErrors: true, messages: [{ kind: 'error', text: 'x', line: null }] })));
+  assert.match(withErrors, /Completed with errors/);
+  assert.doesNotMatch(withErrors, /Completed in/);
+
+  assert.match(render({ kind: 'failed', connection: 'dev', error: 'No open connections.' }), /No open connections\./);
+  assert.match(render({ kind: 'cancelled', connection: 'dev' }), /Cancelled/);
+});
+
+test('tabs show counts; Results is selected when there are result sets', () => {
+  const html = render(done(result({
+    resultSets: [set(), set({ batch: 2 })],
+    messages: [{ kind: 'rows', text: '(1 row affected)', line: null }],
+  })));
+  assert.match(html, />Results \(2\)</);
+  assert.match(html, />Messages \(1\)</);
+  assert.equal(selectedTab(html), 'results');
+});
+
+test('Messages is auto-selected on errors only and when there are no result sets', () => {
+  const errorsOnly = render(done(result({ hadErrors: true, messages: [{ kind: 'error', text: 'Msg 102', line: 1 }] })));
+  assert.equal(selectedTab(errorsOnly), 'messages');
+  const noSets = render(done(result({ messages: [{ kind: 'rows', text: '(3 rows affected)', line: null }] })));
+  assert.equal(selectedTab(noSets), 'messages');
+  // Errors next to a result set keep Results selected.
+  const mixed = render(done(result({ hadErrors: true, resultSets: [set()], messages: [{ kind: 'error', text: 'x', line: 1 }] })));
+  assert.equal(selectedTab(mixed), 'results');
+});
+
+test('values, column names, types, messages and the connection are HTML-escaped', () => {
+  const evil = '<script>alert(1)</script>&amp';
+  const html = render({
+    kind: 'done', connection: evil, lineOffset: 0,
+    result: result({
+      resultSets: [set({ columns: [{ name: evil, type: '"><b>' }], rows: [[evil]] })],
+      messages: [{ kind: 'error', text: evil, line: 2 }],
+    }),
+  });
+  assert.ok(!html.includes('<script>alert(1)</script>'));
+  assert.ok(!html.includes('"><b>'));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;&amp;amp'));
+  assert.ok(html.includes('&quot;&gt;&lt;b&gt;'));
+  // Failed state error text too.
+  assert.ok(!render({ kind: 'failed', connection: 'dev', error: evil }).includes('<script>alert'));
+});
+
+test('grid: NULL cells, numbers right-aligned, column type as header tooltip', () => {
+  const html = render(done(result({
+    resultSets: [set({
+      columns: [{ name: 'Id', type: 'int' }, { name: 'Name', type: 'nvarchar' }, { name: 'Amount', type: 'decimal' }, { name: '', type: 'int' }],
+      rows: [[1, null, '12.50', 7]],
+    })],
+  })));
+  assert.match(html, /<th title="int">Id<\/th>/);
+  assert.match(html, /<th title="nvarchar">Name<\/th>/);
+  assert.match(html, /<th title="int">\(No column name\)<\/th>/);
+  assert.match(html, /<td class="null">NULL<\/td>/);
+  assert.match(html, /<td class="num">1<\/td>/);
+  // A decimal arrives as a string but is still a numeric column.
+  assert.match(html, /<td class="num">12\.50<\/td>/);
+});
+
+test('captions: row counts, truncation, single set fills the view, several sets are capped', () => {
+  const single = render(done(result({ resultSets: [set({ rowCount: 1 })] })));
+  assert.match(single, /Result 1 - 1 row</);
+  assert.match(single, /class="grid single"/);
+
+  const many = render(done(result({
+    resultSets: [set({ rows: [[1], [2]], rowCount: 5000, truncated: true }), set({ batch: 2, rows: [], rowCount: 0 })],
+  })));
+  assert.match(many, /Result 1 - 5000 rows \(showing first 2\)/);
+  assert.match(many, /Result 2 - 0 rows</);
+  assert.equal((many.match(/class="grid multi"/g) ?? []).length, 2);
+  assert.match(many, /\.grid\.multi\s*\{[^}]*max-height:\s*45vh/);
+});
+
+test('messages: kind classes in order, and a line becomes a reveal link', () => {
+  const html = render(done(result({
+    messages: [
+      { kind: 'info', text: 'first', line: 3 },
+      { kind: 'rows', text: 'second', line: null },
+      { kind: 'warning', text: 'third', line: null },
+      { kind: 'error', text: 'fourth', line: 7 },
+    ],
+  })));
+  const order = ['first', 'second', 'third', 'fourth'].map(t => html.indexOf(t));
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.match(html, /class="msg info"/);
+  assert.match(html, /class="msg rows"/);
+  assert.match(html, /class="msg warning"/);
+  assert.match(html, /class="msg error"/);
+  assert.match(html, /data-line="7"/);
+  assert.match(html, /data-line="3"/);
+  assert.equal((html.match(/data-line="/g) ?? []).length, 2);
+  // The client script posts reveal and cancel messages.
+  assert.match(html, /type: 'reveal'/);
+  assert.match(html, /type: 'cancel'/);
+});

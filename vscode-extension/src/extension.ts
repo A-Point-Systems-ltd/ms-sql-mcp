@@ -33,9 +33,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // Query windows run scripts in a third private process that keeps each profile's own read-only flag.
   const runner = new ServerProcessClient(context, store, log, RUNNER_OPTIONS);
   context.subscriptions.push(runner);
-  registerQueryCommands(context, store, log);
 
   const tree = new ExplorerTreeProvider(store, explorer, log);
+  registerQueryCommands(context, store, log, { runner, refreshTree: () => tree.refresh() });
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
@@ -54,6 +54,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    // A reset never kills a running call: the old process is retired when its last call ends.
     if (e.affectsConfiguration('msSqlMcp.serverPath')) {
       explorer.reset();
       runner.reset();

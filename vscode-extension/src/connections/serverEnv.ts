@@ -40,7 +40,7 @@ export function cursorServerEnv(connectionsJson: string, s: Pick<AgentServerSett
 
 /**
  * Env for the explorer / probe child processes, spread over process.env. Inherited connection sources are blanked
- * (the server ignores empty values), the Insights layer and ad-hoc connections are off.
+ * (the server ignores empty values), the Insights layer, ad-hoc connections and the script runner are off.
  */
 export function explorerProcessEnv(connectionsJson: string, extra: Record<string, string> = {}): Record<string, string> {
   return {
@@ -49,6 +49,8 @@ export function explorerProcessEnv(connectionsJson: string, extra: Record<string
     MSSQL_CONNECTIONS_FILE: '',
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
+    // Blank an inherited flag; the runner turns it on through `extra`.
+    MSSQL_SCRIPT_RUNNER: '',
     ...extra,
   };
 }

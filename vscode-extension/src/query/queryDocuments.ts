@@ -1,6 +1,7 @@
 // Which connection each SQL document is bound to, persisted per workspace.
 // No 'vscode' import — unit-testable with plain Node; queryCommands.ts wires the document events.
 import type { ObjectRef } from '../explorer/catalog';
+import { DDL_SCHEME } from '../explorer/sqlText';
 
 export const QUERY_DOCUMENTS_KEY = 'msSqlMcp.queryDocuments';
 
@@ -23,6 +24,25 @@ export type DocumentKey = string | { toString(): string };
 export interface Disposable { dispose(): void }
 
 const keyOf = (uri: DocumentKey): string => (typeof uri === 'string' ? uri : uri.toString());
+
+/** Read-only DDL documents (`mssql-ddl:`) are never bound to a connection: no status item, no Run. */
+export function isNeverBound(scheme: string): boolean {
+  return scheme === DDL_SCHEME;
+}
+
+/** Whether closing a document drops its association: only `file:` documents keep it (they can be reopened). */
+export function dropOnClose(scheme: string): boolean {
+  return scheme !== 'file';
+}
+
+/**
+ * Whether an association survives activation: a file must still exist, any other document must still be open
+ * (an editor tab), and `mssql-ddl:` entries never stay.
+ */
+export function keepOnActivation(scheme: string, isOpen: boolean, fileExists: () => boolean): boolean {
+  if (isNeverBound(scheme)) return false;
+  return scheme === 'file' ? fileExists() : isOpen;
+}
 
 function isAssociation(v: unknown): v is QueryAssociation {
   const a = v as Partial<QueryAssociation> | undefined;

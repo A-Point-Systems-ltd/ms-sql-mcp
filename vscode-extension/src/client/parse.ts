@@ -88,7 +88,7 @@ export function unwrapToolResult(envelope: unknown): unknown {
  * separately, because results such as SqlQueryResult carry `message: null` alongside
  * the real `errorMessage`, and a single `pick` would stop at the null.
  */
-function errorText(payload: unknown): string | undefined {
+export function errorText(payload: unknown): string | undefined {
   for (const key of ['error', 'errorMessage', 'message']) {
     const value = pickString(payload, key);
     if (value) {

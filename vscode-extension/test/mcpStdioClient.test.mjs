@@ -107,3 +107,16 @@ test('dispose kills the server process', async () => {
   client.dispose();
   assert.ok(await waitFor(() => child.exitCode !== null || child.signalCode !== null), 'child exited');
 });
+
+test('an initialize timeout does not send notifications/cancelled', async () => {
+  const log = fakeLog();
+  const client = new McpStdioClient(process.execPath, { FAKE_INIT_DELAY_MS: '400' }, log, undefined, { args: [FAKE_SERVER], defaultTimeoutMs: 150 });
+  clients.push(client);
+  await assert.rejects(client.initialize(), /Timed out after 150 ms calling initialize/);
+  // Give a wrongly sent notification time to reach the server and the late initialize response time to arrive.
+  client.notify('notifications/probe');
+  assert.ok(await waitFor(() => notifications(log).some(n => n.method === 'notifications/probe')), 'the server is still reading stdin');
+  await new Promise(r => setTimeout(r, 350));
+  assert.ok(!notifications(log).some(n => n.method === 'notifications/cancelled'), 'initialize is never cancelled');
+  assert.ok(!log.lines.some(l => /unknown request id/i.test(l.message)), 'the late initialize response is dropped quietly');
+});
