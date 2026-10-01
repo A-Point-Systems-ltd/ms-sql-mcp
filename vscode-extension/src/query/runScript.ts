@@ -108,3 +108,12 @@ export function parseRunScriptResult(payload: unknown): RunScriptResult {
 export function appliedSuccessfully(result: RunScriptResult): boolean {
   return !result.hadErrors && result.batches > 0 && !result.messages.some(m => m.kind === 'error');
 }
+
+/**
+ * Whether a run of an object document makes its text the new base copy (see editableDdl): only a whole-document run
+ * that applied without any error (`hadErrors` false). After a selection run, or a failed batch, part of the text may
+ * still be unapplied, so the next reopen from the tree keeps asking.
+ */
+export function updatesObjectBase(result: RunScriptResult, wholeDocument: boolean): boolean {
+  return wholeDocument && !result.hadErrors && appliedSuccessfully(result);
+}

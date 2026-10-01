@@ -4,8 +4,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
-  INSTALL_SAFETY_TEXT, LIST_TOP, installPrompt, moreNotLoaded, parseHistoryStatus, runsHistorySetup, statusTargetText,
+  EXISTING_TABLE_GRANT_TEXT, INSTALL_SAFETY_TEXT, LIST_TOP, historyUri, installPrompt, moreNotLoaded, parseAuditId, parseHistoryCommand,
+  parseHistoryEntries, parseHistoryStatus, parseHistoryUri, runsHistorySetup, statusTargetText,
 } from '../out/history/historyModel.js';
+import { updatesObjectBase } from '../out/query/runScript.js';
 import { TITLE_AFTER_SAVE_MESSAGE, expectedTitle, titleAction } from '../out/query/sqlDocTitles.js';
 import { KEEP_EDITS_BUTTON, REPLACE_BUTTON, reopenObjectDecision, unappliedEditsPrompt } from '../out/explorer/objectEdit.js';
 import { baseFile, backingFile, legacyEditsBackupName, isLegacyEditPath, isValidDocId } from '../out/query/sqlDocNames.js';
@@ -87,13 +89,52 @@ test('statusTargetText: the server-reported names first, the profile only for wh
   assert.equal(statusTargetText({ databaseName: 'Real' }, profile('a')), 'DC\\DEV/Real');
 });
 
-test('installPrompt detail says the trigger runs as dbo, never blocks DDL, and how to remove it', () => {
+test('installPrompt detail names DDL_Audit_Writer, the rollback-by-another-trigger exception and how to remove it (RI1)', () => {
   const p = installPrompt(status(), 'SRV1/ClientB', 'dev');
   assert.equal(p.message, "Create DDL history on SRV1/ClientB (connection 'dev')?");
   assert.equal(INSTALL_SAFETY_TEXT,
-    'The trigger runs as dbo and never blocks a DDL statement if logging fails. To remove it later: DROP TRIGGER [DDL_Audit] ON DATABASE.');
+    'The trigger runs as the low-privilege user DDL_Audit_Writer (INSERT/SELECT on dbo.DDL_AuditLog only). If logging fails, the DDL statement '
+    + 'still runs and is not logged, except when another trigger on DDL_AuditLog rolls back. To remove: DROP TRIGGER [DDL_Audit] ON DATABASE; DROP USER [DDL_Audit_Writer].');
   assert.ok(p.detail.endsWith(INSTALL_SAFETY_TEXT), p.detail);
-  assert.doesNotMatch(p.detail, /harmless/i);
+  assert.doesNotMatch(p.detail, /harmless|runs as dbo/i);
+  assert.doesNotMatch(p.detail, /grants INSERT and SELECT on the existing/, 'no existing table: no grant sentence');
+});
+
+test('installPrompt: an existing table gets the grant sentence (RI1), and status warnings are appended (RM4)', () => {
+  const p = installPrompt(status({ tableExists: true, tableCompatible: true, warnings: ['CommandText is varchar(max); non-Latin text in DDL will be stored lossy.'] }), 'S/D', 'c');
+  assert.equal(EXISTING_TABLE_GRANT_TEXT, 'This grants INSERT and SELECT on the existing dbo.DDL_AuditLog to the new user DDL_Audit_Writer.');
+  assert.ok(p.detail.includes(`${EXISTING_TABLE_GRANT_TEXT} ${INSTALL_SAFETY_TEXT}`), p.detail);
+  assert.ok(p.detail.endsWith(`${INSTALL_SAFETY_TEXT} CommandText is varchar(max); non-Latin text in DDL will be stored lossy.`), p.detail);
+  assert.doesNotMatch(p.detail, /table dbo\.DDL_AuditLog and/, 'the table is not created');
+});
+
+test('parseHistoryStatus reads warnings (strings only), and leaves them out when there are none (RM4)', () => {
+  assert.deepEqual(parseHistoryStatus({ warnings: ['a', '', 3, ' b '] }).warnings, ['a', ' b ']);
+  assert.equal('warnings' in parseHistoryStatus({ warnings: [] }), false);
+  assert.equal('warnings' in parseHistoryStatus({}), false);
+});
+
+test('parseAuditId: bigint-safe ids from numbers or digit strings; unsafe or malformed ones are rejected (NET-020)', () => {
+  assert.equal(parseAuditId(3000000001), 3000000001);
+  assert.equal(parseAuditId('3000000001'), 3000000001);
+  assert.equal(parseAuditId(' 42 '), 42);
+  assert.equal(parseAuditId(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
+  for (const bad of [Number.MAX_SAFE_INTEGER + 1, '9007199254740993', -1, 1.5, 'x', '', '12345678901234567', null, undefined, NaN]) {
+    assert.equal(parseAuditId(bad), undefined, String(bad));
+  }
+  assert.deepEqual(parseHistoryEntries([{ id: 3000000001, postTime: 't' }, { id: '3000000002', postTime: 't' }]).map(e => e.id), [3000000001, 3000000002]);
+  assert.equal(parseHistoryCommand({ id: '3000000001', commandText: 'x' }).id, 3000000001);
+  const uri = historyUri({ kind: 'entry', connection: 'c', target: 'S/D', id: 12345678901, label: 'dbo.p #12345678901' });
+  assert.equal(parseHistoryUri(uri).id, 12345678901, 'more than 10 digits round-trips');
+});
+
+test('updatesObjectBase: only a whole-document run without errors (RM3)', () => {
+  const ok = { resultSets: [], messages: [], hadErrors: false, batches: 1, elapsedMs: 1 };
+  assert.equal(updatesObjectBase(ok, true), true);
+  assert.equal(updatesObjectBase(ok, false), false, 'selection run');
+  assert.equal(updatesObjectBase({ ...ok, hadErrors: true }, true), false, 'hadErrors');
+  assert.equal(updatesObjectBase({ ...ok, messages: [{ kind: 'error', text: 'Msg 1', line: 1 }] }, true), false, 'an error message');
+  assert.equal(updatesObjectBase({ ...ok, batches: 0 }, true), false, 'nothing ran');
 });
 
 // ---- I3: unapplied object edits ----

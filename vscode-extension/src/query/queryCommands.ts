@@ -12,7 +12,7 @@ import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
 import type { ResultsState } from './resultsHtml';
 import { RunRegistry } from './runRegistry';
-import { appliedSuccessfully, buildRunRequest, clampMaxRows, parseRunScriptResult } from './runScript';
+import { appliedSuccessfully, buildRunRequest, clampMaxRows, parseRunScriptResult, updatesObjectBase } from './runScript';
 import { describeTarget, targetOf, wrongTargetPrompt } from './targetGuard';
 
 /** The active editor is bound to a connection (F5 keybinding, command palette). */
@@ -324,9 +324,9 @@ export function registerQueryCommands(
           void vscode.window.showInformationMessage(`Applied to '${connection}'.`);
           deps.refreshTree();
           // The applied text is the new base, so a reopen from the tree no longer asks about it. Only a whole-document
-          // run: after a selection run the rest may still be unapplied.
+          // run without any error: after a selection run, or a batch that failed, part of it may still be unapplied.
           const addr = SqlDocFileSystem.address(document.uri);
-          if (wholeDocument && addr?.kind === 'object') {
+          if (addr?.kind === 'object' && updatesObjectBase(result, wholeDocument)) {
             void deps.sqlDocs.writeBase(addr.id, fullText)
               .catch(err => log.warn('query', `Updating the base copy failed: ${err instanceof Error ? err.message : String(err)}`));
           }
@@ -341,6 +341,8 @@ export function registerQueryCommands(
       }
     } finally {
       running.finish(token);
+      // A title change waits while the document runs: check it again now.
+      lifecycle.refreshTitleOf(document);
       // Closed while running: its results must not outlive it (close() already dropped the guard).
       if (document.isClosed && !openDocumentKeys().has(key) && shown !== undefined && results.stateOf(key) === shown) {
         results.forget(key);

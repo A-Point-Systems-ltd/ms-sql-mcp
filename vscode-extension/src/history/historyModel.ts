@@ -90,6 +90,8 @@ export interface HistoryStatus {
   serverName?: string;
   /** The server's DB_NAME(), when reported. */
   databaseName?: string;
+  /** Compatible but lossy notes about an existing table (for example a varchar(max) CommandText). */
+  warnings?: string[];
 }
 
 /** `ddl_history status` data; a missing or non-boolean flag reads as false, and a missing or blank name is left out. */
@@ -100,6 +102,8 @@ export function parseHistoryStatus(data: unknown): HistoryStatus {
     return typeof v === 'string' && v.trim() ? v.trim() : undefined;
   };
   const serverName = name('serverName');
+  const rawWarnings = pick(data, 'warnings');
+  const warnings = (Array.isArray(rawWarnings) ? rawWarnings : []).filter((w): w is string => typeof w === 'string' && !!w.trim());
   const databaseName = name('databaseName');
   return {
     tableExists: flag('tableExists'),
@@ -109,6 +113,7 @@ export function parseHistoryStatus(data: unknown): HistoryStatus {
     canInstall: flag('canInstall'),
     ...(serverName ? { serverName } : {}),
     ...(databaseName ? { databaseName } : {}),
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 
@@ -135,7 +140,11 @@ export function emptyHistoryOutcome(status: HistoryStatus): 'triggerMissing' | '
 
 /** How the trigger behaves and how to remove it (the install modal and the README say the same). */
 export const INSTALL_SAFETY_TEXT =
-  'The trigger runs as dbo and never blocks a DDL statement if logging fails. To remove it later: DROP TRIGGER [DDL_Audit] ON DATABASE.';
+  'The trigger runs as the low-privilege user DDL_Audit_Writer (INSERT/SELECT on dbo.DDL_AuditLog only). If logging fails, the DDL statement still runs and is not logged, except when another trigger on DDL_AuditLog rolls back. To remove: DROP TRIGGER [DDL_Audit] ON DATABASE; DROP USER [DDL_Audit_Writer].';
+
+/** Added to the modal detail when the table already exists: the install grants on it. */
+export const EXISTING_TABLE_GRANT_TEXT =
+  'This grants INSERT and SELECT on the existing dbo.DDL_AuditLog to the new user DDL_Audit_Writer.';
 
 /** The modal text: names server/db and the connection, and lists exactly what will be created. */
 export function installPrompt(status: HistoryStatus, where: string, connection: string): { message: string; detail: string } {
@@ -145,7 +154,13 @@ export function installPrompt(status: HistoryStatus, where: string, connection: 
   ];
   return {
     message: `Create DDL history on ${where} (connection '${connection}')?`,
-    detail: `This creates ${parts.join(' and ')}. The trigger records every DDL change in this database. ${INSTALL_SAFETY_TEXT}`,
+    detail: [
+      `This creates ${parts.join(' and ')}. The trigger records every DDL change in this database.`,
+      ...(status.tableExists ? [EXISTING_TABLE_GRANT_TEXT] : []),
+      INSTALL_SAFETY_TEXT,
+      // The server's compatible-but-lossy notes about an existing table (status.warnings).
+      ...(status.warnings ?? []),
+    ].join(' '),
   };
 }
 
@@ -180,12 +195,22 @@ export interface HistoryEntry {
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
+/**
+ * An audit entry id (the server's bigint-safe ID): a non-negative safe integer given as a number or as a string of
+ * digits. Anything else, including integers beyond Number.MAX_SAFE_INTEGER (which JSON numbers cannot carry exactly),
+ * is undefined.
+ */
+export function parseAuditId(v: unknown): number | undefined {
+  if (typeof v === 'string') v = /^\d{1,16}$/.test(v.trim()) ? Number(v.trim()) : undefined;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
+}
+
 /** `ddl_history list` data; rows without an integer id are dropped. */
 export function parseHistoryEntries(data: unknown): HistoryEntry[] {
   if (!Array.isArray(data)) return [];
   return data.flatMap((row): HistoryEntry[] => {
-    const id = num(pick(row, 'id'));
-    if (id === undefined || !Number.isInteger(id)) return [];
+    const id = parseAuditId(pick(row, 'id'));
+    if (id === undefined) return [];
     const e: HistoryEntry = { id, postTime: str(pick(row, 'postTime')) ?? '' };
     for (const key of ['loginName', 'hostName', 'programName', 'eventType', 'objectType', 'schemaName'] as const) {
       const v = str(pick(row, key));
@@ -199,7 +224,7 @@ export function parseHistoryEntries(data: unknown): HistoryEntry[] {
 
 /** `ddl_history get` data: the command text (empty when the server has none). */
 export function parseHistoryCommand(data: unknown): { id: number | undefined; postTime: string; commandText: string } {
-  return { id: num(pick(data, 'id')), postTime: str(pick(data, 'postTime')) ?? '', commandText: str(pick(data, 'commandText')) ?? '' };
+  return { id: parseAuditId(pick(data, 'id')), postTime: str(pick(data, 'postTime')) ?? '', commandText: str(pick(data, 'commandText')) ?? '' };
 }
 
 /** `dd/MM/yyyy HH:mm:ss` read straight from the server's text (no time zone conversion); other text is shown as is. */
@@ -331,9 +356,9 @@ export function parseHistoryUri(uri: string): HistoryDocRef | undefined {
   const target = params.get('w') ?? '';
   switch (params.get('v')) {
     case 'entry': {
-      const raw = params.get('i') ?? '';
-      if (!connection || !/^\d{1,10}$/.test(raw)) return undefined;
-      return { kind: 'entry', connection, target, id: Number(raw), label };
+      const id = parseAuditId(params.get('i') ?? '');
+      if (!connection || id === undefined) return undefined;
+      return { kind: 'entry', connection, target, id, label };
     }
     case 'empty':
       return { kind: 'empty', label, more: params.get('m') === '1' };

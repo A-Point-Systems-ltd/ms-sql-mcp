@@ -317,6 +317,11 @@ export class SqlDocLifecycle implements vscode.Disposable {
     if (await this.index.update(i => withoutIds(i, drop))) await this.owned.remove(drop);
   }
 
+  /** Re-checks one document's tab title (for example when a run in it ended). */
+  refreshTitleOf(doc: vscode.TextDocument): void {
+    if (SqlDocFileSystem.address(doc.uri)) this.refreshTitle(doc);
+  }
+
   /** {@link refreshTitle} for every loaded `mssql-sql:` document. */
   private refreshTitles(): void {
     for (const doc of vscode.workspace.textDocuments) {

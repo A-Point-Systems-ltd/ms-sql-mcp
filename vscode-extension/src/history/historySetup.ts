@@ -33,7 +33,12 @@ export async function setUpDdlHistory(runner: ServerProcessClient, profile: Conn
       return;
     }
     where = statusTargetText(status, profile);
-    switch (installDecision(status, profile.readOnly)) {
+    const decision = installDecision(status, profile.readOnly);
+    // The server's notes about a compatible but lossy existing table; the modal lists them itself.
+    if (decision !== 'confirmInstall') {
+      for (const w of status.warnings ?? []) void vscode.window.showInformationMessage(`DDL history on ${where}: ${w}`);
+    }
+    switch (decision) {
       case 'none':
         return;
       case 'warnDisabled':
