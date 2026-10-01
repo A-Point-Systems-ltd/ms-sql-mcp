@@ -16,7 +16,7 @@ public sealed class DdlAuditTests
     private const string TriggerDefinitionSql = "SELECT OBJECT_DEFINITION(object_id) FROM sys.triggers WHERE parent_class = 0 AND name = N'DDL_Audit'";
 
     private static async Task<DbOperationResult> CallAsync(
-        string cs, bool readOnly, string action, string? schema = null, string? name = null, int? id = null, int top = 100)
+        string cs, bool readOnly, string action, string? schema = null, string? name = null, long? id = null, int top = 100)
     {
         var profile = new ConnectionProfile(readOnly ? "ro" : "main", cs, ReadOnly: readOnly, InsightsEnabled: false, ConnectionSource.Configured);
         var tools = new ScriptRunnerTools(new SqlConnectionFactory(new ConnectionRegistry([profile])), NullLogger<ScriptRunnerTools>.Instance);
@@ -316,7 +316,7 @@ public sealed class DdlAuditTests
     }
 
     [SkippableFact]
-    public async Task A_trigger_failure_after_creating_the_table_reports_the_partial_state()
+    public async Task A_trigger_failure_after_creating_the_table_rolls_back_the_table_and_the_writer_user()
     {
         await using var scratch = await ScratchDatabases.CreateAsync(1);
         var cs = scratch.ConnectionStrings[0];
@@ -326,8 +326,38 @@ public sealed class DdlAuditTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => DdlAudit.InstallAsync(conn, CancellationToken.None, triggerScript: "CREATE TRIGGER [DDL_Audit] ON DATABASE FOR no_such_event AS SET NOCOUNT ON"));
 
-        Assert.StartsWith("dbo.DDL_AuditLog was created, but creating the DDL_Audit trigger failed: ", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, TableExistsSql));
+        Assert.StartsWith("Creating the DDL_Audit trigger failed: ", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("The dbo.DDL_AuditLog this call created was removed again; nothing was left behind.", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, TableExistsSql));
         Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, TriggerCountSql));
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM sys.database_principals WHERE name = N'DDL_Audit_Writer'"));
+    }
+
+    /// <summary>NET-020: IDs are bigint end to end (an existing bigint table reseeded above int.MaxValue).</summary>
+    [SkippableFact]
+    public async Task Ids_above_int_max_value_are_listed_and_fetched()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, """
+            CREATE TABLE dbo.DDL_AuditLog (
+                ID bigint IDENTITY(1,1) NOT NULL PRIMARY KEY, PostTime datetime NOT NULL DEFAULT (getdate()),
+                HostName varchar(100) NULL, LoginName varchar(100) NULL, SchemaName varchar(100) NULL, ObjectName varchar(100) NULL,
+                ObjectType varchar(100) NULL, EventType varchar(64) NULL, CommandText nvarchar(max) NULL, CommandXML xml NULL,
+                ProgramName varchar(100) NULL)
+            """);
+        await ScratchDatabases.ExecAsync(cs, "DBCC CHECKIDENT ('dbo.DDL_AuditLog', RESEED, 3000000000) WITH NO_INFOMSGS");
+        await InstallAsync(cs);
+        await ScratchDatabases.ExecAsync(cs, "CREATE PROCEDURE dbo.big AS SELECT 1");
+
+        var list = await CallAsync(cs, readOnly: true, "list", schema: "dbo", name: "big");
+        var entry = Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<DdlAuditEntry>>(list.Data));
+        Assert.True(entry.Id > int.MaxValue, entry.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        var get = await CallAsync(cs, readOnly: true, "get", id: entry.Id);
+        Assert.True(get.Success, get.Error);
+        var command = Assert.IsType<DdlAuditCommand>(get.Data);
+        Assert.Equal(entry.Id, command.Id);
+        Assert.Equal("CREATE PROCEDURE dbo.big AS SELECT 1", command.CommandText);
     }
 }

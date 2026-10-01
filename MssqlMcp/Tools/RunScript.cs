@@ -85,7 +85,7 @@ public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, I
         [Description("status, install, list (needs name) or get (needs id).")] string action,
         [Description("list: schema of the object; entries without a schema are included too.")] string? schema = null,
         [Description("list: object name.")] string? name = null,
-        [Description("get: the audit entry ID.")] int? id = null,
+        [Description("get: the audit entry ID.")] long? id = null,
         [Description("list: maximum entries, newest first (default 100, clamped to 1..500).")] int top = DdlAudit.DefaultTop,
         [Description(Tools.ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)

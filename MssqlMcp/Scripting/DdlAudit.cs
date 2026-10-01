@@ -25,7 +25,7 @@ public sealed record DdlAuditInstallResult(
 
 /// <summary>One <c>ddl_history list</c> row: the audit metadata without the command text (<see cref="Length"/> is its length).</summary>
 public sealed record DdlAuditEntry(
-    int Id,
+    long Id,
     string PostTime,
     string? LoginName,
     string? HostName,
@@ -37,7 +37,7 @@ public sealed record DdlAuditEntry(
 
 /// <summary><c>ddl_history get</c>: one audit row with its full command text.</summary>
 public sealed record DdlAuditCommand(
-    int Id,
+    long Id,
     string PostTime,
     string? LoginName,
     string? EventType,
@@ -83,8 +83,29 @@ internal static class DdlAudit
         ORDER BY c.column_id;
         """;
 
-    // CREATE TRIGGER ... WITH EXECUTE AS 'dbo' fails with 15151 without this (db_owner has it).
-    private const string CanImpersonateDboSql = "SELECT HAS_PERMS_BY_NAME(N'dbo', N'USER', N'IMPERSONATE');";
+    /// <summary>The loginless user the DDL_Audit trigger runs as: INSERT and SELECT on dbo.DDL_AuditLog, nothing else.</summary>
+    internal const string WriterUser = "DDL_Audit_Writer";
+
+    // Type, and whether the SID maps to a login (works on 2008 R2, which has no authentication_type).
+    private const string WriterSql = """
+        SELECT p.type, CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals AS sp WHERE sp.sid = p.sid) THEN 1 ELSE 0 END,
+               CASE WHEN COL_LENGTH(N'sys.database_principals', N'authentication_type') IS NULL THEN 0 ELSE 1 END
+        FROM sys.database_principals AS p
+        WHERE p.name = N'DDL_Audit_Writer';
+        """;
+
+    // Run only where the column exists (2012+): a separate batch, so 2008 R2 never compiles it.
+    private const string WriterAuthenticationSql = "SELECT authentication_type FROM sys.database_principals WHERE name = N'DDL_Audit_Writer';";
+
+    private const string CreateWriterSql =
+        "IF DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer') IS NULL CREATE USER [DDL_Audit_Writer] WITHOUT LOGIN WITH DEFAULT_SCHEMA = dbo;";
+
+    private const string GrantWriterSql = "GRANT INSERT, SELECT ON dbo.DDL_AuditLog TO [DDL_Audit_Writer];";
+
+    // The pre-flight: if this context cannot be entered, the trigger would fail inside every DDL statement.
+    private const string WriterPreflightSql = "EXECUTE AS USER = N'DDL_Audit_Writer'; SELECT 1; REVERT;";
+
+    private const string DropWriterSql = "IF DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer') IS NOT NULL DROP USER [DDL_Audit_Writer];";
 
     // ObjectName / SchemaName are varchar(100): the trigger stores LEFT(name, 100), so compare the same way.
     // ID order is insertion order, which PostTime (datetime, ~3 ms) cannot break ties for.
@@ -148,10 +169,10 @@ internal static class DdlAudit
             throw new InvalidOperationException(IncompatibleTableError(before.Incompatibilities));
         }
 
-        // Checked before anything is created, so a missing permission never leaves a table without its trigger.
-        if (!before.TriggerExists && !await CanImpersonateDboAsync(conn, cancellationToken).ConfigureAwait(false))
+        // Checked before anything is created: a principal of that name that is not ours is never reused.
+        if (!before.TriggerExists)
         {
-            throw new InvalidOperationException(ImpersonateDboError);
+            _ = await ReadWriterAsync(conn, cancellationToken).ConfigureAwait(false);
         }
 
         if (!before.TableExists)
@@ -165,19 +186,13 @@ internal static class DdlAudit
         {
             try
             {
-                triggerScript ??= await InsightsLayerService
-                    .ReadEmbeddedResourceAsync(assembly, InsightsLayerService.TriggerScriptResource, cancellationToken)
-                    .ConfigureAwait(false);
-                await InsightsLayerService.ExecuteBatchesAsync(conn, triggerScript, cancellationToken).ConfigureAwait(false);
+                await InstallTriggerAsync(conn, cancellationToken, triggerScript).ConfigureAwait(false);
             }
-            catch (SqlException ex) when (ex.Number == 15151)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // The permission check passed but CREATE ... WITH EXECUTE AS 'dbo' was still refused.
-                throw new InvalidOperationException(before.TableExists ? ImpersonateDboError : PartialInstallError(ImpersonateDboNeed + "."), ex);
-            }
-            catch (Exception ex) when (!before.TableExists && ex is not OperationCanceledException)
-            {
-                throw new InvalidOperationException(PartialInstallError(ex.Message), ex);
+                // Roll back the table this call created (never once a trigger exists: the DROP would be audited).
+                var removed = !before.TableExists && await DropCreatedTableAsync(conn).ConfigureAwait(false);
+                throw new InvalidOperationException(TriggerFailedError(ex.Message, createdTable: !before.TableExists, tableRemoved: removed), ex);
             }
         }
 
@@ -186,7 +201,7 @@ internal static class DdlAudit
         {
             throw new InvalidOperationException(
                 $"DDL history install did not complete (table {(after.TableExists ? "present" : "missing")}, trigger {(after.TriggerExists ? "present" : "missing")}). "
-                + "Creating the DDL_Audit trigger needs db_owner (or ALTER ANY DATABASE DDL TRIGGER plus IMPERSONATE on dbo).");
+                + PermissionHint);
         }
 
         return new DdlAuditInstallResult(
@@ -313,12 +328,130 @@ internal static class DdlAudit
     internal static string IncompatibleTableError(IEnumerable<string> incompatibilities) =>
         $"dbo.DDL_AuditLog exists but the DDL_Audit trigger cannot write to it: {string.Join("; ", incompatibilities)}. Nothing was created.";
 
-    private const string ImpersonateDboNeed = "Creating DDL_Audit WITH EXECUTE AS 'dbo' needs db_owner (or IMPERSONATE on dbo) on this database";
+    internal const string PermissionHint =
+        "Creating DDL history needs db_owner (or ALTER ANY USER, GRANT on dbo.DDL_AuditLog and ALTER ANY DATABASE DDL TRIGGER).";
 
-    internal const string ImpersonateDboError = ImpersonateDboNeed + "; nothing was created.";
+    internal const string WriterConflictError =
+        "A database principal named DDL_Audit_Writer already exists and is not a loginless SQL user (WITHOUT LOGIN); nothing was created. Rename or drop it, or ask a DBA.";
 
-    internal static string PartialInstallError(string message) =>
-        $"dbo.DDL_AuditLog was created, but creating the DDL_Audit trigger failed: {message}";
+    /// <summary>The trigger step failed: says what is left of this call (the table it created is removed when possible).</summary>
+    internal static string TriggerFailedError(string message, bool createdTable, bool tableRemoved)
+    {
+        var left = !createdTable ? "Nothing was left behind."
+            : tableRemoved ? "The dbo.DDL_AuditLog this call created was removed again; nothing was left behind."
+            : "dbo.DDL_AuditLog was created by this call and is still there.";
+        return $"Creating the DDL_Audit trigger failed: {message} {left} {PermissionHint}";
+    }
+
+    /// <summary>
+    /// The one trigger install, shared by <c>ddl_history install</c> and <c>install_insights_layer</c>. The table must
+    /// exist and the trigger must be missing. It makes sure the loginless user <c>DDL_Audit_Writer</c> exists (refusing
+    /// another principal of that name), grants it INSERT and SELECT on <c>dbo.DDL_AuditLog</c>, checks that its context
+    /// can be entered (the pre-flight), then runs the trigger script. On failure, a user this call created is dropped
+    /// again and the error is rethrown.
+    /// </summary>
+    /// <param name="triggerScript">Test hook: trigger script text to run instead of the embedded one.</param>
+    internal static async Task InstallTriggerAsync(SqlConnection conn, CancellationToken cancellationToken, string? triggerScript = null)
+    {
+        var createdUser = !await ReadWriterAsync(conn, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ExecAsync(conn, CreateWriterSql, cancellationToken).ConfigureAwait(false);
+            await ExecAsync(conn, GrantWriterSql, cancellationToken).ConfigureAwait(false);
+            await ExecAsync(conn, WriterPreflightSql, cancellationToken).ConfigureAwait(false);
+            triggerScript ??= await InsightsLayerService
+                .ReadEmbeddedResourceAsync(Assembly.GetExecutingAssembly(), InsightsLayerService.TriggerScriptResource, cancellationToken)
+                .ConfigureAwait(false);
+            await InsightsLayerService.ExecuteBatchesAsync(conn, triggerScript, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (createdUser)
+        {
+            if (!await TriggerExistsAsync(conn).ConfigureAwait(false))
+            {
+                try
+                {
+                    await ExecAsync(conn, DropWriterSql, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (SqlException)
+                {
+                    // Best effort: the original error is what the caller needs.
+                }
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// True when the loginless <c>DDL_Audit_Writer</c> exists, false when no principal has that name. Throws
+    /// <see cref="WriterConflictError"/> when the name belongs to anything else: not a SQL user (type S), mapped to a
+    /// login, or (2012+) an <c>authentication_type</c> other than 0 (NONE).
+    /// </summary>
+    private static async Task<bool> ReadWriterAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        string type;
+        bool mapped, hasAuthenticationType;
+        await using (var cmd = new SqlCommand(WriterSql, conn))
+        {
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            type = reader.GetString(0).Trim();
+            mapped = reader.GetInt32(1) == 1;
+            hasAuthenticationType = reader.GetInt32(2) == 1;
+        }
+
+        if (type != "S" || mapped)
+        {
+            throw new InvalidOperationException(WriterConflictError);
+        }
+
+        if (hasAuthenticationType)
+        {
+            await using var auth = new SqlCommand(WriterAuthenticationSql, conn);
+            var value = await auth.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (Convert.ToInt32(value, CultureInfo.InvariantCulture) != 0)
+            {
+                throw new InvalidOperationException(WriterConflictError);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Drops a table this call created after the trigger step failed; false when it stays (or a trigger exists).</summary>
+    private static async Task<bool> DropCreatedTableAsync(SqlConnection conn)
+    {
+        try
+        {
+            if (await TriggerExistsAsync(conn).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            await ExecAsync(conn, "IF OBJECT_ID(N'dbo.DDL_AuditLog', N'U') IS NOT NULL DROP TABLE dbo.DDL_AuditLog;", CancellationToken.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (SqlException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> TriggerExistsAsync(SqlConnection conn)
+    {
+        await using var cmd = new SqlCommand("SELECT COUNT(*) FROM sys.triggers WHERE parent_class = 0 AND name = N'DDL_Audit';", conn);
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture) > 0;
+    }
+
+    private static async Task ExecAsync(SqlConnection conn, string sql, CancellationToken cancellationToken)
+    {
+        await using var cmd = new SqlCommand(sql, conn);
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>The newest <paramref name="top"/> entries for one object; null when the table is missing.</summary>
     public static async Task<IReadOnlyList<DdlAuditEntry>?> ListAsync(
@@ -339,7 +472,7 @@ internal static class DdlAudit
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             entries.Add(new DdlAuditEntry(
-                Id: Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture),
+                Id: Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture),
                 PostTime: FormatTime(reader.GetValue(1)),
                 LoginName: Text(reader.GetValue(2)),
                 HostName: Text(reader.GetValue(3)),
@@ -354,7 +487,7 @@ internal static class DdlAudit
     }
 
     /// <summary>One entry with its command text. <c>TableExists</c> is false when the table is missing.</summary>
-    public static async Task<(bool TableExists, DdlAuditCommand? Command)> GetAsync(SqlConnection conn, int id, CancellationToken cancellationToken)
+    public static async Task<(bool TableExists, DdlAuditCommand? Command)> GetAsync(SqlConnection conn, long id, CancellationToken cancellationToken)
     {
         if (!await TableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
         {
@@ -362,7 +495,7 @@ internal static class DdlAudit
         }
 
         await using var cmd = new SqlCommand(GetSql, conn);
-        _ = cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = id });
+        _ = cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.BigInt) { Value = id });
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -370,7 +503,7 @@ internal static class DdlAudit
         }
 
         return (true, new DdlAuditCommand(
-            Id: Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture),
+            Id: Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture),
             PostTime: FormatTime(reader.GetValue(1)),
             LoginName: Text(reader.GetValue(2)),
             EventType: Text(reader.GetValue(3)),
@@ -428,12 +561,6 @@ internal static class DdlAudit
         }
 
         return columns;
-    }
-
-    private static async Task<bool> CanImpersonateDboAsync(SqlConnection conn, CancellationToken cancellationToken)
-    {
-        await using var cmd = new SqlCommand(CanImpersonateDboSql, conn);
-        return await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1;
     }
 
     private static string? Text(object value) =>

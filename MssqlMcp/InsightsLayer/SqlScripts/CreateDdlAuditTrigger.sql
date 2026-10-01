@@ -5,16 +5,20 @@
 -- so long names never raise a truncation error.
 --
 -- Hardened so it never blocks another principal's DDL:
--- - WITH EXECUTE AS 'dbo': callers need no INSERT permission on dbo.DDL_AuditLog (creating it needs db_owner or
---   IMPERSONATE on dbo). ORIGINAL_LOGIN() still records the real login, and the "other users" check compares it.
+-- - WITH EXECUTE AS 'DDL_Audit_Writer': a loginless user that has only INSERT and SELECT on dbo.DDL_AuditLog, created
+--   (with that grant) by the install routine before this script runs. Callers need no permission on the table, an
+--   orphaned dbo (owner login dropped) cannot break it, and code that runs inside the INSERT never gets more rights.
+--   ORIGINAL_LOGIN() still records the real login, and the "other users" check compares it.
+-- - When dbo.DDL_AuditLog has any DML trigger, the INSERT and the lookup are skipped (one PRINT instead): such a
+--   trigger could roll the DDL back or run code in this context.
 -- - The SET options the xml methods need are forced in the body, so sessions with non-ANSI options (legacy
 --   ODBC / Access clients) do not fail with error 1934. ANSI_NULLS and QUOTED_IDENTIFIER cannot be changed inside
 --   a module (the creation-time values always apply), so they are the script-level SETs below.
 -- - SET XACT_ABORT OFF plus TRY/CATCH: triggers start with XACT_ABORT ON, under which any caught error still
 --   dooms the transaction and SQL Server rolls the DDL back (3616). With it OFF, a failing audit INSERT
 --   (truncation, constraint, ...) leaves the transaction committable, and the DDL goes through unlogged.
---   An error that dooms the transaction by itself (for example one raised inside a DML trigger on
---   dbo.DDL_AuditLog, a ROLLBACK there, or a severity 20+ error) still rolls the DDL back: SQL Server allows nothing else.
+--   An error that dooms the transaction by itself (for example a severity 20+ error, or a DML trigger added to
+--   dbo.DDL_AuditLog between the skip check and the INSERT) still rolls the DDL back: SQL Server allows nothing else.
 -- Rollback: drop the database trigger DDL_Audit (exact statement in README, "DDL history"). This script never drops anything.
 
 SET ANSI_NULLS ON
@@ -24,7 +28,7 @@ SET QUOTED_IDENTIFIER ON
 GO
 
 CREATE TRIGGER [DDL_Audit] ON DATABASE
-WITH EXECUTE AS 'dbo'
+WITH EXECUTE AS 'DDL_Audit_Writer'
 FOR ddl_database_level_events
 AS
 SET NOCOUNT ON;
@@ -42,6 +46,12 @@ DECLARE
    @s nvarchar(max);
 
 BEGIN TRY
+    IF EXISTS (SELECT 1 FROM sys.triggers WHERE parent_id = OBJECT_ID(N'dbo.DDL_AuditLog'))
+    BEGIN
+        PRINT N'DDL_Audit: this change was not logged: DDL_AuditLog has triggers.';
+        RETURN;
+    END
+
     SET @CommandXML = EVENTDATA();
     SET @CommandText = LTRIM(RTRIM(@CommandXML.value('(/EVENT_INSTANCE/TSQLCommand/CommandText)[1]', 'NVARCHAR(MAX)')));
     SET @ObjectName = LEFT(@CommandXML.value('(/EVENT_INSTANCE/ObjectName)[1]', 'NVARCHAR(128)'), 100);

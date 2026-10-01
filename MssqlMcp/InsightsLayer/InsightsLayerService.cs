@@ -168,8 +168,8 @@ public sealed class InsightsLayerService(
                 if (await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false)
                     && !(await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false)).TriggerExists)
                 {
-                    var triggerSql = await ReadEmbeddedResourceAsync(assembly, TriggerScriptResource, cancellationToken).ConfigureAwait(false);
-                    await ExecuteScriptBatchesAsync(triggerSql, cancellationToken).ConfigureAwait(false);
+                    // The shared install: the DDL_Audit_Writer user and its grant, the pre-flight, then the trigger.
+                    await Mssql.McpServer.Scripting.DdlAudit.InstallTriggerAsync(conn, cancellationToken).ConfigureAwait(false);
                 }
 
                 state = await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false);
@@ -209,7 +209,7 @@ public sealed class InsightsLayerService(
     }
 
     private const string InstallPermissionHint =
-        "Hint: installing the DDL_Audit database trigger (it runs WITH EXECUTE AS 'dbo') requires db_owner, or ALTER ANY DATABASE DDL TRIGGER plus IMPERSONATE on dbo.";
+        "Hint: installing the DDL_Audit database trigger (it runs as the loginless user DDL_Audit_Writer, which the install creates) requires db_owner, or ALTER ANY USER, GRANT on dbo.DDL_AuditLog and ALTER ANY DATABASE DDL TRIGGER.";
 
     /// <summary>Existence of every object the install creates.</summary>
     internal sealed record InstallState(

@@ -220,9 +220,14 @@ public sealed class McpProtocolTests
         // (2) Zero writes: the layer is installed and populated through the writable profile only.
         var install = await client.CallToolAsync(ToolNames.InstallInsightsLayer, new Dictionary<string, object?> { ["connection"] = "a" });
         Assert.Contains("\"success\":true", Text(install), StringComparison.OrdinalIgnoreCase);
+        // install_insights_layer goes through the shared trigger install: the trigger runs as the loginless writer.
+        Assert.Equal(
+            "DDL_Audit_Writer",
+            await ScratchDatabases.ScalarAsync<string>(csA, "SELECT USER_NAME(m.execute_as_principal_id) FROM sys.triggers t JOIN sys.sql_modules m ON m.object_id = t.object_id WHERE t.parent_class = 0 AND t.name = N'DDL_Audit'"));
         await ScratchDatabases.ExecAsync(csA, "CREATE TABLE dbo.Orders (Id INT NOT NULL PRIMARY KEY, Amount DECIMAL(10,2) NULL);");
         await ScratchDatabases.ExecAsync(csA, "CREATE VIEW dbo.vOrders AS SELECT Id, Amount FROM dbo.Orders;");
         await ScratchDatabases.ExecAsync(csA, "CREATE PROCEDURE dbo.GetOrders AS SELECT Id FROM dbo.Orders;");
+        Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(csA, "SELECT COUNT(*) FROM dbo.DDL_AuditLog WHERE ObjectName = 'GetOrders'"));
         var seeded = await client.CallToolAsync(ToolNames.DescribeTable, new Dictionary<string, object?> { ["name"] = "dbo.Orders", ["connection"] = "a" });
         Assert.Contains("\"success\":true", Text(seeded), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(csA, "SELECT COUNT(*) FROM AIInsights.SchemaInsights WHERE ObjectName = N'Orders';"));
