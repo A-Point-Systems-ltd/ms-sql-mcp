@@ -1,6 +1,6 @@
 {
   "name": "ms-sql-mcp",
-  "displayName": "MSSQL-MCP",
+  "displayName": "APoint-ms-sql",
   "description": "SQL Server MCP server for VS Code, Cursor and Claude - multi-connection, object explorer with DDL, read-only profiles, AI schema insights.",
   "publisher": "apoint",
   "version": "1.0.0",
@@ -24,21 +24,21 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "apoint.ms-sql-mcp",
-        "label": "MSSQL-MCP"
+        "label": "APoint-ms-sql"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "msSqlMcp",
-          "title": "MSSQL-MCP",
+          "title": "APoint-ms-sql",
           "icon": "media/db.svg"
         }
       ],
       "panel": [
         {
           "id": "msSqlMcpResults",
-          "title": "MSSQL-MCP Results",
+          "title": "APoint-ms-sql Results",
           "icon": "media/db.svg"
         }
       ]
@@ -74,97 +74,97 @@
       {
         "command": "msSqlMcp.addConnection",
         "title": "Add Connection",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(add)"
       },
       {
         "command": "msSqlMcp.editConnection",
         "title": "Edit Connection",
-        "category": "MSSQL-MCP"
+        "category": "APoint-ms-sql"
       },
       {
         "command": "msSqlMcp.removeConnection",
         "title": "Remove Connection",
-        "category": "MSSQL-MCP"
+        "category": "APoint-ms-sql"
       },
       {
         "command": "msSqlMcp.testConnection",
         "title": "Test Connection",
-        "category": "MSSQL-MCP"
+        "category": "APoint-ms-sql"
       },
       {
         "command": "msSqlMcp.openConnection",
         "title": "Open (expose to MCP)",
-        "category": "MSSQL-MCP"
+        "category": "APoint-ms-sql"
       },
       {
         "command": "msSqlMcp.closeConnection",
         "title": "Close (hide from MCP)",
-        "category": "MSSQL-MCP"
+        "category": "APoint-ms-sql"
       },
       {
         "command": "msSqlMcp.dataView",
         "title": "Data View",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(table)"
       },
       {
         "command": "msSqlMcp.showDdl",
         "title": "Show DDL",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(file-code)"
       },
       {
         "command": "msSqlMcp.registerClients",
         "title": "Register with Cursor / Claude...",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(plug)"
       },
       {
         "command": "msSqlMcp.showLogs",
         "title": "Show Logs",
-        "category": "MSSQL-MCP"
+        "category": "APoint-ms-sql"
       },
       {
         "command": "msSqlMcp.refresh",
         "title": "Refresh",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(refresh)"
       },
       {
         "command": "msSqlMcp.clearFilter",
         "title": "Clear Filter",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(clear-all)"
       },
       {
         "command": "msSqlMcp.newQuery",
         "title": "New Query",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(new-file)"
       },
       {
         "command": "msSqlMcp.changeConnection",
         "title": "Change Connection",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(database)"
       },
       {
         "command": "msSqlMcp.runQuery",
         "title": "Run (F5)",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(play)"
       },
       {
         "command": "msSqlMcp.cancelQuery",
         "title": "Cancel Query",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(debug-stop)"
       },
       {
         "command": "msSqlMcp.runQueryReadOnly",
         "title": "Run (F5) - disabled: read-only connection. Apply changes on a read-write connection.",
-        "category": "MSSQL-MCP",
+        "category": "APoint-ms-sql",
         "icon": "$(play)",
         "enablement": "false"
       }
@@ -289,7 +289,7 @@
       ]
     },
     "configuration": {
-      "title": "MSSQL-MCP",
+      "title": "APoint-ms-sql",
       "properties": {
         "msSqlMcp.serverPath": {
           "type": "string",

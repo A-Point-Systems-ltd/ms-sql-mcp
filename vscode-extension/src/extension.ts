@@ -19,7 +19,7 @@ import { registerClientCommand } from './register/registerClients';
 import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const channel = vscode.window.createOutputChannel('MSSQL-MCP');
+  const channel = vscode.window.createOutputChannel('APoint-ms-sql');
   context.subscriptions.push(channel);
   const log = new Logger(channel, context.extensionMode);
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {

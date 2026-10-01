@@ -1,4 +1,4 @@
-# MSSQL-MCP
+# APoint-ms-sql
 
 SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles the MSSQL-MCP server (a .NET 10 single-file exe) and gives you:
 
@@ -17,7 +17,7 @@ SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles th
 
 ### Object explorer
 
-The **MSSQL-MCP** view in the activity bar lists your connections. Each open connection shows:
+The **APoint-ms-sql** view in the activity bar lists your connections. Each open connection shows:
 
 ```text
 <connection>
@@ -52,7 +52,7 @@ When you add, edit, open or close a connection, or change a setting that affects
 
 ## Setup
 
-1. Install the extension and open the **MSSQL-MCP** view.
+1. Install the extension and open the **APoint-ms-sql** view.
 2. Click **Add Connection** (`+`). One form opens with every setting; to change a connection later, use **Edit Connection** (same form, name read-only):
    - **Name**: letters, digits, `-`, `_`, `.`; unique, case-insensitive.
    - **Authentication**: Windows integrated (default), SQL login (user + password), Microsoft Entra interactive, Microsoft Entra default credential, or a raw connection string (without a password; shown as a text area, and Server, Database and Encryption are hidden).
@@ -122,7 +122,7 @@ The object explorer never uses the agent's server process. It starts its own pri
 - The server also caps each run (the script still runs to the end, and errors are always shown; each cap adds one warning): 50000 rows and about 32 MB of cell data in all, 200 result sets, 10000 messages (later info and row-count messages are dropped), and `GO n` up to 10000 (a larger n is refused for that batch). Text values longer than 65536 characters and binary values longer than 32768 bytes are cut and end with "… (truncated, N chars)" or "… (truncated, N bytes)"; the grid underlines such cells and their tooltip gives the full size.
 - Values are shown exactly as SQL Server holds them: `decimal`, `numeric`, `money` and large `bigint` values arrive as exact text (not rounded to a JavaScript number) and are right-aligned like other numbers; binary values show SSMS-style as `0x…` hex.
 - Bindings are kept per workspace; an untitled editor loses its binding when it is closed.
-- **Run** with F5 or the play button in the editor title runs the selection, or the whole document when nothing is selected. Results appear in the **MSSQL-MCP Results** panel at the bottom: a **Results** tab with one grid per result set and a **Messages** tab (errors in red; click a message with a line to jump to it). **Cancel** (the stop button in the editor title or in the panel) stops the run.
+- **Run** with F5 or the play button in the editor title runs the selection, or the whole document when nothing is selected. Results appear in the **APoint-ms-sql Results** panel at the bottom: a **Results** tab with one grid per result set and a **Messages** tab (errors in red; click a message with a line to jump to it). **Cancel** (the stop button in the editor title or in the panel) stops the run.
 - **F5 runs SQL** in an editor bound to a connection, instead of starting the debugger. While a debug session is running, F5 keeps its debugger meaning (Continue).
 - With split editors, each editor group's title shows Run / Cancel for its own document, and the buttons act on that document even when another group is active.
 - **Cancel, and closing the tab of a running query, stop the run on the server**: the running statement is cancelled and a transaction the script left open is rolled back. They do not undo work already done: statements that completed outside a transaction, and transactions the script already committed (for example earlier batches of a multi-batch script), stay applied.
@@ -139,7 +139,7 @@ Show DDL on a view, stored procedure, table-valued function or scalar function o
 - **Wrong-target guard**: the file remembers the server and database it was scripted from (for a raw connection string, its `Data Source` / `Initial Catalog` when they can be read). If the connection now points at another server or database (for example after you edited the connection), or you bound the file to another connection with **Change Connection**, Run first asks: "This script was generated from <server>/<db> but will run on <server2>/<db2> (connection '<name>'). Run anyway?". Only **Run** applies it. Change Connection on such a file also tells you that the next run will ask. Open the object again from the tree to script it from its current connection.
 - **No definition to edit**: CLR modules and modules created `WITH ENCRYPTION` have no T-SQL definition. They open as the read-only document with the server's warning instead of an editable file, so there is nothing to apply.
 - **Indexed views**: `ALTER` on an indexed view drops its indexes. The script carries a warning (shown each time the file is opened from the server) and includes the index statements that recreate them; run the whole file.
-- Warnings from the server are shown in an information message when the file opens. A long message is truncated; the full warning text is in the **MSSQL-MCP** Output channel when `msSqlMcp.logLevel` is `info` or more verbose (it never contains data rows).
+- Warnings from the server are shown in an information message when the file opens. A long message is truncated; the full warning text is in the **APoint-ms-sql** Output channel when `msSqlMcp.logLevel` is `info` or more verbose (it never contains data rows).
 - The files live in the extension's storage folder (`edits/<connection>~<hash>/<type>/<schema.name>~<hash>.sql`; the short hash of the exact names keeps different objects in different files), one per object, so reopening an object reuses its file. If the file has unsaved edits, Show DDL only reveals it ("Unsaved edits kept - close the editor to reload from the server."); otherwise the editor text is replaced with the current script from the server and saved. If scripting fails, you get the read-only document with the error and a Refresh button.
 - Tables, indexes, foreign keys, triggers, types and security objects stay read-only.
 
