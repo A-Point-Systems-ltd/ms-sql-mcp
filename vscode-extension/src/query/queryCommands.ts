@@ -154,11 +154,11 @@ export function registerQueryCommands(
   const docs = new QueryDocuments(context.workspaceState);
   const tracker = new QueryEditorTracker(store, docs);
   context.subscriptions.push(docs, tracker);
-  const lifecycle = new SqlDocLifecycle(context, docs, deps.sqlDocs, log);
-  context.subscriptions.push(lifecycle);
-
   /** One run per document, each with its own token (see RunRegistry). */
   const running = new RunRegistry();
+  const lifecycle = new SqlDocLifecycle(context, docs, deps.sqlDocs, log, store, key => running.has(key));
+  context.subscriptions.push(lifecycle);
+
   const cancel = (key: string) => running.cancel(key);
   const results = new ResultsViewProvider(() => {
     const active = tracker.active();
@@ -299,7 +299,9 @@ export function registerQueryCommands(
         return;
       }
       const selection = editor?.selection;
-      const request = buildRunRequest(document.getText(), !selection || selection.isEmpty
+      const wholeDocument = !selection || selection.isEmpty;
+      const fullText = document.getText();
+      const request = buildRunRequest(fullText, wholeDocument
         ? undefined
         : { text: document.getText(selection), startLine: selection.start.line });
       if (!request.script.trim()) {
@@ -321,6 +323,13 @@ export function registerQueryCommands(
         if (assoc.kind === 'object' && appliedSuccessfully(result)) {
           void vscode.window.showInformationMessage(`Applied to '${connection}'.`);
           deps.refreshTree();
+          // The applied text is the new base, so a reopen from the tree no longer asks about it. Only a whole-document
+          // run: after a selection run the rest may still be unapplied.
+          const addr = SqlDocFileSystem.address(document.uri);
+          if (wholeDocument && addr?.kind === 'object') {
+            void deps.sqlDocs.writeBase(addr.id, fullText)
+              .catch(err => log.warn('query', `Updating the base copy failed: ${err instanceof Error ? err.message : String(err)}`));
+          }
         }
       } catch (err) {
         if (token.controller.signal.aborted || (err instanceof McpToolError && err.cancelled)) {

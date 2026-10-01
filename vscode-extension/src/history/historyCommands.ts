@@ -16,8 +16,8 @@ import { HistoryDocumentProvider } from './historyDocs';
 import {
   HISTORY_SCHEME, HISTORY_TOOL, HistoryEntry, LIST_TOP, SET_UP_BUTTON, currentDiffTitle, disabledWarning, emptyHistoryOutcome,
   entryDiffTitle, filterEntries, historyDocKeys, historyPickItems, historyUri, isModuleType, isNotInstalledError,
-  latestDefinitionEntry, noHistoryMessage, parseHistoryEntries, parseHistoryStatus, previousEntry, supportsHistory, targetText,
-  triggerMissingWarning,
+  latestDefinitionEntry, moreNotLoaded, noHistoryMessage, parseHistoryEntries, parseHistoryStatus, previousEntry, statusTargetText,
+  supportsHistory, targetText, triggerMissingWarning,
 } from './historyModel';
 
 /** Per-document key for the editor title's Show DDL History button (`resource in msSqlMcp.historyDocs`). */
@@ -169,7 +169,8 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
     const prev = previousEntry(entries, index);
     const left = prev
       ? entryUri(prev)
-      : vscode.Uri.parse(historyUri({ kind: 'empty', label: `${obj} (none)`, more: entries.length >= LIST_TOP }));
+      // The raw count: a full page may hide earlier entries even when the type filter dropped some of it.
+      : vscode.Uri.parse(historyUri({ kind: 'empty', label: `${obj} (none)`, more: moreNotLoaded(listed) }));
     await vscode.commands.executeCommand('vscode.diff', left, entryUri(entries[index]), entryDiffTitle(obj, entries, index), { preview: true });
   }
 
@@ -180,7 +181,10 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
   async function explainEmpty(profile: ConnectionProfile, obj: string, where: string, offerSetUp: (message: string) => Promise<void>): Promise<void> {
     let outcome: ReturnType<typeof emptyHistoryOutcome> = 'noHistory';
     try {
-      outcome = emptyHistoryOutcome(parseHistoryStatus(await runner.call(profile.name, HISTORY_TOOL, { action: 'status' })));
+      const status = parseHistoryStatus(await runner.call(profile.name, HISTORY_TOOL, { action: 'status' }));
+      outcome = emptyHistoryOutcome(status);
+      // Name the database the server reports, not the profile's idea of it.
+      where = statusTargetText(status, profile);
     } catch (err) {
       log.warn('history', `ddl_history status on '${profile.name}' failed: ${errorMessage(err)}`);
     }

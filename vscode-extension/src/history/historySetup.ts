@@ -6,7 +6,7 @@ import { errorMessage } from '../errorFormat';
 import { Logger } from '../logger';
 import {
   CREATE_BUTTON, HISTORY_TOOL, NOT_SET_UP_MESSAGE, OPEN_FIRST_MESSAGE, disabledWarning, incompatibleWarning, installDecision,
-  installPrompt, parseHistoryStatus, readOnlyWarning, setUpMessage, targetText,
+  installPrompt, parseHistoryStatus, readOnlyWarning, setUpMessage, statusTargetText, targetText,
 } from './historyModel';
 
 /**
@@ -22,7 +22,8 @@ export async function setUpDdlHistory(runner: ServerProcessClient, profile: Conn
       void vscode.window.showInformationMessage(OPEN_FIRST_MESSAGE);
       return;
     }
-    const where = targetText(profile);
+    // Until the server answers, messages name the profile's target; afterwards the server's own @@SERVERNAME / DB_NAME().
+    let where = targetText(profile);
     let status;
     try {
       status = parseHistoryStatus(await runner.call(profile.name, HISTORY_TOOL, { action: 'status' }));
@@ -31,6 +32,7 @@ export async function setUpDdlHistory(runner: ServerProcessClient, profile: Conn
       void vscode.window.showWarningMessage(`DDL history on ${where}: ${errorMessage(err)}`);
       return;
     }
+    where = statusTargetText(status, profile);
     switch (installDecision(status, profile.readOnly)) {
       case 'none':
         return;

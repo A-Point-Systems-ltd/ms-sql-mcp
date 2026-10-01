@@ -80,7 +80,7 @@ test('installDecision: confirmInstall only when the server reports canInstall', 
 });
 
 test('incompatible-table and missing-trigger texts', () => {
-  assert.equal(incompatibleWarning('S/D'), 'dbo.DDL_AuditLog on S/D does not have the columns the DDL_Audit trigger writes, so DDL history cannot be set up here. Ask a DBA to align or rename the existing table.');
+  assert.equal(incompatibleWarning('S/D'), 'dbo.DDL_AuditLog on S/D does not have the columns (or the column types and widths) the DDL_Audit trigger writes, so DDL history cannot be set up here. Ask a DBA to align or rename the existing table.');
   assert.equal(triggerMissingWarning('S/D'), 'The DDL_Audit trigger is not installed on S/D, so changes are not recorded.');
 });
 

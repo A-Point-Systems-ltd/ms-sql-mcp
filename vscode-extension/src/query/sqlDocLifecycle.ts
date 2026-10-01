@@ -12,7 +12,8 @@ import {
 } from './queryIndex';
 import type { QueryIndexFile } from './queryIndexFile';
 import { SqlDocFileSystem, openDocumentKeys, openSqlDocs } from './sqlDocFs';
-import { QueryCounter, docTitle, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
+import { QueryCounter, SqlDocAddress, docTitle, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
+import { TITLE_AFTER_SAVE_MESSAGE, titleAction } from './sqlDocTitles';
 
 /** A closed document reopens at once when only its language changed; wait this long before acting on the close. */
 export const REOPEN_GRACE_MS = 200;
@@ -57,6 +58,8 @@ class OwnedQueryIds {
  * - the sql language (the uris have no extension);
  * - closes (after the reopen grace: a blank query document is deleted, any other is kept and marked closed);
  * - renamed files;
+ * - tab titles: an open document whose connection (Change Connection) or profile server/database changed is saved,
+ *   closed and reopened under the new title with the same id and binding; a dirty one only after its next save;
  * - the deferred activation prune: the legacy `edits/` folder, stale associations, query documents closed more than
  *   30 days ago and blank orphans. Object backing files are never pruned (an unapplied edit must not be lost).
  * A backing file or index that cannot be read (other than "does not exist") is left alone.
@@ -67,12 +70,19 @@ export class SqlDocLifecycle implements vscode.Disposable {
   private readonly owned: OwnedQueryIds;
   private readonly index: QueryIndexFile;
   private readonly counter = new QueryCounter();
+  /** Ids being reopened under a new title (and for the close grace after it): their old tab's close is not a close. */
+  private readonly retitling = new Set<string>();
+  /** Dirty documents (by uri) whose title is out of date: the title they get after the next save. */
+  private readonly pendingTitles = new Map<string, string>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly docs: QueryDocuments,
     private readonly sqlDocs: SqlDocFileSystem,
     private readonly log: Logger,
+    private readonly store: ConnectionStore,
+    /** Whether a query runs in the document with this uri (its tab is never closed then). */
+    private readonly isRunning: (key: string) => boolean,
   ) {
     this.owned = new OwnedQueryIds(context.workspaceState);
     this.index = sqlDocs.queryIndex();
@@ -84,6 +94,12 @@ export class SqlDocLifecycle implements vscode.Disposable {
       vscode.workspace.onDidCloseTextDocument(doc => this.onClose(doc)),
       vscode.workspace.onDidRenameFiles(e => this.onRename(e)),
       sqlDocs.onDidWriteDoc(uri => this.recordWrite(uri)),
+      store.onDidChange(() => this.refreshTitles()),
+      docs.onDidChange(() => this.refreshTitles()),
+      // After the save completes (the document is clean again): a deferred rename can run now.
+      vscode.workspace.onDidSaveTextDocument(doc => {
+        if (this.pendingTitles.has(doc.uri.toString())) this.refreshTitle(doc);
+      }),
     );
     for (const doc of vscode.workspace.textDocuments) this.onOpen(doc);
     this.later(PRUNE_DELAY_MS, () => void this.prune());
@@ -169,6 +185,8 @@ export class SqlDocLifecycle implements vscode.Disposable {
   private onOpen(doc: vscode.TextDocument): void {
     void this.sqlDocs.sqlDocument(doc);
     const addr = SqlDocFileSystem.address(doc.uri);
+    // A restored tab loads its document only now: its title may be out of date.
+    if (addr) this.refreshTitle(doc);
     if (addr?.kind !== 'query') return;
     void this.index.update(i => {
       const e = i[addr.id];
@@ -205,6 +223,8 @@ export class SqlDocLifecycle implements vscode.Disposable {
       // A language change closes and reopens the same uri: that is a reopen, and nothing is dropped or deleted.
       if (afterCloseGrace({ scheme, isDirty, reopened: openDocumentKeys().has(key) }) !== 'drop') return;
       void this.docs.delete(key);
+      // Reopened under a new title (or still open in another tab): the id is not closed.
+      if (query && (this.retitling.has(query.id) || openSqlDocs('query').has(query.id))) return;
       if (query) {
         void this.closeQuery(query.id, query.title, assoc?.connection)
           .catch(err => this.log.debug('query', `Recording a closed query window failed: ${String(err)}`));
@@ -295,6 +315,73 @@ export class SqlDocLifecycle implements vscode.Disposable {
     for (const id of plan.remove) if (await this.sqlDocs.deleteBacking('query', id)) drop.push(id);
     if (!drop.length) return;
     if (await this.index.update(i => withoutIds(i, drop))) await this.owned.remove(drop);
+  }
+
+  /** {@link refreshTitle} for every loaded `mssql-sql:` document. */
+  private refreshTitles(): void {
+    for (const doc of vscode.workspace.textDocuments) {
+      if (SqlDocFileSystem.address(doc.uri)) this.refreshTitle(doc);
+    }
+  }
+
+  /** Brings one document's tab title in line with its binding and profile (see {@link titleAction}). */
+  private refreshTitle(doc: vscode.TextDocument): void {
+    if (doc.isClosed) return;
+    const address = SqlDocFileSystem.address(doc.uri);
+    if (!address || this.retitling.has(address.id)) return;
+    const key = doc.uri.toString();
+    const assoc = this.docs.get(doc.uri);
+    const profile = assoc ? findProfile(this.store.list(), assoc.connection) : undefined;
+    const action = titleAction({ address, assoc, profile, isDirty: doc.isDirty, running: this.isRunning(key) });
+    if (action.kind === 'none') {
+      this.pendingTitles.delete(key);
+      return;
+    }
+    if (action.kind === 'defer') {
+      // The status bar already shows the new target; say once per new title that the tab follows on save.
+      if (this.pendingTitles.get(key) !== action.title) {
+        this.pendingTitles.set(key, action.title);
+        void vscode.window.showInformationMessage(TITLE_AFTER_SAVE_MESSAGE);
+      }
+      return;
+    }
+    this.pendingTitles.delete(key);
+    void this.retitle(doc, address, action.title)
+      .catch(err => this.log.warn('sqldocs', `Updating a tab title failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  /**
+   * Saves a clean document through the provider (same id, so the same backing file; the query index gets the new
+   * title), opens the same id under `title` in the same editor group with the binding kept, then closes the old tab.
+   * Its undo history does not carry over. A document that became dirty meanwhile is left as it is (renamed after its
+   * next save). Never a programmatic text edit.
+   */
+  private async retitle(doc: vscode.TextDocument, address: SqlDocAddress, title: string): Promise<void> {
+    const oldKey = doc.uri.toString();
+    const assoc = this.docs.get(doc.uri);
+    if (!assoc || doc.isDirty || doc.isClosed) return;
+    this.retitling.add(address.id);
+    try {
+      const newUri = SqlDocFileSystem.uriWithTitle(address.kind, address.id, title);
+      await this.docs.set(newUri, assoc);
+      await this.sqlDocs.writeContent(newUri, doc.getText());
+      if (doc.isDirty || doc.isClosed) {
+        await this.docs.delete(newUri.toString());
+        if (!doc.isClosed) this.pendingTitles.set(oldKey, title);
+        return;
+      }
+      const tabs = vscode.window.tabGroups.all.flatMap(g => g.tabs)
+        .filter(t => t.input instanceof vscode.TabInputText && t.input.uri.toString() === oldKey);
+      const wasActive = vscode.window.activeTextEditor?.document.uri.toString() === oldKey;
+      const reopened = await this.sqlDocs.sqlDocument(await vscode.workspace.openTextDocument(newUri));
+      await vscode.window.showTextDocument(reopened, { viewColumn: tabs[0]?.group.viewColumn, preview: false, preserveFocus: !wasActive });
+      if (tabs.length) await vscode.window.tabGroups.close(tabs, true);
+      await this.docs.delete(oldKey);
+      this.log.debug('sqldocs', `A ${address.kind} document was reopened under its new title.`);
+    } finally {
+      // Kept past the close grace of the old tab, so its close is never taken for a closed query window.
+      this.later(REOPEN_GRACE_MS * 3, () => this.retitling.delete(address.id));
+    }
   }
 
   private later(ms: number, fn: () => void): void {

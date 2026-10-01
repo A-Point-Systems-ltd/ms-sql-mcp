@@ -6,11 +6,11 @@ import type { ConnectionProfile } from '../connections/profile';
 import { Logger } from '../logger';
 import type { QueryAssociation, QueryDocuments } from '../query/queryDocuments';
 import { SqlDocFileSystem, openSqlDocs } from '../query/sqlDocFs';
-import { LEGACY_EDITS_DIR, isLegacyEditPath, objectDisplayName, profileTarget } from '../query/sqlDocNames';
+import { LEGACY_EDITS_DIR, isLegacyEditPath, legacyEditsBackupName, objectDisplayName, profileTarget } from '../query/sqlDocNames';
 import { ScriptTarget, targetOf } from '../query/targetGuard';
 import type { ObjectRef } from './catalog';
 import type { ExplorerClient } from './explorerClient';
-import { objectDocId } from './objectEdit';
+import { KEEP_EDITS_BUTTON, REPLACE_BUTTON, objectDocId, reopenObjectDecision, unappliedEditsPrompt } from './objectEdit';
 import { definitionUnavailable } from './sqlText';
 import { scriptArgs } from './treeModel';
 
@@ -29,7 +29,9 @@ const objectBinding = (ref: ObjectRef, target: ScriptTarget | undefined): QueryA
  * bound to its connection, so Run / F5 applies it. The script comes from the read-only explorer process (form 'alter':
  * CREATE OR ALTER or ALTER by server version). The binding records `profile`'s server/database now, so Run can warn when
  * the connection later points elsewhere. A clean open document gets the new script through the file system provider
- * (never a programmatic text edit); a dirty one is only revealed.
+ * (never a programmatic text edit); a dirty one is only revealed. Saved edits that were never applied (the backing file
+ * differs from its base copy, the last script loaded or applied) are replaced only after a modal "Replace"; "Keep my
+ * edits" (or Escape) reveals them unchanged.
  * Returns false when scripting or writing failed, or when there is no definition to apply (CLR, WITH ENCRYPTION:
  * a comment-only script); the caller then shows the read-only document with its error or warning.
  */
@@ -68,6 +70,17 @@ export async function openEditableDdl(
   const first = findOpen();
   if (first?.isDirty) return keepDirty(first);
 
+  // Saved but unapplied edits are never replaced without asking.
+  if (reopenObjectDecision(await sqlDocs.readBacking('object', id), await sqlDocs.readBase(id)) === 'ask') {
+    const choice = await vscode.window.showWarningMessage(unappliedEditsPrompt(objectDisplayName(ref)), { modal: true }, REPLACE_BUTTON, KEEP_EDITS_BUTTON);
+    if (choice !== REPLACE_BUTTON) {
+      // The edits' origin is known only while the binding lasts; without it, Run asks before applying them.
+      await docs.set(uri, objectBinding(ref, docs.get(uri)?.target));
+      await vscode.window.showTextDocument(await sqlDocs.sqlDocument(await vscode.workspace.openTextDocument(uri)), { preview: false });
+      return true;
+    }
+  }
+
   let warnings: string[];
   try {
     const result = await explorer.call(ref.connection, 'script_object', scriptArgs(ref, 'alter'));
@@ -85,6 +98,8 @@ export async function openEditableDdl(
     if (open?.isDirty) return keepDirty(open);
     // Through the provider: a clean open document reloads from the change event, as for a file changed on disk.
     await sqlDocs.writeContent(uri, ddl);
+    // The base copy follows the server script; if it cannot be written, the next reopen asks (never silently replaces).
+    await sqlDocs.writeBase(id, ddl).catch(err => log.warn('ddl', `${label}: the base copy was not written (${err instanceof Error ? err.message : String(err)}).`));
   } catch (err) {
     log.warn('ddl', `Editable script for ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
@@ -106,7 +121,8 @@ export async function openEditableDdl(
 
 /**
  * Migration from the `file:` edit files of earlier builds: drops the associations of files under
- * `<globalStorage>/edits/` and deletes that folder. Best-effort and silent (a debug log line on failure).
+ * `<globalStorage>/edits/` and renames that folder to `edits.old-<yyyyMMddHHmmss>` (never deleted, so saved but
+ * unapplied legacy edits stay on disk; the new path is logged at info). Best-effort (a debug log line on failure).
  */
 export async function removeLegacyEdits(storageRoot: string, docs: QueryDocuments, log: Logger): Promise<void> {
   try {
@@ -114,7 +130,15 @@ export async function removeLegacyEdits(storageRoot: string, docs: QueryDocument
       const uri = vscode.Uri.parse(key);
       return uri.scheme !== 'file' || !isLegacyEditPath(uri.fsPath, storageRoot);
     });
-    await fs.rm(path.join(storageRoot, LEGACY_EDITS_DIR), { recursive: true, force: true });
+    const legacy = path.join(storageRoot, LEGACY_EDITS_DIR);
+    try {
+      await fs.access(legacy);
+    } catch {
+      return;
+    }
+    const kept = path.join(storageRoot, legacyEditsBackupName(new Date()));
+    await fs.rename(legacy, kept);
+    log.info('ddl', `The edits folder of an earlier build was kept as ${kept}.`);
   } catch (err) {
     log.debug('ddl', `Removing the legacy edits folder failed: ${err instanceof Error ? err.message : String(err)}`);
   }

@@ -155,3 +155,19 @@ export function isLegacyEditPath(fsPath: string, storageRoot: string): boolean {
   const p = path.normalize(fsPath).toLowerCase();
   return p.startsWith(dir + path.sep);
 }
+
+/**
+ * `<root>/sqldocs/object/<id>.base.sql`: the last script loaded from the server (or applied by Run) for an object
+ * document, next to its backing file. Never a valid backing file name (the id check rejects `<id>.base`).
+ */
+export function baseFile(root: string, id: string): string {
+  if (!isValidDocId(id)) throw new Error(`Invalid SQL document address: object/${id}`);
+  return path.join(root, SQL_DOCS_DIR, 'object', `${id}.base.sql`);
+}
+
+/** `edits.old-<yyyyMMddHHmmss>` (local time): the legacy `edits/` folder is renamed to this, never deleted. */
+export function legacyEditsBackupName(now: Date): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  const stamp = `${p(now.getFullYear(), 4)}${p(now.getMonth() + 1)}${p(now.getDate())}${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  return `${LEGACY_EDITS_DIR}.old-${stamp}`;
+}

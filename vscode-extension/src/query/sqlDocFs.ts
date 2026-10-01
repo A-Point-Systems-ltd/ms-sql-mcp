@@ -5,7 +5,7 @@ import { Logger } from '../logger';
 import { BackingRead, QUERY_INDEX_FILE } from './queryIndex';
 import { QueryIndexFile, nodeIndexFs } from './queryIndexFile';
 import {
-  SQL_DOCS_DIR, SQL_DOC_SCHEME, SqlDocAddress, SqlDocKind, TitleTarget, backingFile, docTitle, isSqlDocDirectory,
+  SQL_DOCS_DIR, SQL_DOC_SCHEME, SqlDocAddress, SqlDocKind, TitleTarget, backingFile, baseFile, docTitle, isSqlDocDirectory,
   isValidDocId, needsSqlLanguage, parseSqlDocPath, sqlDocPath, writeFileCheck,
 } from './sqlDocNames';
 
@@ -93,6 +93,27 @@ export class SqlDocFileSystem implements vscode.FileSystemProvider, vscode.Dispo
       this.log.warn('sqldocs', `Reading a ${kind} document failed (${(err as NodeJS.ErrnoException).code ?? 'error'}); it was left alone.`);
       return { kind: 'unknown' };
     }
+  }
+
+  /**
+   * The base copy of object document `id` (`sqldocs/object/<id>.base.sql`): the last script loaded from the server or
+   * applied by Run. Same read rules as {@link readBacking}.
+   */
+  async readBase(id: string): Promise<BackingRead> {
+    try {
+      return { kind: 'text', text: await fs.readFile(baseFile(this.storageRoot, id), 'utf8') };
+    } catch (err) {
+      if (isNotFound(err)) return { kind: 'missing' };
+      this.log.warn('sqldocs', `Reading an object document's base copy failed (${(err as NodeJS.ErrnoException).code ?? 'error'}).`);
+      return { kind: 'unknown' };
+    }
+  }
+
+  /** Replaces the base copy of object document `id`. Not a document: no change event. */
+  async writeBase(id: string, text: string): Promise<void> {
+    const file = baseFile(this.storageRoot, id);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, text, 'utf8');
   }
 
   /** The kept query documents index (`sqldocs/query-index.json`). */

@@ -1,0 +1,152 @@
+// P5 final fix wave: the pure parts of title refresh (I1), install target names (I2), unapplied object edits (I3),
+// the history "more" flag (M1), the legacy edits backup name (M2) and the set-up re-run on a target change (M7).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {
+  INSTALL_SAFETY_TEXT, LIST_TOP, installPrompt, moreNotLoaded, parseHistoryStatus, runsHistorySetup, statusTargetText,
+} from '../out/history/historyModel.js';
+import { TITLE_AFTER_SAVE_MESSAGE, expectedTitle, titleAction } from '../out/query/sqlDocTitles.js';
+import { KEEP_EDITS_BUTTON, REPLACE_BUTTON, reopenObjectDecision, unappliedEditsPrompt } from '../out/explorer/objectEdit.js';
+import { baseFile, backingFile, legacyEditsBackupName, isLegacyEditPath, isValidDocId } from '../out/query/sqlDocNames.js';
+
+const profile = (name, over = {}) => ({
+  name, server: 'DC\\DEV', database: 'Sales', auth: 'windows', readOnly: false, insights: false, open: true,
+  encrypt: 'optional', trustServerCertificate: true, ...over,
+});
+const status = (over = {}) => ({ tableExists: false, tableCompatible: false, triggerExists: false, triggerEnabled: false, canInstall: true, ...over });
+const queryAddr = title => ({ kind: 'query', id: 'aaaabbbb', title });
+const objectAddr = title => ({ kind: 'object', id: '0123456789abcdef', title });
+const ref = { connection: 'dev', scriptType: 'View', schema: 'dbo', name: 'vOrders' };
+
+// ---- I1: title refresh decisions ----
+
+test('titleAction: a query doc retitles to its bound profile after Change Connection or a profile edit', () => {
+  const addr = queryAddr('Query 3 - DC\\DEV - Sales');
+  const assoc = { connection: 'prod', kind: 'query' };
+  assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('prod', { server: 'PROD1', database: 'ClientB' }), isDirty: false }),
+    { kind: 'retitle', title: 'Query 3 - PROD1 - ClientB' });
+  // Same profile, database edited.
+  assert.deepEqual(titleAction({ address: addr, assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev', { database: 'Sales2' }), isDirty: false }),
+    { kind: 'retitle', title: 'Query 3 - DC\\DEV - Sales2' });
+});
+
+test('titleAction: an up-to-date title, no binding, a removed profile or a non-Query title is left alone', () => {
+  const addr = queryAddr('Query 3 - DC\\DEV - Sales');
+  assert.deepEqual(titleAction({ address: addr, assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev'), isDirty: false }), { kind: 'none' });
+  assert.deepEqual(titleAction({ address: addr, assoc: undefined, profile: profile('dev'), isDirty: false }), { kind: 'none' });
+  assert.deepEqual(titleAction({ address: addr, assoc: { connection: 'gone', kind: 'query' }, profile: undefined, isDirty: false }), { kind: 'none' });
+  assert.deepEqual(titleAction({ address: queryAddr('Recovered query aaaabbbb'), assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev', { server: 'X' }), isDirty: false }), { kind: 'none' });
+});
+
+test('titleAction: a dirty (or running) document is never closed: the rename waits for the next save', () => {
+  const addr = queryAddr('Query 1 - DC\\DEV - Sales');
+  const input = { address: addr, assoc: { connection: 'p', kind: 'query' }, profile: profile('p', { server: 'S2' }) };
+  assert.deepEqual(titleAction({ ...input, isDirty: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
+  assert.deepEqual(titleAction({ ...input, isDirty: false, running: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
+  assert.equal(TITLE_AFTER_SAVE_MESSAGE, 'The tab title updates after you save.');
+});
+
+test('titleAction: object docs follow profile edits, but keep their title after Change Connection (rebound)', () => {
+  const addr = objectAddr('dbo.vOrders - DC\\DEV - Sales');
+  const assoc = { connection: 'dev', kind: 'object', object: ref, target: { server: 'DC\\DEV', database: 'Sales' } };
+  assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('dev', { server: 'DC\\NEW' }), isDirty: false }),
+    { kind: 'retitle', title: 'dbo.vOrders - DC\\NEW - Sales' });
+  assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('dev'), isDirty: false }), { kind: 'none' });
+  const rebound = { ...assoc, connection: 'prod', object: { ...ref, connection: 'prod' }, rebound: true };
+  assert.deepEqual(titleAction({ address: addr, assoc: rebound, profile: profile('prod', { server: 'PROD1' }), isDirty: false }), { kind: 'none' });
+});
+
+test('expectedTitle: titles go through titlePart (a / in a name, an empty database)', () => {
+  assert.equal(expectedTitle({ address: queryAddr('Query 2 - a - b'), assoc: { connection: 'r', kind: 'query' }, profile: profile('r', { database: '' }) }),
+    'Query 2 - DC\\DEV - default');
+  assert.equal(expectedTitle({
+    address: objectAddr('x'), assoc: { connection: 'dev', kind: 'object', object: { ...ref, name: 'a/b' } }, profile: profile('dev'),
+  }), 'dbo.a∕b - DC\\DEV - Sales');
+  // The kinds must agree (a malformed binding is left alone).
+  assert.equal(expectedTitle({ address: objectAddr('x'), assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev') }), undefined);
+});
+
+// ---- I2: names the server reports ----
+
+test('parseHistoryStatus reads serverName / databaseName; blank ones are left out', () => {
+  assert.deepEqual(parseHistoryStatus({ tableExists: true, serverName: ' SRV\\A ', databaseName: 'ClientB' }), {
+    tableExists: true, tableCompatible: false, triggerExists: false, triggerEnabled: false, canInstall: false, serverName: 'SRV\\A', databaseName: 'ClientB',
+  });
+  const blank = parseHistoryStatus({ serverName: '  ', databaseName: 3 });
+  assert.equal('serverName' in blank, false);
+  assert.equal('databaseName' in blank, false);
+});
+
+test('statusTargetText: the server-reported names first, the profile only for what is missing', () => {
+  const raw = profile('r', { auth: 'raw', server: '', database: '', rawConnectionString: 'not parseable' });
+  assert.equal(statusTargetText({ serverName: 'SRV1', databaseName: 'ClientB' }, raw), 'SRV1/ClientB');
+  assert.equal(statusTargetText({}, raw), 'connection string/default');
+  assert.equal(statusTargetText({}, profile('a')), 'DC\\DEV/Sales');
+  assert.equal(statusTargetText({ serverName: 'SRV1' }, profile('a', { database: '' })), 'SRV1/default');
+  assert.equal(statusTargetText({ databaseName: 'Real' }, profile('a')), 'DC\\DEV/Real');
+});
+
+test('installPrompt detail says the trigger runs as dbo, never blocks DDL, and how to remove it', () => {
+  const p = installPrompt(status(), 'SRV1/ClientB', 'dev');
+  assert.equal(p.message, "Create DDL history on SRV1/ClientB (connection 'dev')?");
+  assert.equal(INSTALL_SAFETY_TEXT,
+    'The trigger runs as dbo and never blocks a DDL statement if logging fails. To remove it later: DROP TRIGGER [DDL_Audit] ON DATABASE.');
+  assert.ok(p.detail.endsWith(INSTALL_SAFETY_TEXT), p.detail);
+  assert.doesNotMatch(p.detail, /harmless/i);
+});
+
+// ---- I3: unapplied object edits ----
+
+test('reopenObjectDecision: asks only when saved edits differ from the base, or when it cannot tell', () => {
+  const text = t => ({ kind: 'text', text: t });
+  assert.equal(reopenObjectDecision({ kind: 'missing' }, { kind: 'missing' }), 'load');
+  assert.equal(reopenObjectDecision({ kind: 'missing' }, text('x')), 'load');
+  assert.equal(reopenObjectDecision(text('ALTER VIEW v AS SELECT 1'), text('ALTER VIEW v AS SELECT 1')), 'load');
+  assert.equal(reopenObjectDecision(text('a\r\nb'), text('a\nb')), 'load', 'line endings are ignored');
+  assert.equal(reopenObjectDecision(text('ALTER VIEW v AS SELECT 2'), text('ALTER VIEW v AS SELECT 1')), 'ask');
+  assert.equal(reopenObjectDecision(text('edited'), { kind: 'missing' }), 'ask', 'no base: written by an older build');
+  assert.equal(reopenObjectDecision({ kind: 'unknown' }, text('x')), 'ask');
+  assert.equal(reopenObjectDecision(text('x'), { kind: 'unknown' }), 'ask');
+});
+
+test('the unapplied-edits modal text and buttons', () => {
+  assert.equal(unappliedEditsPrompt('dbo.vOrders'), 'You have saved, unapplied edits to dbo.vOrders. Replace them with the current server version?');
+  assert.equal(REPLACE_BUTTON, 'Replace');
+  assert.equal(KEEP_EDITS_BUTTON, 'Keep my edits');
+});
+
+test('baseFile: <root>/sqldocs/object/<id>.base.sql, never a backing file name, and ids are validated', () => {
+  const root = path.join('C:', 'storage');
+  assert.equal(baseFile(root, '0123456789abcdef'), path.join(root, 'sqldocs', 'object', '0123456789abcdef.base.sql'));
+  assert.notEqual(baseFile(root, '0123456789abcdef'), backingFile(root, 'object', '0123456789abcdef'));
+  assert.equal(isValidDocId('0123456789abcdef.base'), false, 'listBacking skips base files');
+  assert.throws(() => baseFile(root, '../x'));
+});
+
+// ---- M1 ----
+
+test('moreNotLoaded uses the raw listed count, not the filtered one', () => {
+  assert.equal(moreNotLoaded(LIST_TOP), true);
+  assert.equal(moreNotLoaded(LIST_TOP - 1), false);
+  assert.equal(moreNotLoaded(0), false);
+});
+
+// ---- M2 ----
+
+test('legacyEditsBackupName: edits.old-<yyyyMMddHHmmss> in local time, outside the legacy edits path', () => {
+  assert.equal(legacyEditsBackupName(new Date(2026, 9, 1, 7, 5, 9)), 'edits.old-20261001070509');
+  const root = path.join('C:', 'storage');
+  assert.equal(isLegacyEditPath(path.join(root, legacyEditsBackupName(new Date()), 'a.sql'), root), false);
+});
+
+// ---- M7 ----
+
+test('runsHistorySetup: an edit that moves the connection to another server or database re-runs the set-up', () => {
+  const before = profile('a', { ddlHistory: true });
+  assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: true, database: 'Other' }), before), true, 'database changed');
+  assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: true, server: 'srv2' }), before), true, 'server changed');
+  assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: true, server: 'dc\\dev ' }), before), false, 'same target (case, spaces)');
+  assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: false, database: 'Other' }), before), false, 'turned off');
+  assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: true, database: 'Other' })), false, 'no previous profile');
+});

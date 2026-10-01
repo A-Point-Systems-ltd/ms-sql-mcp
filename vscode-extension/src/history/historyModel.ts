@@ -7,6 +7,7 @@ import { parseUriQuery, qEnc, qualified, sqlString } from '../explorer/sqlText';
 import { findProfile } from '../query/editorState';
 import type { QueryAssociation } from '../query/queryDocuments';
 import { profileTarget, titlePart } from '../query/sqlDocNames';
+import { targetMismatch, targetOf } from '../query/targetGuard';
 
 export const HISTORY_SCHEME = 'mssql-history';
 
@@ -43,7 +44,7 @@ export const CURRENT_UNAVAILABLE_TEXT = '-- The current definition is not availa
 
 export const disabledWarning = (where: string): string => `DDL_Audit exists on ${where} but is disabled; changes are not recorded.`;
 export const incompatibleWarning = (where: string): string =>
-  `dbo.DDL_AuditLog on ${where} does not have the columns the DDL_Audit trigger writes, so DDL history cannot be set up here. Ask a DBA to align or rename the existing table.`;
+  `dbo.DDL_AuditLog on ${where} does not have the columns (or the column types and widths) the DDL_Audit trigger writes, so DDL history cannot be set up here. Ask a DBA to align or rename the existing table.`;
 export const triggerMissingWarning = (where: string): string =>
   `The DDL_Audit trigger is not installed on ${where}, so changes are not recorded.`;
 export const readOnlyWarning = (where: string): string =>
@@ -55,6 +56,21 @@ export const noHistoryMessage = (obj: string, connection: string): string => `No
 export function targetText(profile: ConnectionProfile): string {
   const t = profileTarget(profile, profile.name);
   return `${t.server}/${t.database}`;
+}
+
+/**
+ * `<server>/<db>` as the server reports them (`ddl_history status`: @@SERVERNAME and DB_NAME()), so messages name the
+ * database the connection actually reached. A part the status lacks falls back to the profile (see {@link targetText}).
+ */
+export function statusTargetText(status: Pick<HistoryStatus, 'serverName' | 'databaseName'>, profile: ConnectionProfile): string {
+  if (status.serverName && status.databaseName) return `${status.serverName}/${status.databaseName}`;
+  const t = profileTarget(profile, profile.name);
+  return `${status.serverName ?? t.server}/${status.databaseName ?? t.database}`;
+}
+
+/** Whether the oldest listed entry may have an earlier one that was not loaded: the server returned a full page. */
+export function moreNotLoaded(listed: number): boolean {
+  return listed >= LIST_TOP;
 }
 
 /** The server's list / get error when dbo.DDL_AuditLog is missing. */
@@ -70,17 +86,29 @@ export interface HistoryStatus {
   triggerExists: boolean;
   triggerEnabled: boolean;
   canInstall: boolean;
+  /** The server's @@SERVERNAME, when reported. */
+  serverName?: string;
+  /** The server's DB_NAME(), when reported. */
+  databaseName?: string;
 }
 
-/** `ddl_history status` data; a missing or non-boolean flag reads as false. */
+/** `ddl_history status` data; a missing or non-boolean flag reads as false, and a missing or blank name is left out. */
 export function parseHistoryStatus(data: unknown): HistoryStatus {
   const flag = (key: string) => pick(data, key) === true;
+  const name = (key: string) => {
+    const v = pick(data, key);
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  const serverName = name('serverName');
+  const databaseName = name('databaseName');
   return {
     tableExists: flag('tableExists'),
     tableCompatible: flag('tableCompatible'),
     triggerExists: flag('triggerExists'),
     triggerEnabled: flag('triggerEnabled'),
     canInstall: flag('canInstall'),
+    ...(serverName ? { serverName } : {}),
+    ...(databaseName ? { databaseName } : {}),
   };
 }
 
@@ -105,6 +133,10 @@ export function emptyHistoryOutcome(status: HistoryStatus): 'triggerMissing' | '
   return status.triggerEnabled ? 'noHistory' : 'triggerDisabled';
 }
 
+/** How the trigger behaves and how to remove it (the install modal and the README say the same). */
+export const INSTALL_SAFETY_TEXT =
+  'The trigger runs as dbo and never blocks a DDL statement if logging fails. To remove it later: DROP TRIGGER [DDL_Audit] ON DATABASE.';
+
 /** The modal text: names server/db and the connection, and lists exactly what will be created. */
 export function installPrompt(status: HistoryStatus, where: string, connection: string): { message: string; detail: string } {
   const parts = [
@@ -113,16 +145,19 @@ export function installPrompt(status: HistoryStatus, where: string, connection: 
   ];
   return {
     message: `Create DDL history on ${where} (connection '${connection}')?`,
-    detail: `This creates ${parts.join(' and ')}. The trigger records every DDL change in this database.`,
+    detail: `This creates ${parts.join(' and ')}. The trigger records every DDL change in this database. ${INSTALL_SAFETY_TEXT}`,
   };
 }
 
 /**
- * Whether a save runs the install flow: `ddlHistory` is on in the saved profile and was not on in the form's baseline
- * (undefined for a new connection; the form opened by "Set up…" uses false so its save always runs it).
+ * Whether a save runs the install flow: `ddlHistory` is on in the saved profile, and it was not on in the form's
+ * baseline (undefined for a new connection; the form opened by "Set up…" uses false so its save always runs it), or
+ * the edit moved the connection to another server or database (`previous`: the profile before the edit).
  */
-export function runsHistorySetup(baseline: boolean | undefined, saved: ConnectionProfile): boolean {
-  return saved.ddlHistory === true && baseline !== true;
+export function runsHistorySetup(baseline: boolean | undefined, saved: ConnectionProfile, previous?: ConnectionProfile): boolean {
+  if (saved.ddlHistory !== true) return false;
+  if (baseline !== true) return true;
+  return !!previous && targetMismatch(targetOf(previous), saved);
 }
 
 // ---- list / get ----

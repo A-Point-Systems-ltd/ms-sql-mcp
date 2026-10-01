@@ -44,7 +44,10 @@ export class ConnectionFormManager implements vscode.Disposable {
     private readonly extensionUri: vscode.Uri,
     private readonly store: ConnectionStore,
     private readonly log: Logger,
-    /** Runs after a successful save that turned `ddlHistory` on (see {@link runsHistorySetup}); never awaited by the save. */
+    /**
+     * Runs after a successful save that turned `ddlHistory` on, or that moved a connection with it on to another
+     * server or database (see {@link runsHistorySetup}); never awaited by the save.
+     */
     private readonly setUpHistory?: (profile: ConnectionProfile) => Promise<void>,
   ) {}
 
@@ -165,7 +168,8 @@ export class ConnectionFormManager implements vscode.Disposable {
     void vscode.window.showInformationMessage(`MSSQL-MCP: connection '${profile.name}' saved.`);
     form.panel.dispose();
     // After the store change: the runner's debounced reset is pending, and its next call applies it first, so the
-    // status check runs against the saved profile set.
-    if (this.setUpHistory && runsHistorySetup(form.historyBaseline, profile)) void this.setUpHistory(profile);
+    // status check runs against the saved profile set. An edit that points the connection at another server or
+    // database runs it again for the new database.
+    if (this.setUpHistory && runsHistorySetup(form.historyBaseline, profile, existing)) void this.setUpHistory(profile);
   }
 }
