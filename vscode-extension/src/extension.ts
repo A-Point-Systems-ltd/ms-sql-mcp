@@ -14,6 +14,8 @@ import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, duplicateEntryAction, h
 import { resolveExePath } from './exe';
 import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
 import { registerQueryCommands } from './query/queryCommands';
+import { SqlDocFileSystem } from './query/sqlDocFs';
+import { SQL_DOC_SCHEME } from './query/sqlDocNames';
 import { cursorConfigPath } from './register/clientPaths';
 import { registerClientCommand } from './register/registerClients';
 import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
@@ -34,8 +36,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const runner = new ServerProcessClient(context, store, log, RUNNER_OPTIONS);
   context.subscriptions.push(runner);
 
+  // Query windows and editable object scripts are mssql-sql: documents (titled tabs, no programmatic text edits),
+  // registered before the commands that open them.
+  const sqlDocs = new SqlDocFileSystem(context.globalStorageUri.fsPath, log);
+  context.subscriptions.push(sqlDocs, vscode.workspace.registerFileSystemProvider(SQL_DOC_SCHEME, sqlDocs, { isCaseSensitive: true }));
+
   const tree = new ExplorerTreeProvider(store, explorer, log);
-  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, refreshTree: () => tree.refresh() });
+  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, sqlDocs, refreshTree: () => tree.refresh() });
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
@@ -49,7 +56,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs);
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);

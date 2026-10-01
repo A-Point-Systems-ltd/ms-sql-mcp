@@ -2,6 +2,7 @@
 // No 'vscode' import — unit-testable with plain Node; queryCommands.ts wires the document events.
 import type { ObjectRef } from '../explorer/catalog';
 import { DDL_SCHEME } from '../explorer/sqlText';
+import { SQL_DOC_SCHEME, isValidDocId } from './sqlDocNames';
 import { ScriptTarget, asScriptTarget } from './targetGuard';
 
 export const QUERY_DOCUMENTS_KEY = 'msSqlMcp.queryDocuments';
@@ -35,8 +36,12 @@ export function isNeverBound(scheme: string): boolean {
   return scheme === DDL_SCHEME;
 }
 
-/** Whether closing a document drops its association: only `file:` documents keep it (they can be reopened). */
-export function dropOnClose(scheme: string): boolean {
+/**
+ * Whether closing a document drops its association: `file:` documents keep it (they can be reopened), and a
+ * `mssql-sql:` document closed with unsaved edits keeps it (and its backing file) until the activation prune.
+ */
+export function dropOnClose(scheme: string, isDirty = false): boolean {
+  if (scheme === SQL_DOC_SCHEME) return !isDirty;
   return scheme !== 'file';
 }
 
@@ -47,6 +52,14 @@ export function dropOnClose(scheme: string): boolean {
 export function keepOnActivation(scheme: string, isOpen: boolean, fileExists: () => boolean): boolean {
   if (isNeverBound(scheme)) return false;
   return scheme === 'file' ? fileExists() : isOpen;
+}
+
+/**
+ * The query document ids (from this workspace's own list) whose backing file may be deleted: no tab shows them.
+ * Malformed ids are left out, so nothing read back from workspace state becomes a path.
+ */
+export function orphanQueryIds(owned: readonly string[], open: ReadonlySet<string>): string[] {
+  return owned.filter(id => isValidDocId(id) && !open.has(id));
 }
 
 function isAssociation(v: unknown): v is QueryAssociation {

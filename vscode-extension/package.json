@@ -18,7 +18,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onFileSystem:mssql-sql"
   ],
   "contributes": {
     "mcpServerDefinitionProviders": [
