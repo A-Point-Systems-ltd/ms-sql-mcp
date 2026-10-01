@@ -349,6 +349,79 @@ public sealed class DdlAuditTriggerHardeningTests
         }
     }
 
+    /// <summary>
+    /// NET-021 / NET-022: a loginless DDL_Audit_Writer with more rights than the trigger needs is refused (nothing created,
+    /// nothing on it altered or revoked), and status reports the same conflict (canInstall false, the text in warnings).
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("ALTER ROLE db_owner ADD MEMBER [DDL_Audit_Writer];", "SELECT COUNT(*) FROM sys.database_role_members WHERE member_principal_id = DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer')")]
+    [InlineData("GRANT CREATE TABLE TO [DDL_Audit_Writer];", "SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id = DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer') AND permission_name = 'CREATE TABLE'")]
+    [InlineData("GRANT SELECT ON SCHEMA::dbo TO [DDL_Audit_Writer];", "SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id = DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer') AND class = 3")]
+    [InlineData("CREATE SCHEMA [w] AUTHORIZATION [DDL_Audit_Writer];", "SELECT COUNT(*) FROM sys.schemas WHERE principal_id = DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer')")]
+    public async Task A_loginless_writer_with_extra_rights_is_refused_left_unchanged_and_reported_by_status(string extra, string stillThereSql)
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, "CREATE USER [DDL_Audit_Writer] WITHOUT LOGIN;");
+        await ScratchDatabases.ExecAsync(cs, extra);
+
+        await using (var conn = new SqlConnection(cs))
+        {
+            await conn.OpenAsync();
+            var status = await DdlAudit.GetStatusAsync(conn, readOnly: false, CancellationToken.None);
+            Assert.False(status.CanInstall);
+            Assert.Contains(DdlAudit.WriterRightsError, status.Warnings ?? []);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => DdlAudit.InstallAsync(conn, CancellationToken.None));
+            Assert.Equal(
+                "A user named DDL_Audit_Writer already exists with more rights than INSERT/SELECT on dbo.DDL_AuditLog; nothing was created. Remove its extra rights or drop it, then retry.",
+                ex.Message);
+        }
+
+        Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, stillThereSql));
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, TableExistsSql));
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, DatabaseTriggerCountSql));
+    }
+
+    [SkippableFact]
+    public async Task A_loginless_writer_with_only_insert_and_select_on_the_existing_table_is_accepted()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await using (var conn = new SqlConnection(cs))
+        {
+            await conn.OpenAsync();
+            // A table plus a writer with exactly the trigger's grant (for example a set-up stopped before the trigger).
+            await InsightsLayerService.ExecuteBatchesAsync(conn, await InsightsLayerService.ReadEmbeddedResourceAsync(
+                typeof(InsightsLayerService).Assembly, "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditLog.sql", CancellationToken.None), CancellationToken.None);
+        }
+
+        await ScratchDatabases.ExecAsync(cs, "CREATE USER [DDL_Audit_Writer] WITHOUT LOGIN; GRANT INSERT, SELECT ON dbo.DDL_AuditLog TO [DDL_Audit_Writer];");
+
+        await using (var conn = new SqlConnection(cs))
+        {
+            await conn.OpenAsync();
+            Assert.True((await DdlAudit.GetStatusAsync(conn, readOnly: false, CancellationToken.None)).CanInstall);
+        }
+
+        await InstallAsync(cs);
+        Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, DatabaseTriggerCountSql));
+    }
+
+    [SkippableFact]
+    public async Task Status_reports_logging_suppressed_while_the_audit_table_has_dml_triggers()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await InstallAsync(cs);
+
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync();
+        Assert.Null((await DdlAudit.GetStatusAsync(conn, readOnly: true, CancellationToken.None)).LoggingSuppressed);
+        await ExecOnAsync(conn, "CREATE TRIGGER dbo.trg_any ON dbo.DDL_AuditLog AFTER INSERT AS SET NOCOUNT ON;");
+        Assert.True((await DdlAudit.GetStatusAsync(conn, readOnly: true, CancellationToken.None)).LoggingSuppressed);
+    }
+
     [SkippableFact]
     public async Task Install_by_a_db_ddladmin_only_user_creates_nothing_and_says_what_is_needed()
     {

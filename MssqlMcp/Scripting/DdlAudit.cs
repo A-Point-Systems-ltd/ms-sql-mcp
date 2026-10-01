@@ -12,9 +12,21 @@ namespace Mssql.McpServer.Scripting;
 
 /// <summary>
 /// <c>ddl_history status</c>: what exists of the DDL history on the current database. <see cref="TableCompatible"/> is
-/// true only for an existing table the trigger can insert into (false when the table is missing).
+/// true only for an existing table the trigger can insert into (false when the table is missing). <see cref="CanInstall"/>
+/// is also false when an existing <c>DDL_Audit_Writer</c> must not be used (the reason is in <see cref="Warnings"/>).
+/// <see cref="LoggingSuppressed"/> is true (else omitted) when dbo.DDL_AuditLog has DML triggers, which make the
+/// installed trigger skip logging.
 /// </summary>
-public sealed record DdlAuditStatus(bool TableExists, bool TableCompatible, bool TriggerExists, bool TriggerEnabled, bool CanInstall, string? ServerName = null, string? DatabaseName = null, IReadOnlyList<string>? Warnings = null);
+public sealed record DdlAuditStatus(
+    bool TableExists,
+    bool TableCompatible,
+    bool TriggerExists,
+    bool TriggerEnabled,
+    bool CanInstall,
+    string? ServerName = null,
+    string? DatabaseName = null,
+    IReadOnlyList<string>? Warnings = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? LoggingSuppressed = null);
 
 /// <summary><c>ddl_history install</c>: what this call created. Existing objects are never changed.</summary>
 public sealed record DdlAuditInstallResult(
@@ -97,6 +109,23 @@ internal static class DdlAudit
     // Run only where the column exists (2012+): a separate batch, so 2008 R2 never compiles it.
     private const string WriterAuthenticationSql = "SELECT authentication_type FROM sys.database_principals WHERE name = N'DDL_Audit_Writer';";
 
+    // Rights beyond what the trigger needs: any role membership (public is implicit, never listed), an owned schema, or
+    // a granted / grant-with-grant permission other than CONNECT on the database and INSERT / SELECT on the table.
+    private const string WriterExtraRightsSql = """
+        DECLARE @p int = DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer');
+        SELECT (SELECT COUNT(*) FROM sys.database_role_members WHERE member_principal_id = @p)
+             + (SELECT COUNT(*) FROM sys.schemas WHERE principal_id = @p)
+             + (SELECT COUNT(*) FROM sys.database_permissions AS dp
+                WHERE dp.grantee_principal_id = @p AND dp.state IN ('G', 'W')
+                  AND NOT (dp.class = 0 AND dp.state = 'G' AND dp.permission_name = 'CONNECT')
+                  AND NOT (dp.class = 1 AND dp.state = 'G' AND dp.major_id = OBJECT_ID(N'dbo.DDL_AuditLog', N'U') AND dp.minor_id = 0
+                           AND dp.permission_name IN ('INSERT', 'SELECT')));
+        """;
+
+    // DML triggers on the audit table make the installed DDL_Audit skip logging.
+    private const string AuditTableTriggersSql =
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.triggers WHERE parent_id = OBJECT_ID(N'dbo.DDL_AuditLog', N'U')) THEN 1 ELSE 0 END;";
+
     private const string CreateWriterSql =
         "IF DATABASE_PRINCIPAL_ID(N'DDL_Audit_Writer') IS NULL CREATE USER [DDL_Audit_Writer] WITHOUT LOGIN WITH DEFAULT_SCHEMA = dbo;";
 
@@ -138,15 +167,26 @@ internal static class DdlAudit
     {
         var state = await ReadStateAsync(conn, cancellationToken).ConfigureAwait(false);
         var compatible = state.TableExists && state.Incompatibilities.Count == 0;
+        // The same principal check as install (which runs it only when the trigger is missing), without throwing.
+        var conflict = state.TriggerExists ? null : (await DescribeWriterAsync(conn, cancellationToken).ConfigureAwait(false)).Conflict;
+        IReadOnlyList<string> warnings = conflict is null ? state.Warnings : [.. state.Warnings, conflict];
+        var suppressed = false;
+        if (state.TableExists)
+        {
+            await using var cmd = new SqlCommand(AuditTableTriggersSql, conn);
+            suppressed = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1;
+        }
+
         return new DdlAuditStatus(
             state.TableExists,
             TableCompatible: compatible,
             state.TriggerExists,
             state.TriggerEnabled,
-            CanInstall: !readOnly && (!state.TableExists || (compatible && !state.TriggerExists)),
+            CanInstall: !readOnly && conflict is null && (!state.TableExists || (compatible && !state.TriggerExists)),
             state.ServerName,
             state.DatabaseName,
-            Warnings: state.Warnings.Count > 0 ? state.Warnings : null);
+            Warnings: warnings.Count > 0 ? warnings : null,
+            LoggingSuppressed: suppressed ? true : null);
     }
 
     /// <summary>
@@ -331,6 +371,9 @@ internal static class DdlAudit
     internal const string PermissionHint =
         "Creating DDL history needs db_owner (or ALTER ANY USER, GRANT on dbo.DDL_AuditLog and ALTER ANY DATABASE DDL TRIGGER).";
 
+    internal const string WriterRightsError =
+        "A user named DDL_Audit_Writer already exists with more rights than INSERT/SELECT on dbo.DDL_AuditLog; nothing was created. Remove its extra rights or drop it, then retry.";
+
     internal const string WriterConflictError =
         "A database principal named DDL_Audit_Writer already exists and is not a loginless SQL user (WITHOUT LOGIN); nothing was created. Rename or drop it, or ask a DBA.";
 
@@ -383,11 +426,24 @@ internal static class DdlAudit
     }
 
     /// <summary>
-    /// True when the loginless <c>DDL_Audit_Writer</c> exists, false when no principal has that name. Throws
-    /// <see cref="WriterConflictError"/> when the name belongs to anything else: not a SQL user (type S), mapped to a
-    /// login, or (2012+) an <c>authentication_type</c> other than 0 (NONE).
+    /// True when the loginless <c>DDL_Audit_Writer</c> exists, false when no principal has that name. Throws when
+    /// <see cref="DescribeWriterAsync"/> reports a conflict.
     /// </summary>
     private static async Task<bool> ReadWriterAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        var (exists, conflict) = await DescribeWriterAsync(conn, cancellationToken).ConfigureAwait(false);
+        return conflict is null ? exists : throw new InvalidOperationException(conflict);
+    }
+
+    /// <summary>
+    /// Whether <c>DDL_Audit_Writer</c> exists, and why it must not be used (null when it may). Never throws for a
+    /// conflict, so <c>status</c> can report it. Conflicts:
+    /// <see cref="WriterConflictError"/> for anything but a loginless SQL user (not type S, mapped to a login, or on 2012+
+    /// an <c>authentication_type</c> other than 0); <see cref="WriterRightsError"/> for a loginless user with more rights
+    /// (any role but public, an owned schema, or a granted permission besides CONNECT and INSERT/SELECT on the table).
+    /// Nothing on the principal is ever altered or revoked.
+    /// </summary>
+    internal static async Task<(bool Exists, string? Conflict)> DescribeWriterAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
         string type;
         bool mapped, hasAuthenticationType;
@@ -396,7 +452,7 @@ internal static class DdlAudit
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                return false;
+                return (false, null);
             }
 
             type = reader.GetString(0).Trim();
@@ -406,7 +462,7 @@ internal static class DdlAudit
 
         if (type != "S" || mapped)
         {
-            throw new InvalidOperationException(WriterConflictError);
+            return (true, WriterConflictError);
         }
 
         if (hasAuthenticationType)
@@ -415,11 +471,15 @@ internal static class DdlAudit
             var value = await auth.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             if (Convert.ToInt32(value, CultureInfo.InvariantCulture) != 0)
             {
-                throw new InvalidOperationException(WriterConflictError);
+                return (true, WriterConflictError);
             }
         }
 
-        return true;
+        await using (var rights = new SqlCommand(WriterExtraRightsSql, conn))
+        {
+            var extra = Convert.ToInt32(await rights.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+            return (true, extra > 0 ? WriterRightsError : null);
+        }
     }
 
     /// <summary>Drops a table this call created after the trigger step failed; false when it stays (or a trigger exists).</summary>
