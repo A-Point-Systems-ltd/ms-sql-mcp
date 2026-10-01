@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QueryIndexFile } from '../out/query/queryIndexFile.js';
+import { QueryIndexFile, badIndexSuffix } from '../out/query/queryIndexFile.js';
 
 const FILE = 'C:/store/sqldocs/query-index.json';
 const errno = code => Object.assign(new Error(`${code}: something`), { code });
@@ -33,9 +33,13 @@ function memFs(initial = {}) {
   };
 }
 
+const STAMP_DATE = new Date(2026, 9, 1, 12, 3, 4);
+
 function indexFile(fs) {
   const warnings = [];
-  return { file: new QueryIndexFile(FILE, fs, m => warnings.push(m), '42'), warnings };
+  const corrupt = [];
+  const file = new QueryIndexFile(FILE, fs, m => warnings.push(m), { tmpSuffix: '42', now: () => STAMP_DATE, onCorrupt: () => corrupt.push(1) });
+  return { file, warnings, corrupt };
 }
 
 test('a missing file reads as an empty index; the first update creates it atomically (tmp, then rename)', async () => {
@@ -77,17 +81,41 @@ test('a read error other than ENOENT throws, and update aborts without writing (
   assert.ok(!warnings[0].includes('SELECT'));
 });
 
-test('a corrupt (non-empty, unparsable) file aborts the update and is left as it is', async () => {
+test('badIndexSuffix is .bad-<yyyyMMddHHmmss> in local time', () => {
+  assert.equal(badIndexSuffix(new Date(2026, 9, 1, 12, 3, 4)), '.bad-20261001120304');
+  assert.equal(badIndexSuffix(new Date(2026, 0, 2, 3, 4, 5)), '.bad-20260102030405');
+});
+
+test('a corrupt index is renamed to .bad-<stamp> (kept, never deleted), reported, and the index starts empty', async () => {
   for (const corrupt of ['{"aaaa0001": {"title": "SELECT secret', '[1,2]', 'null']) {
     const fs = memFs({ [FILE]: corrupt });
-    const { file, warnings } = indexFile(fs);
-    await assert.rejects(() => file.read(), corrupt);
-    assert.equal(await file.update(i => ({ ...i, aaaa0002: entry('B') })), false, corrupt);
-    assert.equal(fs.files.get(FILE), corrupt, 'never overwritten');
-    assert.deepEqual(fs.ops, []);
+    const { file, warnings, corrupt: reported } = indexFile(fs);
+    const bad = `${FILE}.bad-20261001120304`;
+    assert.equal(await file.update(i => ({ ...i, aaaa0002: entry('B') })), true, corrupt);
+    assert.equal(fs.files.get(bad), corrupt, 'the damaged file is kept byte for byte');
+    assert.deepEqual(fs.ops[0], ['rename', FILE, bad]);
+    assert.deepEqual(JSON.parse(fs.files.get(FILE)), { aaaa0002: entry('B') }, 'a fresh index (the lifecycle then rebuilds it)');
     assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /bad-20261001120304/);
     assert.ok(!warnings[0].includes('SELECT'), 'no content in the log');
+    assert.equal(reported.length, 1, 'onCorrupt asks the owner to rebuild from the backing files');
   }
+});
+
+test('a corrupt index found by read() is moved aside too; if the move fails nothing is written', async () => {
+  const fs = memFs({ [FILE]: 'garbage' });
+  const { file, corrupt } = indexFile(fs);
+  assert.deepEqual(await file.read(), {});
+  assert.equal(fs.files.get(`${FILE}.bad-20261001120304`), 'garbage');
+  assert.ok(!fs.files.has(FILE));
+  assert.equal(corrupt.length, 1);
+
+  const fs2 = memFs({ [FILE]: 'garbage' });
+  const { file: file2, warnings } = indexFile(fs2);
+  fs2.fail.rename = errno('EPERM');
+  assert.equal(await file2.update(i => ({ ...i, aaaa0002: entry('B') })), false);
+  assert.equal(fs2.files.get(FILE), 'garbage', 'never overwritten while it cannot be moved aside');
+  assert.ok(warnings.some(w => /EPERM/.test(w)));
 });
 
 test('an update that returns its input writes nothing', async () => {

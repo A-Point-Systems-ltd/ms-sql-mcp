@@ -153,11 +153,13 @@ export function queryPrunePlan(input: {
 
 /**
  * Index entries for non-blank backing files that have none (the index was lost or damaged and rewritten): the open
- * tab's title and no `closedAt` when this window shows it, else `Recovered query <id>`, closed at the file's mtime.
- * Unreadable and missing files are skipped.
+ * tab's title and no `closedAt` when this window shows it, else `Recovered query <id>` with `closedAt` = `now`, so a
+ * recovery always starts a fresh 30-day clock (`updatedAt` is the file's mtime, for the list). Unreadable and missing
+ * files are skipped.
  */
 export function recoveredEntries(
   index: QueryIndex, files: readonly { id: string; mtimeMs: number; read: BackingRead }[], openTitles: ReadonlyMap<string, string>,
+  now: number,
 ): QueryIndex {
   const recovered: QueryIndex = {};
   for (const f of files) {
@@ -165,9 +167,24 @@ export function recoveredEntries(
     const title = openTitles.get(f.id);
     recovered[f.id] = title !== undefined
       ? { title, connection: '', updatedAt: f.mtimeMs }
-      : { title: `Recovered query ${f.id}`, connection: '', updatedAt: f.mtimeMs, closedAt: f.mtimeMs };
+      : { title: `Recovered query ${f.id}`, connection: '', updatedAt: f.mtimeMs, closedAt: now };
   }
   return recovered;
+}
+
+/**
+ * `index` with `closedAt` cleared for the ids this window has open (also background tabs without a loaded document),
+ * so the prune never removes them; the same object when there is nothing to clear (no write).
+ */
+export function withOpenCleared(index: QueryIndex, open: ReadonlySet<string>): QueryIndex {
+  const ids = Object.keys(index).filter(id => open.has(id) && index[id].closedAt !== undefined);
+  if (!ids.length) return index;
+  const next = { ...index };
+  for (const id of ids) {
+    const { closedAt: _closed, ...rest } = index[id];
+    next[id] = rest;
+  }
+  return next;
 }
 
 /** `index` plus the recovered entries whose id it does not have yet (an entry written meanwhile wins). */

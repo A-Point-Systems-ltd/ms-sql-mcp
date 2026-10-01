@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   QUERY_INDEX_FILE, QueryIndexFormatError, RETENTION_MS, closedEntry, closedQueryAction, isBlank, mergeRecovered, parseQueryIndex,
-  queryPrunePlan, recentQueries, recoveredEntries, relativeTime, reopenObjectName, serializeQueryIndex, withEntry, withoutIds,
-  writtenEntry,
+  queryPrunePlan, recentQueries, recoveredEntries, relativeTime, reopenObjectName, serializeQueryIndex, withEntry, withOpenCleared,
+  withoutIds, writtenEntry,
 } from '../out/query/queryIndex.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -126,9 +126,10 @@ test('recoveredEntries: a non-blank backing file without an index entry is re-ad
     { id: 'aaaa0005', mtimeMs: NOW, read: UNKNOWN }, // unreadable: not touched
     { id: 'aaaa0006', mtimeMs: NOW, read: MISSING },
   ];
-  const recovered = recoveredEntries(index, files, new Map([['aaaa0003', 'Query 3 - S - D']]));
+  const recovered = recoveredEntries(index, files, new Map([['aaaa0003', 'Query 3 - S - D']]), NOW);
   assert.deepEqual(recovered, {
-    aaaa0002: { title: 'Recovered query aaaa0002', connection: '', updatedAt: NOW - 2 * DAY, closedAt: NOW - 2 * DAY },
+    // closedAt = now: a recovery always starts a fresh 30-day clock (updatedAt stays the file's mtime, for the list).
+    aaaa0002: { title: 'Recovered query aaaa0002', connection: '', updatedAt: NOW - 2 * DAY, closedAt: NOW },
     aaaa0003: { title: 'Query 3 - S - D', connection: '', updatedAt: NOW - 3 * DAY },
   });
   // Merged into the index as it is at write time: an entry another window added meanwhile wins.
@@ -137,6 +138,32 @@ test('recoveredEntries: a non-blank backing file without an index entry is re-ad
   assert.equal(merged.aaaa0002.title, 'From another window');
   assert.equal(merged.aaaa0003.title, 'Query 3 - S - D');
   assert.deepEqual(mergeRecovered(current, {}), current);
+});
+
+test('an old orphan file is recovered and is not removed by the same run\'s prune', () => {
+  const recovered = recoveredEntries({}, [{ id: 'aaaa0001', mtimeMs: NOW - 400 * DAY, read: text('SELECT 1') }], new Map(), NOW);
+  const index = mergeRecovered({}, recovered);
+  assert.equal(index.aaaa0001.closedAt, NOW);
+  const plan = queryPrunePlan({ index, owned: [], open: new Set(), blank: new Set(), missing: new Set(), now: NOW });
+  assert.deepEqual(plan.remove, []);
+  // ... and it is removed only 30 days after the recovery.
+  const later = queryPrunePlan({ index, owned: [], open: new Set(), blank: new Set(), missing: new Set(), now: NOW + RETENTION_MS + 1 });
+  assert.deepEqual(later.remove, ['aaaa0001']);
+});
+
+test('withOpenCleared: ids open in this window lose closedAt before the prune plans', () => {
+  const index = {
+    aaaa0001: entry({ closedAt: NOW - 40 * DAY }),
+    aaaa0002: entry({ closedAt: NOW - 40 * DAY }),
+    aaaa0003: entry(),
+  };
+  const cleared = withOpenCleared(index, new Set(['aaaa0001', 'aaaa0003', 'aaaa0009']));
+  assert.ok(!('closedAt' in cleared.aaaa0001));
+  assert.equal(cleared.aaaa0002.closedAt, NOW - 40 * DAY);
+  assert.deepEqual(cleared.aaaa0003, index.aaaa0003);
+  assert.equal(withOpenCleared(index, new Set(['aaaa0003'])), index, 'nothing to clear: the same object (no write)');
+  const plan = queryPrunePlan({ index: cleared, owned: [], open: new Set(), blank: new Set(), missing: new Set(), now: NOW });
+  assert.deepEqual(plan.remove, ['aaaa0002']);
 });
 
 test('reopen title: keeps its Query number unless an open tab has it', () => {

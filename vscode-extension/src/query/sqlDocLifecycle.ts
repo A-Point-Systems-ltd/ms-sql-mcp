@@ -8,7 +8,7 @@ import { findProfile } from './editorState';
 import { QueryDocuments, afterCloseGrace, keepOnActivation, orphanQueryIds } from './queryDocuments';
 import {
   BackingRead, QueryIndex, QueryIndexEntry, closedEntry, closedQueryAction, isBlank, mergeRecovered, queryPrunePlan,
-  recentQueries, recoveredEntries, relativeTime, reopenObjectName, withEntry, withoutIds, writtenEntry,
+  recentQueries, recoveredEntries, relativeTime, reopenObjectName, withEntry, withOpenCleared, withoutIds, writtenEntry,
 } from './queryIndex';
 import type { QueryIndexFile } from './queryIndexFile';
 import { SqlDocFileSystem, openDocumentKeys, openSqlDocs } from './sqlDocFs';
@@ -76,6 +76,9 @@ export class SqlDocLifecycle implements vscode.Disposable {
   ) {
     this.owned = new OwnedQueryIds(context.workspaceState);
     this.index = sqlDocs.queryIndex();
+    // A damaged index was moved aside (kept as .bad-<stamp>): rebuild it from the backing files right away.
+    this.index.onCorrupt = () => void this.reconcileIndex()
+      .catch(err => log.warn('sqldocs', 'Rebuilding the query index failed (' + (err instanceof Error ? err.name : 'error') + ').'));
     this.subs.push(
       vscode.workspace.onDidOpenTextDocument(doc => this.onOpen(doc)),
       vscode.workspace.onDidCloseTextDocument(doc => this.onClose(doc)),
@@ -245,7 +248,7 @@ export class SqlDocLifecycle implements vscode.Disposable {
     }
     const openTitles = new Map<string, string>();
     for (const [id, uri] of openSqlDocs('query')) openTitles.set(id, SqlDocFileSystem.address(uri)?.title ?? '');
-    const recovered = recoveredEntries(index, files, openTitles);
+    const recovered = recoveredEntries(index, files, openTitles, Date.now());
     if (!Object.keys(recovered).length) return index;
     this.log.info('sqldocs', `Re-added ${Object.keys(recovered).length} query window(s) to the recent list.`);
     await this.index.update(i => mergeRecovered(i, recovered));
@@ -270,8 +273,13 @@ export class SqlDocLifecycle implements vscode.Disposable {
 
   private async pruneQueries(): Promise<void> {
     // An unreadable index throws here: nothing is deleted then.
-    const index = await this.reconcileIndex();
-    const open = new Set([...openSqlDocs('query').keys(), ...this.owned.session]);
+    await this.reconcileIndex();
+    // Ids this window has open in any tab (also background tabs without a loaded document) are open: clear closedAt
+    // first, so a missed open event can never get them pruned.
+    const tabs = new Set(openSqlDocs('query').keys());
+    if (!(await this.index.update(i => withOpenCleared(i, tabs)))) return;
+    const index = await this.index.read();
+    const open = new Set([...tabs, ...this.owned.session]);
     const owned = this.owned.all();
     const blank = new Set<string>();
     const missing = new Set<string>();
