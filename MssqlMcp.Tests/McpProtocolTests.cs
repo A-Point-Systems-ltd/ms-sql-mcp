@@ -272,9 +272,10 @@ public sealed class McpProtocolTests
     /// ends the call locally but sends no notification (its trace log shows none), so the test sends it explicitly.
     /// </summary>
     [SkippableTheory]
-    [InlineData("2024-11-05")] // the extension's runner client (mcpStdioClient.ts PROTOCOL_VERSION)
-    [InlineData(null)] // the SDK's default revision
-    public async Task Cancelling_a_run_script_call_rolls_back_on_the_server_and_releases_locks(string? protocolVersion)
+    [InlineData("2024-11-05", true)] // the extension's runner client: mcpStdioClient.ts PROTOCOL_VERSION, integer ids
+    [InlineData("2024-11-05", false)]
+    [InlineData(null, false)] // the SDK's default revision
+    public async Task Cancelling_a_run_script_call_rolls_back_on_the_server_and_releases_locks(string? protocolVersion, bool integerId)
     {
         await using var scratch = await ScratchDatabases.CreateAsync(1);
         var cs = scratch.ConnectionStrings[0];
@@ -282,7 +283,8 @@ public sealed class McpProtocolTests
         var connections = System.Text.Json.JsonSerializer.Serialize(new object[] { new { name = "main", connectionString = cs } });
         await using var client = await StartClientAsync(connections, insights: false, scriptRunner: true, protocolVersion);
 
-        var requestId = new RequestId("run-script-cancel-probe");
+        // Far above the SDK's own sequential ids (initialize / discover), so it cannot collide with them.
+        var requestId = integerId ? new RequestId(9001L) : new RequestId("run-script-cancel-probe");
         using var cts = new CancellationTokenSource();
         var call = client.SendRequestAsync(
             new JsonRpcRequest

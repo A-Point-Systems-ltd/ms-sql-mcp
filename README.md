@@ -219,14 +219,15 @@ This keeps destructive operations behind an explicitly flagged tool and prevents
 - Splits the script on SSMS-style `GO` lines (`GO n` repeats a batch; `GO` inside strings, comments or `[identifiers]` does not split) and runs every batch on one session, so `SET` options and `#temp` tables carry across batches.
 - Returns `data: { resultSets, messages, hadErrors, batches, elapsedMs }`. Each result set has `batch`, `columns` (`name`, `type`), `rows` (arrays in column order), `rowCount` (total) and `truncated`. Messages have `kind` (`info`, `rows`, `error`, `warning`), `text` and `line` (1-based script line, or null). Errors that name a procedure, function, view or trigger use the SSMS header `Msg n, Level l, State s, Procedure p, Line n`. When the batch is that module's own `CREATE` / `ALTER` (a compile error), the line is mapped to the script; otherwise (for example an error raised inside an `EXEC`'d procedure) it is the module's own line number and `line` is null. SQL errors are `error` messages and execution continues with the next batch, like SSMS; `success: false` only for an empty script or a connection that cannot be opened.
 - **New session per run.** Each call opens its own connection outside the connection pool (`Pooling=false`) and closes it at the end, so session state from an earlier run (`SET TRANSACTION ISOLATION LEVEL`, other `SET` options, `sp_setapprole`, `EXECUTE AS` without `REVERT`) never reaches the next one. Within one run, all batches share that session.
-- **Size caps.** A cap never stops execution: the script runs to the end, only what is kept and returned is limited, and `error` messages are always kept. Each cap adds one `warning` per run.
+- **Size caps.** A cap never stops execution: the script runs to the end, only what is kept and returned is limited, and errors are never lost silently (see the Errors row). Each cap adds one `warning` per run.
 
   | Cap | Limit | After the cap |
   |---|---|---|
   | Rows | 50000 per run, across all result sets | Result sets keep their columns and `rowCount` but have no rows, and `truncated: true`. |
-  | Response size | about 32 MB per run (rendered cell length x2 + 16 bytes per cell) | Later rows are counted in `rowCount` but not kept (`truncated: true`). |
+  | Response size | about 32 MB per run (rendered cell or message text length x2 + 16 bytes each) | Later rows are counted in `rowCount` but not kept (`truncated: true`), and later `info` / `rows` messages are dropped. Errors and warnings are still kept: they do not need room in the budget. |
   | Result sets | 200 per run | Later result sets are read to the end but not returned. |
   | Messages | 10000 per run | Later `info` and `rows` messages are dropped; `error` and `warning` messages are kept. |
+  | Errors | 1000 per run | After the first 1000 errors only the most recent one is kept (it replaces the previous one), after the warning `Error limit of 1000 reached; further errors were dropped (the last one is shown).` `hadErrors` stays true. |
   | String value | 65536 characters | Cut, with the suffix `… (truncated, N chars)` (N = full length). |
   | Binary value | 32768 bytes | Cut before hex encoding, with the suffix `… (truncated, N bytes)`. |
   | `GO n` | n at most 10000 | That batch is not run and gets an `error` message; later batches still run. |

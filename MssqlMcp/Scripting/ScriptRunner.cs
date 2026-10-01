@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 using System.Data;
-using System.Data.SqlTypes;
 using System.Diagnostics;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
@@ -47,6 +46,9 @@ internal sealed record ScriptRunLimits
     /// <summary>Messages kept; beyond it info and row-count messages are dropped (errors and warnings are kept).</summary>
     public int MaxMessages { get; init; } = ScriptRunner.MaxMessages;
 
+    /// <summary>Error messages kept in full; after that only the most recent error is kept, in one replaceable slot.</summary>
+    public int MaxErrors { get; init; } = ScriptRunner.MaxErrors;
+
     /// <summary>Result sets returned; later sets are read to the end but not returned.</summary>
     public int MaxResultSets { get; init; } = ScriptRunner.MaxResultSets;
 
@@ -56,7 +58,11 @@ internal sealed record ScriptRunLimits
     /// <summary>Bytes kept of one binary value (before hex encoding).</summary>
     public int MaxCellBytes { get; init; } = ScriptRunner.MaxCellBytes;
 
-    /// <summary>Approximate response size of kept cells (rendered length x2 + 16 per cell); later rows are only counted.</summary>
+    /// <summary>
+    /// Approximate response size of kept cells and message texts (length x2 + 16 each). Once it is used up, later rows
+    /// are only counted and info / row-count messages are dropped; errors (bounded by <see cref="MaxErrors"/>) and
+    /// warnings are still kept, so they never compete with data for the budget.
+    /// </summary>
     public long MaxResponseBytes { get; init; } = ScriptRunner.MaxResponseBytes;
 
     /// <summary>Largest <c>GO n</c>; a batch with a larger count is refused with an error and not run.</summary>
@@ -75,6 +81,7 @@ internal static class ScriptRunner
     public const int MaxTotalRows = 50_000;
 
     internal const int MaxMessages = 10_000;
+    internal const int MaxErrors = 1_000;
     internal const int MaxResultSets = 200;
     internal const int MaxCellChars = 65_536;
     internal const int MaxCellBytes = 32_768;
@@ -86,7 +93,7 @@ internal static class ScriptRunner
     /// <summary>Largest integer a JavaScript number (IEEE double) holds exactly: 2^53.</summary>
     private const long MaxExactDouble = 9_007_199_254_740_992L;
 
-    /// <summary>Approximate per-cell overhead of the JSON response, next to twice the rendered length.</summary>
+    /// <summary>Approximate per-cell (and per-message) overhead of the JSON response, next to twice the rendered length.</summary>
     private const int CellOverheadBytes = 16;
 
     public static async Task<ScriptRunResult> RunAsync(
@@ -103,7 +110,6 @@ internal static class ScriptRunner
         var stopwatch = Stopwatch.StartNew();
         var batches = ScriptBatchSplitter.Split(script);
         var run = new RunState(limits);
-        var messages = run.Messages;
         var hadErrors = false;
         var startLine = 1;
         var batchText = string.Empty;
@@ -140,7 +146,7 @@ internal static class ScriptRunner
         {
             var line = ScriptLine(error);
             var header = FormatErrorHeader(error.Number, error.Class, error.State, error.Procedure, line ?? error.LineNumber);
-            messages.Add(new ScriptMessage("error", header + Environment.NewLine + error.Message, line));
+            run.AddError(new ScriptMessage("error", header + Environment.NewLine + error.Message, line));
             hadErrors = true;
         }
 
@@ -182,7 +188,7 @@ internal static class ScriptRunner
 
                 if (batch.RepeatCount > limits.MaxRepeatCount)
                 {
-                    messages.Add(new ScriptMessage(
+                    run.AddError(new ScriptMessage(
                         "error",
                         $"GO {batch.RepeatCount} exceeds the limit of {limits.MaxRepeatCount} repetitions; the batch was not run.",
                         batch.StartLine));
@@ -192,7 +198,7 @@ internal static class ScriptRunner
 
                 if (readOnly && !SqlStatementClassifier.TryValidateReadOnly(batch.Text, editorWording: true, out var validationError))
                 {
-                    messages.Add(new ScriptMessage("error", $"{ReadOnlyRefusedPrefix} ({validationError})", batch.StartLine));
+                    run.AddError(new ScriptMessage("error", $"{ReadOnlyRefusedPrefix} ({validationError})", batch.StartLine));
                     hadErrors = true;
                     continue;
                 }
@@ -218,19 +224,19 @@ internal static class ScriptRunner
                     catch (InvalidOperationException ex)
                     {
                         // e.g. the session broke between batches; reported like a SQL error, then the state check stops the run.
-                        messages.Add(new ScriptMessage("error", ex.Message, batch.StartLine));
+                        run.AddError(new ScriptMessage("error", ex.Message, batch.StartLine));
                         hadErrors = true;
                     }
 
                     if (run.RowsExhausted && !run.RowsWarned)
                     {
                         run.RowsWarned = true;
-                        messages.Add(new ScriptMessage("warning", $"Row budget of {limits.MaxTotalRows} rows per run reached; later result sets show no rows.", null));
+                        run.AddWarning($"Row budget of {limits.MaxTotalRows} rows per run reached; later result sets show no rows.");
                     }
 
                     if (conn.State != ConnectionState.Open)
                     {
-                        messages.Add(new ScriptMessage("error", ConnectionClosedMessage, null));
+                        run.AddError(new ScriptMessage("error", ConnectionClosedMessage, null));
                         hadErrors = true;
                         return Finish();
                     }
@@ -241,7 +247,7 @@ internal static class ScriptRunner
             {
                 try
                 {
-                    await RollBackOpenTransactionsAsync(conn, messages, ct).ConfigureAwait(false);
+                    await RollBackOpenTransactionsAsync(conn, run, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException && ct.IsCancellationRequested)
                 {
@@ -270,7 +276,7 @@ internal static class ScriptRunner
             conn.FireInfoMessageEventOnUserErrors = previousFireOnUserErrors;
         }
 
-        ScriptRunResult Finish() => new(run.ResultSets, messages, hadErrors, batches.Count, stopwatch.ElapsedMilliseconds);
+        ScriptRunResult Finish() => new(run.ResultSets, run.Messages, hadErrors, batches.Count, stopwatch.ElapsedMilliseconds);
     }
 
     /// <summary>SSMS-style error header. The <c>, Line n</c> part is omitted when the effective line is 0 or unknown.</summary>
@@ -295,9 +301,9 @@ internal static class ScriptRunner
         string s when s.Length > limits.MaxCellChars =>
             string.Concat(s.AsSpan(0, limits.MaxCellChars), $"… (truncated, {s.Length} chars)"),
         byte[] bytes => BinaryText(bytes, limits.MaxCellBytes),
+        // decimal also covers money / smallmoney (SqlClient returns them as decimal); a decimal beyond the .NET range
+        // is already the exact SqlDecimal text from ReadValue.
         decimal d => d.ToString(CultureInfo.InvariantCulture),
-        SqlDecimal d => d.ToString(),
-        SqlMoney m => m.ToString(),
         long l when l > MaxExactDouble || l < -MaxExactDouble => l.ToString(CultureInfo.InvariantCulture),
         ulong u => u.ToString(CultureInfo.InvariantCulture),
         _ => value,
@@ -306,6 +312,9 @@ internal static class ScriptRunner
     private static string BinaryText(byte[] bytes, int maxBytes) => bytes.Length > maxBytes
         ? $"0x{Convert.ToHexString(bytes, 0, maxBytes)}… (truncated, {bytes.Length} bytes)"
         : "0x" + Convert.ToHexString(bytes);
+
+    /// <summary>Approximate JSON cost of one kept message: its text length twice plus overhead, like a cell.</summary>
+    private static long MessageCost(ScriptMessage message) => (2L * message.Text.Length) + CellOverheadBytes;
 
     /// <summary>Approximate JSON cost of one kept cell: its rendered length twice (escaping, UTF-16) plus overhead.</summary>
     private static long CellCost(object? value)
@@ -447,6 +456,10 @@ internal static class ScriptRunner
     {
         private bool _messagesWarned;
         private bool _resultSetsWarned;
+        private int _errors;
+
+        /// <summary>Index in <see cref="Messages"/> of the replaceable "last error" slot once the error cap is reached.</summary>
+        private int? _lastErrorSlot;
 
         public ScriptRunLimits Limits { get; } = limits;
 
@@ -467,29 +480,76 @@ internal static class ScriptRunner
         /// <summary>True once the response-size budget was exceeded; every later row is only counted.</summary>
         public bool BytesExhausted { get; private set; }
 
-        /// <summary>Adds an info or row-count message unless the message cap is reached (then warns once).</summary>
+        /// <summary>
+        /// Adds an info or row-count message unless the message cap is reached (then warns once) or the response-size
+        /// budget has no room for it (then the budget is exhausted and warns once).
+        /// </summary>
         public void AddInfo(ScriptMessage message)
         {
-            if (Messages.Count < Limits.MaxMessages)
+            if (Messages.Count >= Limits.MaxMessages)
             {
-                Messages.Add(message);
+                if (!_messagesWarned)
+                {
+                    _messagesWarned = true;
+                    AddWarning($"Message limit of {Limits.MaxMessages} reached; further info messages were dropped.");
+                }
+
                 return;
             }
 
-            if (!_messagesWarned)
+            var cost = MessageCost(message);
+            if (BytesExhausted || ResponseBytes + cost > Limits.MaxResponseBytes)
             {
-                _messagesWarned = true;
-                Messages.Add(new ScriptMessage("warning", $"Message limit of {Limits.MaxMessages} reached; further info messages were dropped.", null));
+                ExhaustBytes();
+                return;
             }
+
+            ResponseBytes += cost;
+            Messages.Add(message);
         }
+
+        /// <summary>
+        /// Adds an error. The first <see cref="ScriptRunLimits.MaxErrors"/> are kept; after that one warning is added and
+        /// every later error replaces the previous one in a single "last error" slot. Errors do not need room in the
+        /// response-size budget (they are bounded by the cap), but they are counted in it.
+        /// </summary>
+        public void AddError(ScriptMessage message)
+        {
+            if (_errors < Limits.MaxErrors)
+            {
+                _errors++;
+                Keep(message);
+                return;
+            }
+
+            if (_lastErrorSlot is { } slot)
+            {
+                ResponseBytes += MessageCost(message) - MessageCost(Messages[slot]);
+                Messages[slot] = message;
+                return;
+            }
+
+            AddWarning($"Error limit of {Limits.MaxErrors} reached; further errors were dropped (the last one is shown).");
+            _lastErrorSlot = Messages.Count;
+            Keep(message);
+        }
+
+        /// <summary>Adds a warning; warnings are few (one per cap or run event) and always kept.</summary>
+        public void AddWarning(string text) => Keep(new ScriptMessage("warning", text, null));
 
         public void WarnResultSetsCapped()
         {
             if (!_resultSetsWarned)
             {
                 _resultSetsWarned = true;
-                Messages.Add(new ScriptMessage("warning", $"Result-set limit of {Limits.MaxResultSets} reached; later result sets were run but not returned.", null));
+                AddWarning($"Result-set limit of {Limits.MaxResultSets} reached; later result sets were run but not returned.");
             }
+        }
+
+        private void Keep(ScriptMessage message)
+        {
+            ResponseBytes += MessageCost(message);
+            Messages.Add(message);
         }
 
         public void ExhaustBytes()
@@ -500,10 +560,7 @@ internal static class ScriptRunner
             }
 
             BytesExhausted = true;
-            Messages.Add(new ScriptMessage(
-                "warning",
-                $"Response size limit of {FormatSize(Limits.MaxResponseBytes)} reached; later rows were counted but not returned.",
-                null));
+            AddWarning($"Response size limit of {FormatSize(Limits.MaxResponseBytes)} reached; later rows were counted but not returned, and further info messages were dropped.");
         }
 
         private static string FormatSize(long bytes) => bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0
@@ -534,7 +591,7 @@ internal static class ScriptRunner
     }
 
     /// <summary>Each run is its own session: a transaction left open would roll back invisibly on dispose, so say so.</summary>
-    private static async Task RollBackOpenTransactionsAsync(SqlConnection conn, List<ScriptMessage> messages, CancellationToken ct)
+    private static async Task RollBackOpenTransactionsAsync(SqlConnection conn, RunState run, CancellationToken ct)
     {
         await using var count = new SqlCommand("SELECT @@TRANCOUNT", conn) { CommandTimeout = 0 };
         var open = Convert.ToInt32(await count.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
@@ -545,9 +602,6 @@ internal static class ScriptRunner
 
         await using var rollback = new SqlCommand("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;", conn) { CommandTimeout = 0 };
         await rollback.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-        messages.Add(new ScriptMessage(
-            "warning",
-            $"The script left {open} open transaction(s); they were rolled back. Each run uses a new session - COMMIT in the same run.",
-            null));
+        run.AddWarning($"The script left {open} open transaction(s); they were rolled back. Each run uses a new session - COMMIT in the same run.");
     }
 }

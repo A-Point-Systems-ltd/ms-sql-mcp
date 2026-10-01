@@ -427,7 +427,7 @@ public sealed class ScriptRunnerTests
         Assert.All(result.ResultSets, s => Assert.Equal(10, s.RowCount));
         Assert.All(result.ResultSets, s => Assert.True(s.Truncated));
         var warning = Assert.Single(result.Messages, m => m.Kind == "warning");
-        Assert.Equal("Response size limit of 100 bytes reached; later rows were counted but not returned.", warning.Text);
+        Assert.Equal("Response size limit of 100 bytes reached; later rows were counted but not returned, and further info messages were dropped.", warning.Text);
         Assert.Equal(32L * 1024 * 1024, ScriptRunner.MaxResponseBytes);
     }
 
@@ -483,12 +483,11 @@ public sealed class ScriptRunnerTests
     }
 
     [Fact]
-    public void Wire_value_formats_ulong_and_sql_types_as_strings_and_truncates_by_the_given_caps()
+    public void Wire_value_formats_ulong_and_decimal_as_strings_and_truncates_by_the_given_caps()
     {
         var limits = ScriptRunLimits.Default with { MaxCellChars = 3, MaxCellBytes = 2 };
 
         Assert.Equal("18446744073709551615", ScriptRunner.ToWireValue(ulong.MaxValue, limits));
-        Assert.Equal("1.50", ScriptRunner.ToWireValue(new System.Data.SqlTypes.SqlDecimal(1.50m), limits));
         Assert.Equal("1.5", ScriptRunner.ToWireValue(1.5m, limits));
         Assert.Equal("abc… (truncated, 5 chars)", ScriptRunner.ToWireValue("abcde", limits));
         Assert.Equal("abc", ScriptRunner.ToWireValue("abc", limits));
@@ -496,5 +495,50 @@ public sealed class ScriptRunnerTests
         Assert.Equal("0x", ScriptRunner.ToWireValue(Array.Empty<byte>(), limits));
         Assert.Null(ScriptRunner.ToWireValue(DBNull.Value, limits));
         Assert.Equal(7, ScriptRunner.ToWireValue(7, limits));
+    }
+
+    [SkippableFact]
+    public async Task Error_cap_keeps_the_first_errors_then_only_the_last_one_with_one_warning()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+
+        var result = await RunAsync(cs, "SET NOCOUNT ON;\nDECLARE @i int = 1;\nWHILE @i <= 1500 BEGIN RAISERROR('err %d', 11, 1, @i); SET @i += 1; END;\nSELECT 7 AS after");
+
+        Assert.True(result.HadErrors);
+        var errors = result.Messages.Where(m => m.Kind == "error").ToList();
+        Assert.Equal(1001, errors.Count);
+        Assert.EndsWith("err 1000", errors[999].Text, StringComparison.Ordinal);
+        Assert.EndsWith("err 1500", errors[1000].Text, StringComparison.Ordinal);
+        var warning = Assert.Single(result.Messages, m => m.Kind == "warning");
+        Assert.Equal("Error limit of 1000 reached; further errors were dropped (the last one is shown).", warning.Text);
+        Assert.Equal(result.Messages.Count - 1, result.Messages.ToList().IndexOf(errors[1000]));
+        Assert.Equal(result.Messages.Count - 2, result.Messages.ToList().IndexOf(warning));
+        Assert.Equal(7, Assert.Single(result.ResultSets).Rows[0][0]);
+        Assert.Equal(1_000, ScriptRunner.MaxErrors);
+    }
+
+    [SkippableFact]
+    public async Task Message_text_counts_toward_the_byte_budget_and_errors_are_still_kept()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+        var print = $"PRINT '{new string('p', 40)}';";
+
+        // Each 40-character PRINT costs 40 x 2 + 16 = 96, so a 200-byte budget keeps two; then data rows are not kept
+        // either, while the error after the budget is used up is still returned.
+        var result = await RunWithLimitsAsync(
+            cs,
+            $"SET NOCOUNT ON;\n{print}\n{print}\n{print}\nRAISERROR('late error', 16, 1);\nSELECT 1 AS a;",
+            ScriptRunLimits.Default with { MaxResponseBytes = 200 });
+
+        Assert.Equal(2, result.Messages.Count(m => m.Kind == "info"));
+        var warning = Assert.Single(result.Messages, m => m.Kind == "warning");
+        Assert.Equal("Response size limit of 200 bytes reached; later rows were counted but not returned, and further info messages were dropped.", warning.Text);
+        Assert.Contains(result.Messages, m => m.Kind == "error" && m.Text.EndsWith("late error", StringComparison.Ordinal));
+        var set = Assert.Single(result.ResultSets);
+        Assert.Empty(set.Rows);
+        Assert.Equal(1, set.RowCount);
+        Assert.True(set.Truncated);
     }
 }
