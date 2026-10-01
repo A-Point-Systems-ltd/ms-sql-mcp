@@ -19,7 +19,7 @@ public sealed class InsightsLayerService(
     ILogger<InsightsLayerService> logger) : IInsightsLayerService
 {
     private const string SchemaScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateInsightsSchema.sql";
-    private const string TriggerScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditTrigger.sql";
+    internal const string TriggerScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditTrigger.sql";
     internal const string AutoMechanicalModel = "auto-mechanical";
 
     private readonly ISqlConnectionFactory _connectionFactory = connectionFactory;

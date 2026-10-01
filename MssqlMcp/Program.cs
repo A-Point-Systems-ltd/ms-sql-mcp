@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using Mssql.McpServer.Connections;
 using Mssql.McpServer.InsightsLayer;
 using System.Diagnostics;
@@ -47,6 +48,17 @@ internal class Program
         {
             consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
         });
+
+        // Clients such as Cursor show every stderr line as "[error]", so the console stays at Warning unless asked.
+        var consoleLevel = ConsoleLogLevel.Resolve(Environment.GetEnvironmentVariable(ConsoleLogLevel.Variable), out var consoleLevelWarning);
+        if (consoleLevelWarning is not null)
+        {
+            Console.Error.WriteLine(consoleLevelWarning);
+            log.Append(consoleLevelWarning);
+        }
+
+        // A provider-wide rule (no category) wins over the default minimum level for the console provider only.
+        _ = builder.Logging.AddFilter<ConsoleLoggerProvider>(category: null, level: consoleLevel);
 
         IReadOnlyList<ConnectionProfile> profiles;
         try
@@ -286,5 +298,34 @@ internal sealed class StartupLog(string filePath)
         {
             Console.Error.WriteLine($"[log unavailable: {ex.Message}] {line}");
         }
+    }
+}
+
+/// <summary>
+/// Minimum level of the stderr console logger. Some clients (Cursor) show every stderr line as an error,
+/// so the default is <see cref="LogLevel.Warning"/>; <c>MSSQL_CONSOLE_LOG_LEVEL</c> raises or lowers it.
+/// </summary>
+internal static class ConsoleLogLevel
+{
+    public const string Variable = "MSSQL_CONSOLE_LOG_LEVEL";
+
+    /// <summary>Accepts a <see cref="LogLevel"/> name (case-insensitive, not a number); anything else is Warning plus a warning text.</summary>
+    public static LogLevel Resolve(string? value, out string? warning)
+    {
+        warning = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return LogLevel.Warning;
+        }
+
+        var trimmed = value.Trim();
+        var name = Enum.GetNames<LogLevel>().FirstOrDefault(n => string.Equals(n, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (name is not null)
+        {
+            return Enum.Parse<LogLevel>(name);
+        }
+
+        warning = $"Warning: invalid {Variable} '{trimmed}'; expected Trace, Debug, Information, Warning, Error, Critical or None. Using Warning.";
+        return LogLevel.Warning;
     }
 }

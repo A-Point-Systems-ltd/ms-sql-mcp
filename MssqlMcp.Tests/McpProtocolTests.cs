@@ -33,6 +33,7 @@ public sealed class McpProtocolTests
 
         Assert.Equal(23, tools.Count);
         Assert.DoesNotContain(tools, t => t.Name == ToolNames.RunScript);
+        Assert.DoesNotContain(tools, t => t.Name == ToolNames.DdlHistory);
         Assert.Equal(ToolNames.All.OrderBy(n => n, StringComparer.Ordinal), tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
         foreach (var tool in tools)
         {
@@ -46,6 +47,20 @@ public sealed class McpProtocolTests
 
             Assert.DoesNotContain("cancellationToken", tool.ProtocolTool.InputSchema.GetRawText(), StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    /// <summary>Cursor shows every stderr line as an error, so a normal session must not write info-level logs there.</summary>
+    [SkippableFact]
+    public async Task A_normal_session_writes_no_info_lines_to_stderr()
+    {
+        var stderr = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var client = await StartClientAsync(null, insights: false, stderrLines: stderr.Enqueue);
+        await using (client)
+        {
+            Assert.Equal(23, (await client.ListToolsAsync()).Count);
+        }
+
+        Assert.DoesNotContain(stderr, line => line.StartsWith("info:", StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -151,6 +166,25 @@ public sealed class McpProtocolTests
         Assert.Contains(ToolNames.RunScript, text, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Ddl_history_without_the_runner_env_var_gets_unknown_tool_error_in_multi_connection_mode()
+    {
+        await using var client = await StartClientAsync(multiConnection: true);
+
+        string text;
+        try
+        {
+            text = Text(await client.CallToolAsync(ToolNames.DdlHistory, new Dictionary<string, object?> { ["action"] = "status" }));
+        }
+        catch (ModelContextProtocol.McpException ex)
+        {
+            text = ex.Message;
+        }
+
+        Assert.DoesNotContain("connection", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(ToolNames.DdlHistory, text, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Two throwaway LocalDB databases, the real server over stdio, the Insights layer ON:
     /// concurrent calls land on the database they name, and a read-only profile writes nothing.
@@ -216,7 +250,7 @@ public sealed class McpProtocolTests
     }
 
     /// <summary>
-    /// MSSQL_SCRIPT_RUNNER=true adds run_script (24 tools); it runs batches on a read/write profile and refuses writes
+    /// MSSQL_SCRIPT_RUNNER=true adds run_script and ddl_history (25 tools); run_script runs batches on a read/write profile and refuses writes
     /// on a read-only one. A scratch database stands in for CONNECTION_STRING so a regression cannot leave a table behind.
     /// </summary>
     [SkippableFact]
@@ -227,9 +261,10 @@ public sealed class McpProtocolTests
         await using var client = await StartClientAsync(TwoProfiles(cs), insights: false, scriptRunner: true);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(24, tools.Count);
+        Assert.Equal(25, tools.Count);
         var runScript = Assert.Single(tools, t => t.Name == ToolNames.RunScript);
         Assert.True(runScript.ProtocolTool.Annotations?.DestructiveHint);
+        Assert.Single(tools, t => t.Name == ToolNames.DdlHistory);
 
         var main = await client.CallToolAsync(
             ToolNames.RunScript,
@@ -262,6 +297,20 @@ public sealed class McpProtocolTests
         }
 
         Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, "SELECT CASE WHEN OBJECT_ID(N'dbo.never_created') IS NULL THEN 1 ELSE 0 END"));
+
+        var status = await client.CallToolAsync(
+            ToolNames.DdlHistory,
+            new Dictionary<string, object?> { ["action"] = "status", ["connection"] = "ro" });
+        using (var doc = System.Text.Json.JsonDocument.Parse(Text(status)))
+        {
+            var root = doc.RootElement;
+            Assert.True(root.GetProperty("success").GetBoolean(), Text(status));
+            var data = root.GetProperty("data");
+            Assert.False(data.GetProperty("tableExists").GetBoolean());
+            Assert.False(data.GetProperty("triggerExists").GetBoolean());
+            Assert.False(data.GetProperty("triggerEnabled").GetBoolean());
+            Assert.False(data.GetProperty("canInstall").GetBoolean());
+        }
     }
 
     /// <summary>
@@ -376,7 +425,9 @@ public sealed class McpProtocolTests
     /// <param name="insights">Value of USE_INSIGHTS_LAYER for the server process.</param>
     /// <param name="scriptRunner">True sets MSSQL_SCRIPT_RUNNER=true (registers run_script); false removes it.</param>
     /// <param name="protocolVersion">MCP revision the client requests; null keeps the SDK default.</param>
-    private static async Task<McpClient> StartClientAsync(string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null)
+    /// <param name="stderrLines">Receives each line the server writes to stderr; null discards them.</param>
+    private static async Task<McpClient> StartClientAsync(
+        string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null, Action<string>? stderrLines = null)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -393,8 +444,10 @@ public sealed class McpProtocolTests
                 ["MSSQL_CONNECTIONS_FILE"] = null,
                 ["USE_INSIGHTS_LAYER"] = insights ? "true" : "false",
                 ["MSSQL_SCRIPT_RUNNER"] = scriptRunner ? "true" : null,
+                ["MSSQL_CONSOLE_LOG_LEVEL"] = null,
                 ["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log"),
             },
+            StandardErrorLines = stderrLines,
         });
 
         try

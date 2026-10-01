@@ -141,7 +141,8 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 | `MSSQL_ADHOC_ALLOWED_HOSTS` | No | any host | Comma-separated host names. When set, ad-hoc connections are refused unless the host part of `Data Source` (without `tcp:`, instance or port) matches one of them, case-insensitively. |
 | `USE_INSIGHTS_LAYER` | No | enabled | Opt-**out** switch. Set to `false`, `0`, `no`, `off`, or `disabled` to disable the AI Insights layer. Any other value (including unset) leaves it enabled. |
 | `INSIGHTS_AUTOPOPULATE` | No | enabled | Opt-out. When enabled (and insights layer is on), introspection auto-creates mechanical baseline insights and attaches enrichment directives. Set to a falsey value to disable auto-population only. |
-| `MSSQL_SCRIPT_RUNNER` | No | disabled | Set to `true` to register the extension-only `run_script` tool. For the VS Code extension's private runner process only; do not enable it for agent clients. See [Script runner (extension only)](#script-runner-extension-only). |
+| `MSSQL_SCRIPT_RUNNER` | No | disabled | Set to `true` to register the extension-only `run_script` and `ddl_history` tools. For the VS Code extension's private runner process only; do not enable it for agent clients. See [Script runner (extension only)](#script-runner-extension-only) and [DDL history (extension only)](#ddl-history-extension-only). |
+| `MSSQL_CONSOLE_LOG_LEVEL` | No | `Warning` | Minimum level of the console logger, which writes to stderr (stdout carries the MCP protocol). One of `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None` (case-insensitive). Some clients (Cursor) show every stderr line as `[error]`, so the default keeps routine `info:` lines out of their logs. An invalid value falls back to `Warning` and writes one warning line to stderr. `FATAL:` startup messages are always written. The `LOG_FILE_PATH` log is not affected. |
 | `LOG_FILE_PATH` | No | `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/macOS) | Full file path, or a directory (timestamped log files are created inside it). |
 
 When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the server also enables baseline row-count probing, baseline refresh during DDL scans, and `insightEnrichment` response directives (all derived from those two flags — there are no separate env vars for them).
@@ -237,6 +238,18 @@ This keeps destructive operations behind an explicitly flagged tool and prevents
 - On a read-only connection every batch must be a single read-only `SELECT` (the `read_data` rules) and runs inside a transaction that is always rolled back; other batches are refused with an `error` message that starts with `Read-only connection: only a single read-only SELECT per batch can run here.` and gives a short reason (no agent-tool advice). Comment-only batches are skipped silently there.
 - When `MSSQL_SCRIPT_RUNNER` is not set, `run_script` is an unknown tool (no connection routing either).
 - On a read/write connection, a transaction the script leaves open is rolled back at the end with a `warning`: each run uses a new session, so `COMMIT` in the same run.
+
+### DDL history (extension only)
+
+`ddl_history` backs the extension's per-connection DDL-history diff. Like `run_script`, it is **not** one of the 23 agent tools: it is listed and routed only when `MSSQL_SCRIPT_RUNNER=true`, and is otherwise an unknown tool. It reads `dbo.DDL_AuditLog`, which the `DDL_Audit` database trigger fills with one row per DDL statement (the same table and trigger that the AI Insights layer uses).
+
+- Arguments: `action` (required: `status`, `install`, `list` or `get`, case-insensitive), `schema`, `name`, `id`, `top` (default 100, clamped to 1..500), `connection`.
+- `status` returns `data: { tableExists, triggerExists, triggerEnabled, canInstall }`. The trigger is the database-level trigger (`sys.triggers`, `parent_class = 0`) named `DDL_Audit`. `canInstall` is true when the connection is read/write and the table or the trigger is missing.
+- `install` creates `dbo.DDL_AuditLog` if it is missing, then the `DDL_Audit` trigger if it is missing (from the same embedded script as `install_insights_layer`; SQL Server 2008 R2+). The batches run one by one, with no transaction around them. **It never alters, drops or enables an existing table or trigger**, which may belong to another team. Returns `data: { createdTable, createdTrigger, triggerEnabled }`. When an existing `DDL_Audit` is disabled, it stays disabled: `triggerEnabled` is false and `data.warning` is `DDL_Audit exists but is disabled; it was left unchanged.` Refused on read-only connections. Creating a database DDL trigger needs `ALTER ANY DATABASE DDL TRIGGER` (or `db_owner` / `db_ddladmin`).
+- `list` (needs `name`; `schema` is optional) returns the newest `top` entries for that object, newest first: `data: [{ id, postTime, loginName, hostName, programName, eventType, objectType, schemaName, length }]`. `postTime` is ISO 8601 server local time (`yyyy-MM-ddTHH:mm:ss.fff`); `length` is the length of the command text. When `schema` is given, entries with no schema are included too. The names are compared to their first 100 characters, as the trigger stores them.
+- `get` (needs `id`) returns one entry with its full command text: `data: { id, postTime, loginName, eventType, objectType, schemaName, objectName, commandText }`. An unknown id is an error.
+- `list` and `get` fail with `DDL history is not installed on this database (dbo.DDL_AuditLog is missing).` when the table is missing.
+- On read-only connections `status`, `list` and `get` are plain `SELECT`s and write nothing.
 
 ## Multiple connections
 

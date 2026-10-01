@@ -55,6 +55,7 @@ public sealed class ConnectionRoutingFilterTests
     [InlineData(ToolNames.ReadData, true)]
     [InlineData(ToolNames.ExecuteSql, true)]
     [InlineData(ToolNames.RunScript, false)]
+    [InlineData(ToolNames.DdlHistory, false)]
     public void Only_known_data_tools_are_routed(string tool, bool routed) =>
         Assert.Equal(routed, ConnectionRoutingFilter.IsRouted(tool));
 
@@ -63,6 +64,8 @@ public sealed class ConnectionRoutingFilterTests
     {
         Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.RunScript, scriptRunnerEnabled: false));
         Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.RunScript, scriptRunnerEnabled: true));
+        Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.DdlHistory, scriptRunnerEnabled: false));
+        Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.DdlHistory, scriptRunnerEnabled: true));
         Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.ReadData, scriptRunnerEnabled: true));
         Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.ListConnections, scriptRunnerEnabled: true));
     }
@@ -78,6 +81,16 @@ public sealed class ConnectionRoutingFilterTests
         Assert.DoesNotContain(ToolNames.RunScript, ToolNames.All);
         Assert.DoesNotContain(ToolNames.RunScript, ToolNames.WriteTools);
         Assert.Null(ConnectionRoutingFilter.Route(Multi(), ToolNames.RunScript, "ro", out var p));
+        Assert.True(p!.ReadOnly);
+    }
+
+    [Fact]
+    public void Ddl_history_is_an_extension_only_tool_that_handles_read_only_itself()
+    {
+        Assert.Contains(ToolNames.DdlHistory, ToolNames.ExtensionOnlyTools);
+        Assert.DoesNotContain(ToolNames.DdlHistory, ToolNames.All);
+        Assert.DoesNotContain(ToolNames.DdlHistory, ToolNames.WriteTools);
+        Assert.Null(ConnectionRoutingFilter.Route(Multi(), ToolNames.DdlHistory, "ro", out var p));
         Assert.True(p!.ReadOnly);
     }
 
