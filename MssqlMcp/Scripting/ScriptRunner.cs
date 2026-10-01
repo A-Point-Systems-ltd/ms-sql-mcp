@@ -89,9 +89,7 @@ internal static class ScriptRunner
         void AddError(SqlError error)
         {
             var line = ScriptLine(error);
-            var header = !string.IsNullOrEmpty(error.Procedure)
-                ? $"Msg {error.Number}, Level {error.Class}, State {error.State}, Procedure {error.Procedure}, Line {line ?? error.LineNumber}"
-                : $"Msg {error.Number}, Level {error.Class}, State {error.State}" + (line is null ? string.Empty : $", Line {line}");
+            var header = FormatErrorHeader(error.Number, error.Class, error.State, error.Procedure, line ?? error.LineNumber);
             messages.Add(new ScriptMessage("error", header + Environment.NewLine + error.Message, line));
             hadErrors = true;
         }
@@ -185,7 +183,11 @@ internal static class ScriptRunner
                 {
                     await RollBackOpenTransactionsAsync(conn, messages, ct).ConfigureAwait(false);
                 }
-                catch (SqlException ex) when (!ct.IsCancellationRequested)
+                catch (Exception ex) when (ex is not OperationCanceledException && ct.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException("The script run was cancelled.", ex, ct);
+                }
+                catch (SqlException ex)
                 {
                     foreach (SqlError error in ex.Errors)
                     {
@@ -196,6 +198,12 @@ internal static class ScriptRunner
 
             return Finish();
         }
+        catch (OperationCanceledException) when (!readOnly)
+        {
+            // The script may have left a transaction open (with locks) on this still-open connection.
+            await RollBackAfterCancellationAsync(conn, logger).ConfigureAwait(false);
+            throw;
+        }
         finally
         {
             conn.InfoMessage -= OnInfoMessage;
@@ -203,6 +211,18 @@ internal static class ScriptRunner
         }
 
         ScriptRunResult Finish() => new(resultSets, messages, hadErrors, batches.Count, stopwatch.ElapsedMilliseconds);
+    }
+
+    /// <summary>SSMS-style error header. The <c>, Line n</c> part is omitted when the effective line is 0 or unknown.</summary>
+    internal static string FormatErrorHeader(int number, int level, int state, string? procedure, int effectiveLine)
+    {
+        var header = $"Msg {number}, Level {level}, State {state}";
+        if (!string.IsNullOrEmpty(procedure))
+        {
+            header += $", Procedure {procedure}";
+        }
+
+        return effectiveLine > 0 ? $"{header}, Line {effectiveLine}" : header;
     }
 
     private static async Task ExecuteBatchAsync(
@@ -312,6 +332,28 @@ internal static class ScriptRunner
 
         /// <summary>True once a row was dropped because the budget was used up.</summary>
         public bool Exhausted { get; set; }
+    }
+
+    /// <summary>
+    /// Best effort after a cancelled read/write run: end any transaction the script left open so its locks are released even
+    /// though the connection stays open. Never throws; the caller rethrows the cancellation.
+    /// </summary>
+    private static async Task RollBackAfterCancellationAsync(SqlConnection conn, ILogger logger)
+    {
+        try
+        {
+            if (conn.State != ConnectionState.Open)
+            {
+                return;
+            }
+
+            await using var rollback = new SqlCommand("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;", conn) { CommandTimeout = 5 };
+            await rollback.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("Rollback after a cancelled script run failed: {Message}", ex.Message);
+        }
     }
 
     /// <summary>Each run is its own session: a transaction left open would roll back invisibly on dispose, so say so.</summary>

@@ -180,6 +180,69 @@ public sealed class ScriptRunnerTests
     }
 
     [SkippableFact]
+    public async Task Cancellation_rolls_back_an_open_transaction_and_releases_its_locks()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+        await ScratchDatabases.ExecAsync(cs, "CREATE TABLE dbo.T (i int)");
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+
+        // The connection stays open (as in a pooled session), so only the runner's own rollback can release the lock.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => ScriptRunner.RunAsync(conn, "BEGIN TRAN;\nINSERT dbo.T VALUES (1);\nWAITFOR DELAY '00:00:30';", readOnly: false, 1000, cts.Token));
+
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, "SET LOCK_TIMEOUT 2000; SELECT COUNT(*) FROM dbo.T"));
+        await using var count = new SqlCommand("SELECT @@TRANCOUNT", conn);
+        Assert.Equal(0, (int)(await count.ExecuteScalarAsync())!);
+    }
+
+    [SkippableFact]
+    public async Task Cancellation_after_the_last_batch_still_surfaces_as_operation_cancelled_and_rolls_back()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+        await ScratchDatabases.ExecAsync(cs, "CREATE TABLE dbo.T (i int)");
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync();
+        using var cts = new CancellationTokenSource();
+        void CancelOnPrint(object sender, SqlInfoMessageEventArgs e) => cts.Cancel();
+        conn.InfoMessage += CancelOnPrint;
+
+        // PRINT is the last thing the script does; the token is cancelled while the runner finishes up.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => ScriptRunner.RunAsync(conn, "BEGIN TRAN;\nINSERT dbo.T VALUES (1);\nPRINT 'done';", readOnly: false, 1000, cts.Token));
+
+        conn.InfoMessage -= CancelOnPrint;
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, "SET LOCK_TIMEOUT 2000; SELECT COUNT(*) FROM dbo.T"));
+    }
+
+    [SkippableFact]
+    public async Task Read_only_batch_runs_inside_a_transaction()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+
+        var result = await RunAsync(cs, "SELECT @@TRANCOUNT AS t", readOnly: true);
+
+        Assert.False(result.HadErrors, string.Join(" | ", result.Messages.Select(m => m.Text)));
+        Assert.Equal(1, Assert.Single(result.ResultSets).Rows[0][0]);
+    }
+
+    [Theory]
+    [InlineData("dbo.p", 7, "Msg 50000, Level 16, State 1, Procedure dbo.p, Line 7")]
+    [InlineData("dbo.p", 0, "Msg 50000, Level 16, State 1, Procedure dbo.p")]
+    [InlineData("dbo.p", -1, "Msg 50000, Level 16, State 1, Procedure dbo.p")]
+    [InlineData(null, 4, "Msg 50000, Level 16, State 1, Line 4")]
+    [InlineData(null, 0, "Msg 50000, Level 16, State 1")]
+    [InlineData("", 0, "Msg 50000, Level 16, State 1")]
+    public void Error_header_drops_the_line_when_it_is_unknown(string? procedure, int line, string expected)
+    {
+        Assert.Equal(expected, ScriptRunner.FormatErrorHeader(50000, 16, 1, procedure, line));
+    }
+
+    [SkippableFact]
     public async Task Read_only_skips_comment_only_batches_silently()
     {
         var (scratch, cs) = await ScratchAsync();
