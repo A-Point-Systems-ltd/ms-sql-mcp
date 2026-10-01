@@ -10,6 +10,18 @@
         "LOG_FILE_PATH": "C:\\Development\\MCPs\\MS-SQL\\log\\mssql_mcp_log.txt"
       },
       "disabled": false
+    },
+    "MSSQL-MCP-multi": {
+      "type": "stdio",
+      "command": "C:\\Development\\MCPs\\MS-SQL\\MssqlMcp\\Bin\\Debug\\net10.0\\MssqlMcp.exe",
+      "env": {
+        "MSSQL_CONNECTIONS": "[{\"name\":\"dev\",\"connectionString\":\"Server=DC\\\\DEV;Database=EasyHouse;Trusted_Connection=True;TrustServerCertificate=True\"},{\"name\":\"reports\",\"connectionString\":\"Server=DC\\\\DEV;Database=master;Trusted_Connection=True;TrustServerCertificate=True\",\"readOnly\":true}]",
+        "MSSQL_ALLOW_ADHOC_CONNECTIONS": "false",
+        "USE_INSIGHTS_LAYER": "true",
+        "INSIGHTS_AUTOPOPULATE": "true",
+        "LOG_FILE_PATH": "C:\\Development\\MCPs\\MS-SQL\\log\\mssql_mcp_log_multi.txt"
+      },
+      "disabled": true
     }
   }
 }

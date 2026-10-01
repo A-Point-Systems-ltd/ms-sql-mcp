@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using Mssql.McpServer.Connections;
 using Mssql.McpServer.InsightsLayer;
 using Mssql.McpServer.InsightsLayer.Models;
 
@@ -16,12 +17,20 @@ public partial class Tools(
     ISqlConnectionFactory connectionFactory,
     IInsightsLayerService insightsLayer,
     IInsightDdlProcessingQueue insightDdlProcessingQueue,
-    ILogger<Tools> logger)
+    ILogger<Tools> logger,
+    ConnectionRegistry connections)
 {
     private readonly ISqlConnectionFactory _connectionFactory = connectionFactory;
     private readonly IInsightsLayerService _insightsLayer = insightsLayer;
     private readonly IInsightDdlProcessingQueue _insightDdlProcessingQueue = insightDdlProcessingQueue;
     private readonly ILogger<Tools> _logger = logger;
+    private readonly ConnectionRegistry _connections = connections;
+
+    internal const string ConnectionParamDescription =
+        "Name of the database connection to run against (see " + ToolNames.ListConnections + "). REQUIRED whenever the server has more than one connection - " +
+        "there is no default connection, and omitting it returns an error listing the valid names. May be omitted only when exactly one connection exists.";
+
+    internal const string MultiConnectionNote = " With more than one connection, pass 'connection' (see " + ToolNames.ListConnections + ").";
 
     /// <summary>
     /// Best-effort: attaches cached AI insight metadata to introspection tool payloads.

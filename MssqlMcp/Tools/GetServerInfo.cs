@@ -52,8 +52,10 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns SQL Server metadata in three sections: 'server' (ProductVersion/ProductLevel/Edition/EngineEdition/ServerName/MachineName/InstanceName/IsClustered/IsFullTextInstalled/IsIntegratedSecurityOnly/Collation/@@VERSION), 'hardware' (cpuCount, hyperthreadRatio, physicalMemoryMB, virtualMemoryMB, sqlServerStartTime, optional 'warning' string), and 'databases' (totalDatabases/onlineDatabases/offlineDatabases excluding system DBs). Compatible with SQL Server 2008 R2 through 2022 and Azure SQL. When VIEW SERVER STATE is restricted or a DMV column does not exist on the target version, hardware fields are returned as null and 'hardware.warning' explains why; the call still succeeds.")]
-    public async Task<DbOperationResult> GetServerInfo(CancellationToken cancellationToken = default)
+        Description("Returns SQL Server metadata in three sections: 'server' (ProductVersion/ProductLevel/Edition/EngineEdition/ServerName/MachineName/InstanceName/IsClustered/IsFullTextInstalled/IsIntegratedSecurityOnly/Collation/@@VERSION), 'hardware' (cpuCount, hyperthreadRatio, physicalMemoryMB, virtualMemoryMB, sqlServerStartTime, optional 'warning' string), and 'databases' (totalDatabases/onlineDatabases/offlineDatabases excluding system DBs). Compatible with SQL Server 2008 R2 through 2022 and Azure SQL. When VIEW SERVER STATE is restricted or a DMV column does not exist on the target version, hardware fields are returned as null and 'hardware.warning' explains why; the call still succeeds." + MultiConnectionNote)]
+    public async Task<DbOperationResult> GetServerInfo(
+        [Description(ConnectionParamDescription)] string? connection = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {

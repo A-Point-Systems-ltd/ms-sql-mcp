@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -5,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
+using Mssql.McpServer.Connections;
 using Mssql.McpServer.InsightsLayer.Models;
 
 namespace Mssql.McpServer.InsightsLayer;
@@ -38,7 +40,16 @@ public sealed class InsightsLayerService(
         string? Fingerprint);
     private sealed record ObjectIdentity(string ObjectType, string SchemaName, string ObjectName);
 
-    public bool IsEnabled => InsightsLayerEnvironment.IsInsightsLayerEnabled;
+    public bool IsEnabled => InsightsLayerEnvironment.IsInsightsLayerEnabled && CurrentConnection.Value is not { InsightsEnabled: false };
+
+    /// <summary>
+    /// False on a read-only profile: the layer then only reads (cached insights are still returned) and
+    /// never inserts, updates, archives or advances the watermark, so read-only means zero writes.
+    /// </summary>
+    private static bool CanWrite => CurrentConnection.Value is not { ReadOnly: true };
+
+    private static DbOperationResult ReadOnlyRefusal() =>
+        new(success: false, error: "The connection is read-only; the AI Insights layer does not write on read-only connections.");
 
     public async Task<LayerStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
@@ -137,6 +148,11 @@ public sealed class InsightsLayerService(
         if (!IsEnabled)
         {
             return await NoOpInsightsLayerService.Instance.InstallLayerAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!CanWrite)
+        {
+            return ReadOnlyRefusal();
         }
 
         try
@@ -290,7 +306,12 @@ public sealed class InsightsLayerService(
                 return (insight, InsightFreshness.AccessDenied);
             }
 
-            await ArchiveInsightAsync(conn, insight.InsightId, "ObjectMissing", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            // Read-only: report the row as stale without archiving it.
+            if (CanWrite)
+            {
+                await ArchiveInsightAsync(conn, insight.InsightId, "ObjectMissing", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            }
+
             return (null, InsightFreshness.StaleArchived);
         }
 
@@ -312,7 +333,11 @@ public sealed class InsightsLayerService(
                 live.ModifyDate,
                 live.Fingerprint))
         {
-            await ArchiveInsightAsync(conn, insight.InsightId, "FingerprintMismatch", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            if (CanWrite)
+            {
+                await ArchiveInsightAsync(conn, insight.InsightId, "FingerprintMismatch", "GetInsight", null, cancellationToken).ConfigureAwait(false);
+            }
+
             return (null, InsightFreshness.StaleArchived);
         }
 
@@ -361,7 +386,7 @@ public sealed class InsightsLayerService(
         string objectName,
         CancellationToken cancellationToken = default)
     {
-        if (!IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled)
+        if (!IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled || !CanWrite)
         {
             return await GetInsightForObjectAsync(objectType, schemaName, objectName, cancellationToken).ConfigureAwait(false);
         }
@@ -415,6 +440,11 @@ public sealed class InsightsLayerService(
         if (!IsEnabled)
         {
             return await NoOpInsightsLayerService.Instance.UpsertInsightAsync(input, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!CanWrite)
+        {
+            return ReadOnlyRefusal();
         }
 
         var schema = NormalizeSchema(input.SchemaName);
@@ -585,17 +615,19 @@ public sealed class InsightsLayerService(
     private const int FingerprintScanBatchSize = 500;
 
     /// <summary>
-    /// InsightID after which the next fingerprint scan starts. In memory only: after a restart the
+    /// InsightID after which the next fingerprint scan starts, per connection. In memory only: after a restart the
     /// rotation starts again from the beginning, which is harmless.
     /// </summary>
-    private int _fingerprintScanCursor;
+    private readonly ConcurrentDictionary<string, int> _scanCursorByConnection = new(StringComparer.OrdinalIgnoreCase);
+
+    private static string CursorKey => CurrentConnection.Value?.Name ?? string.Empty;
 
     public async Task<bool> ProcessDdlChangesAsync(CancellationToken cancellationToken = default) =>
         await RunDdlProcessingAsync(cancellationToken).ConfigureAwait(false) != DdlProcessingOutcome.SkippedBusy;
 
     private async Task<DdlProcessingOutcome> RunDdlProcessingAsync(CancellationToken cancellationToken)
     {
-        if (!IsEnabled)
+        if (!IsEnabled || !CanWrite)
         {
             return DdlProcessingOutcome.Disabled;
         }
@@ -1447,12 +1479,12 @@ public sealed class InsightsLayerService(
     /// <summary>
     /// Background staleness check. Rows whose object still exists with the same object_id, name and
     /// modify_date (within <see cref="ModifyDateTolerance"/>) are filtered out in SQL; only the rest
-    /// get a live fingerprint. The scan starts after <see cref="_fingerprintScanCursor"/> and wraps,
+    /// get a live fingerprint. The scan starts after <see cref="_scanCursorByConnection"/> and wraps,
     /// so every row is eventually covered.
     /// </summary>
     private async Task<List<ObjectIdentity>> ScanFingerprintsAndArchiveAsync(SqlConnection conn, int take, CancellationToken cancellationToken)
     {
-        var cursor = Volatile.Read(ref _fingerprintScanCursor);
+        var cursor = _scanCursorByConnection.GetValueOrDefault(CursorKey);
         await using var cmd = new SqlCommand(
             """
             SELECT TOP (@Take)
@@ -1494,7 +1526,7 @@ public sealed class InsightsLayerService(
             }
         }
 
-        Volatile.Write(ref _fingerprintScanCursor, NextFingerprintScanCursor(rows.Select(r => r.Id).ToList(), take));
+        _scanCursorByConnection[CursorKey] = NextFingerprintScanCursor(rows.Select(r => r.Id).ToList(), take);
 
         var missingTrustedBySchema = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)

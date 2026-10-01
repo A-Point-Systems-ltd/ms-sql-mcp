@@ -15,11 +15,12 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Returns the cached AI insight for a single database object plus a freshness state. Response shape: { insight: {...} | null, insightFreshness: 'LayerDisabled' | 'Absent' | 'Fresh' | 'StaleArchived' | 'AccessDenied' | 'DefinitionUnavailable' }. If the live schema fingerprint has changed (object dropped or modified), the stored row is auto-archived to AIInsights.InsightHistory and freshness becomes 'StaleArchived'. After 'StaleArchived' or 'Absent', re-investigate the object and call " + ToolNames.UpsertInsight + ".")]
+        Description("Returns the cached AI insight for a single database object plus a freshness state. Response shape: { insight: {...} | null, insightFreshness: 'LayerDisabled' | 'Absent' | 'Fresh' | 'StaleArchived' | 'AccessDenied' | 'DefinitionUnavailable' }. If the live schema fingerprint has changed (object dropped or modified), the stored row is auto-archived to AIInsights.InsightHistory and freshness becomes 'StaleArchived' (on a read-only connection nothing is written: the row is reported 'StaleArchived' but left in place). After 'StaleArchived' or 'Absent', re-investigate the object and call " + ToolNames.UpsertInsight + "." + MultiConnectionNote)]
     public async Task<DbOperationResult> GetInsight(
         [Description("Object name without schema (e.g. 'TableProblems'). Case follows SQL Server collation.")] string objectName,
         [Description("Schema name. Pass 'dbo' explicitly when the object lives in dbo; pass null only when schema is unknown.")] string? schemaName = null,
         [Description("Object type label as stored in AIInsights: 'Table' | 'View' | 'Procedure' | 'Function' | 'Trigger'. Defaults to 'Table'.")] string objectType = "Table",
+        [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {
         try

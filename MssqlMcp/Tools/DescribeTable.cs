@@ -27,7 +27,7 @@ public partial class Tools
     private const string DescribeTableIndexesQuery = @"SELECT i.name, i.type_desc AS type, p.value AS description,
             STUFF((SELECT ',' + c.name FROM sys.index_columns ic
                 INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 1, '') AS keys
+                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id ORDER BY ic.key_ordinal FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '') AS keys
             FROM sys.indexes i
             LEFT JOIN sys.extended_properties p ON p.major_id = i.object_id AND p.minor_id = i.index_id AND p.name = 'MS_Description'
             WHERE i.object_id = @ObjectId AND i.is_primary_key = 0 AND i.is_unique_constraint = 0";
@@ -35,7 +35,7 @@ public partial class Tools
     private const string DescribeTableConstraintsQuery = @"SELECT kc.name, kc.type_desc AS type,
             STUFF((SELECT ',' + c.name FROM sys.index_columns ic
                 INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-                WHERE ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id ORDER BY ic.key_ordinal FOR XML PATH('')), 1, 1, '') AS keys
+                WHERE ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id ORDER BY ic.key_ordinal FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '') AS keys
             FROM sys.key_constraints kc
             WHERE kc.parent_object_id = @ObjectId";
 
@@ -96,9 +96,10 @@ WHERE tr.parent_id = @ObjectId";
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call " + ToolNames.UpsertInsight + " using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation; the cache remains stuck at auto-mechanical (confidence 0.30). Returns: table identity, columns (type/length/precision/scale/nullable/description), indexes, key constraints, foreign keys (both column lists), triggers (enabled flag + events). When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments. Prefer this over multiple sys.* queries for a single table.")]
+        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call " + ToolNames.UpsertInsight + " using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation; the cache remains stuck at auto-mechanical (confidence 0.30). Returns: table identity, columns (type/length/precision/scale/nullable/description), indexes, key constraints, foreign keys (both column lists), triggers (enabled flag + events). When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments. Prefer this over multiple sys.* queries for a single table." + MultiConnectionNote)]
     public async Task<DbOperationResult> DescribeTable(
         [Description("Table name: 'table', 'schema.table' or 'database.schema.table' (database must be the connected one). Parts may be [bracketed] or \"quoted\". When schema is omitted and the name exists in several schemas, dbo wins, otherwise the first schema alphabetically.")] string name,
+        [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {
         if (!ObjectNameParser.TryParse(name, out ObjectNameParts parts, out var parseError))

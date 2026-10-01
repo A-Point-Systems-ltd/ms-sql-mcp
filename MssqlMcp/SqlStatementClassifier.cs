@@ -36,7 +36,14 @@ internal static class SqlStatementClassifier
     public static bool IsReadOnlyQuery(string sql) =>
         TryValidateReadOnly(sql, out _);
 
-    public static bool TryValidateReadOnly(string sql, out string? error)
+    public static bool TryValidateReadOnly(string sql, out string? error) =>
+        TryValidateReadOnly(sql, editorWording: false, out error);
+
+    /// <summary>
+    /// The same gate as <see cref="TryValidateReadOnly(string, out string?)"/>. With <paramref name="editorWording"/>,
+    /// <paramref name="error"/> is a short reason for a person in a query window and names no agent tool.
+    /// </summary>
+    public static bool TryValidateReadOnly(string sql, bool editorWording, out string? error)
     {
         if (!TryParseSingleStatement(sql, out var statement, out error))
         {
@@ -45,13 +52,15 @@ internal static class SqlStatementClassifier
 
         if (statement is not SelectStatement select)
         {
-            error = ReadDataRejectedMessage;
+            error = editorWording ? "The batch is not a SELECT query." : ReadDataRejectedMessage;
             return false;
         }
 
         if (select.Into is not null)
         {
-            error = $"SELECT ... INTO is not allowed in {ToolNames.ReadData}. Use {ToolNames.ExecuteSql}.";
+            error = editorWording
+                ? "SELECT ... INTO creates a table."
+                : $"SELECT ... INTO is not allowed in {ToolNames.ReadData}. Use {ToolNames.ExecuteSql}.";
             return false;
         }
 
@@ -59,7 +68,9 @@ internal static class SqlStatementClassifier
         select.Accept(visitor);
         if (visitor.Offender is not null)
         {
-            error = $"{visitor.Offender} is not allowed in {ToolNames.ReadData} (it can reach outside this database).";
+            error = editorWording
+                ? $"{visitor.Offender} can reach outside this database."
+                : $"{visitor.Offender} is not allowed in {ToolNames.ReadData} (it can reach outside this database).";
             return false;
         }
 

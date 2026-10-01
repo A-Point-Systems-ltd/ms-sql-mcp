@@ -13,9 +13,10 @@ public partial class Tools
         Title = "Update Data",
         ReadOnly = false,
         Destructive = true),
-        Description("Updates rows from a single UPDATE T-SQL statement; any other statement type is rejected. DESTRUCTIVE - always include a WHERE clause. Returns rowsAffected. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), a background DDL/fingerprint reconciliation is queued after success.")]
+        Description("Updates rows from a single UPDATE T-SQL statement; any other statement type is rejected. DESTRUCTIVE - always include a WHERE clause. Returns rowsAffected. Unless the AI Insights layer is disabled (USE_INSIGHTS_LAYER=false/0/off), a background DDL/fingerprint reconciliation is queued after success." + MultiConnectionNote)]
     public Task<DbOperationResult> UpdateData(
         [Description("A complete UPDATE T-SQL statement. WHERE clause strongly recommended to avoid full-table updates.")] string sql,
+        [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default) =>
         ExecuteWriteAsync(sql, SqlStatementKind.Update, ToolNames.UpdateData, includeRowsAffected: true, cancellationToken);
 }

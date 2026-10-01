@@ -1,0 +1,20 @@
+# Source and build config — not shipped in the .vsix
+src/**
+scripts/**
+test/**
+docs/**
+node_modules/**
+.vscode/**
+**/*.ts
+**/*.map
+tsconfig.json
+package-lock.json
+.gitignore
+.vscodeignore
+
+# Keep in the package: out/ (compiled JS), bin/ (bundled exe), package.json,
+# README.md, CHANGELOG.md, LICENSE, media/.
+
+# Local secrets — never package into the .vsix
+.env
+.env.*

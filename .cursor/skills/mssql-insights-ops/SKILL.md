@@ -19,7 +19,9 @@ MCP wire tool names are **snake_case** (ModelContextProtocol SDK 2.x default). U
 ## Quick orientation
 
 - Server: .NET 10 stdio MCP server (`MssqlMcp.exe`)
-- Connection: `CONNECTION_STRING` env var (Windows auth or SQL auth)
+- Connection: `CONNECTION_STRING` env var (single connection) or `MSSQL_CONNECTIONS` / `MSSQL_CONNECTIONS_FILE` (several named connections)
+- **Connections first:** call `list_connections` at the start of every session. If `connectionRequired` is `true` (more than one connection is registered, open or closed), pass `connection="<name>"` on EVERY other tool call; there is no default connection. If it is `false`, `connection` may be omitted.
+- Connections are independent databases: never assume an object or insight from one exists in another. Read-only connections refuse `execute_sql`, `insert_data`, `update_data`, `create_table`, `drop_table`, `upsert_insight`, `install_insights_layer`, `refresh_insights` and `rebuild_baseline_insights`.
 - Insights layer: enabled by default, use mcp.json param `USE_INSIGHTS_LAYER=false` to disable. When enabled:
   - Introspection tools attach `insight` + `insightFreshness` to responses.
   - Auto-population is enabled by default (`INSIGHTS_AUTOPOPULATE=true`) and controls the full auto flow: baseline creation, baseline refresh during scans, and enrichment directives.
@@ -73,6 +75,12 @@ Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leavi
 - `describe_table`, `describe_view`, `get_object` (StoredProcedure / Function / Trigger)
 - `read_data` — **all** read-only `SELECT` queries (including `sys.*`, `INFORMATION_SCHEMA`, DMVs). `execute_sql` rejects SELECT.
 
+### Connection management
+- `list_connections` — name, open/closed, read-only, server, database, plus `connectionRequired`. Call first.
+- `open_connection` — reopen a configured connection, or register an ad-hoc one from a connection string (only if the operator enabled `MSSQL_ALLOW_ADHOC_CONNECTIONS`; ad-hoc is read-only by default).
+- `close_connection` — close a connection; the last open one cannot be closed.
+- These three take no `connection` argument. After `open_connection` / `close_connection`, re-check `connectionRequired`.
+
 ### Server metadata
 - `get_server_info` — version, edition, hardware, DB counts. Some fields may be `null` with a `hardware.warning` string when permissions/version restrict DMVs.
 
@@ -96,9 +104,10 @@ Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leavi
 Copy this checklist and track progress:
 
 ```
+- [ ] 0. list_connections (note connectionRequired; if true, pass `connection` on every call below)
 - [ ] 1. get_server_info (note version)
 - [ ] 2. insights_check (verify layer state)
-- [ ] 3. install_insights_layer (only if missing or trigger disabled)
+- [ ] 3. install_insights_layer (only if missing or trigger disabled; refused on read-only connections)
 - [ ] 4. list_objects(objectType = "Table") (broad orientation)
 - [ ] 5. (Optional) read_data with sys.foreign_keys for relationship graph
 ```
@@ -197,12 +206,14 @@ Rules:
 ## Safety rules
 
 - Treat `execute_sql` and `drop_table` as destructive. Confirm intent before running.
+- With more than one connection, confirm WHICH connection a write targets before running it. A missing or unknown `connection` returns an error listing the valid names; retry with one of them, do not guess.
 - Use `read_data` for **every** `SELECT` (including `sys.*`). `execute_sql` rejects SELECT at validation time.
 - Never embed user-provided values directly into `read_data` SQL. Build the literal yourself; do not echo unsanitized inputs.
 - When `describe_table` returns `insightFreshness: "StaleArchived"`, do NOT trust the previous insight; re-investigate.
 
 ## Anti-patterns
 
+- Omitting `connection` when `list_connections` said `connectionRequired: true`, or reusing an insight/object assumption from a different connection.
 - Looping `read_data` per column to mimic `describe_table` — use `describe_table` once.
 - Calling `refresh_insights` after every `upsert_insight`. Run it once per investigation session or after known DDL.
 - Asking the user for `objectType` when the context already implies it (e.g. you just called `describe_table` → `objectType = "Table"`).

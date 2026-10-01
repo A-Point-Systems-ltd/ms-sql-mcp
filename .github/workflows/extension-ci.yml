@@ -1,0 +1,20 @@
+name: extension-ci
+on:
+  pull_request:
+    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
+  push:
+    branches: [main]
+    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults: { run: { working-directory: vscode-extension } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: npm run check:version
+      - run: npm run test:unit

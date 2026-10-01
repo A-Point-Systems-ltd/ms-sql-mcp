@@ -16,19 +16,117 @@ namespace MssqlMcp.Tests
         {
             TestConnectionString.EnsureInitialized();
             _tableName = $"TestTable_{Guid.NewGuid():N}";
-            var connectionFactory = new SqlConnectionFactory();
+            var registry = TestConnectionString.CreateRegistry();
+            var connectionFactory = TestConnectionString.CreateFactory(registry);
             var loggerMock = new Mock<ILogger<Tools>>();
             _tools = new Tools(
                 connectionFactory,
                 NoOpInsightsLayerService.Instance,
                 NoOpInsightDdlProcessingQueue.Instance,
-                loggerMock.Object);
+                loggerMock.Object,
+                registry);
         }
 
         public void Dispose()
         {
             // Cleanup: Drop the table after each test
             var _ = _tools.DropTable($"DROP TABLE IF EXISTS {_tableName}").GetAwaiter().GetResult();
+        }
+
+        [Fact]
+        public async Task ScriptObject_table_returns_create_ddl()
+        {
+            Assert.True((await _tools.CreateTable($"CREATE TABLE {_tableName} (Id INT PRIMARY KEY, Name NVARCHAR(50) NOT NULL DEFAULT (N'x'))")).Success);
+            var result = await _tools.ScriptObject("Table", _tableName);
+            Assert.True(result.Success, result.Error);
+            Assert.Contains($"CREATE TABLE [dbo].[{_tableName}]", System.Text.Json.JsonSerializer.Serialize(result.Data));
+        }
+
+        [Theory]
+        [InlineData("DatabaseTrigger")]
+        [InlineData("Type")]
+        [InlineData("Login")]
+        [InlineData("ServerRole")]
+        [InlineData("DatabaseUser")]
+        [InlineData("DatabaseRole")]
+        public async Task ListObjects_supports_new_types(string objectType)
+        {
+            var result = await _tools.ListObjects(objectType);
+            Assert.True(result.Success, result.Error);
+        }
+
+        [Fact]
+        public async Task ScriptObject_unknown_type_lists_supported_types()
+        {
+            var result = await _tools.ScriptObject("Widget", "x");
+            Assert.False(result.Success);
+            Assert.Contains("DatabaseRole", result.Error);
+        }
+
+        [Theory]
+        [InlineData("guest")]
+        [InlineData("sys")]
+        [InlineData("INFORMATION_SCHEMA")]
+        [InlineData("dbo")]
+        public async Task ScriptObject_builtin_database_user_is_not_created(string user)
+        {
+            var result = await _tools.ScriptObject("DatabaseUser", user);
+            Assert.True(result.Success, result.Error);
+            var json = System.Text.Json.JsonSerializer.Serialize(result.Data);
+            Assert.Contains("is a built-in principal and is not scripted.", json);
+            Assert.DoesNotContain("CREATE USER", json);
+        }
+
+        [Fact]
+        public async Task DescribeView_lists_view_indexes()
+        {
+            var viewName = $"V_{Guid.NewGuid():N}";
+            Assert.True((await _tools.CreateTable($"CREATE TABLE {_tableName} (Id INT NOT NULL PRIMARY KEY)")).Success);
+            try
+            {
+                Assert.True((await _tools.ExecuteSQL($"CREATE VIEW dbo.{viewName} WITH SCHEMABINDING AS SELECT Id FROM dbo.{_tableName}")).Success);
+                Assert.True((await _tools.ExecuteSQL($"CREATE UNIQUE CLUSTERED INDEX IX_{viewName} ON dbo.{viewName} (Id)")).Success);
+
+                var result = await _tools.DescribeView(viewName);
+                Assert.True(result.Success, result.Error);
+                var json = System.Text.Json.JsonSerializer.Serialize(result.Data);
+                Assert.Contains($"\"name\":\"IX_{viewName}\"", json);
+                Assert.Contains("\"isUnique\":true", json);
+                Assert.Contains("\"keys\":\"Id\"", json);
+            }
+            finally
+            {
+                await _tools.ExecuteSQL($"DROP VIEW IF EXISTS dbo.{viewName}");
+            }
+        }
+
+        [Fact]
+        public async Task DescribeView_and_DescribeTable_return_index_keys_with_raw_characters()
+        {
+            var viewName = $"V_{Guid.NewGuid():N}";
+            Assert.True((await _tools.CreateTable($"CREATE TABLE {_tableName} ([a&b] INT NOT NULL, [c<d] INT NOT NULL, CONSTRAINT PK_{_tableName} PRIMARY KEY ([a&b], [c<d]))")).Success);
+            try
+            {
+                Assert.True((await _tools.ExecuteSQL($"CREATE INDEX IX_T_{_tableName} ON dbo.{_tableName} ([c<d], [a&b])")).Success);
+                Assert.True((await _tools.ExecuteSQL($"CREATE VIEW dbo.{viewName} WITH SCHEMABINDING AS SELECT [a&b], [c<d] FROM dbo.{_tableName}")).Success);
+                Assert.True((await _tools.ExecuteSQL($"CREATE UNIQUE CLUSTERED INDEX IX_{viewName} ON dbo.{viewName} ([a&b], [c<d])")).Success);
+                var relaxed = new System.Text.Json.JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+                var view = await _tools.DescribeView(viewName);
+                Assert.True(view.Success, view.Error);
+                Assert.Contains("\"keys\":\"a&b,c<d\"", System.Text.Json.JsonSerializer.Serialize(view.Data, relaxed));
+
+                var table = await _tools.DescribeTable(_tableName);
+                Assert.True(table.Success, table.Error);
+                var tableJson = System.Text.Json.JsonSerializer.Serialize(table.Data, relaxed);
+                Assert.Contains("\"keys\":\"a&b,c<d\"", tableJson); // primary key constraint
+                Assert.Contains("\"keys\":\"c<d,a&b\"", tableJson); // nonclustered index
+                Assert.DoesNotContain("&amp;", tableJson);
+            }
+            finally
+            {
+                await _tools.ExecuteSQL($"DROP VIEW IF EXISTS dbo.{viewName}");
+            }
         }
 
         [Fact]

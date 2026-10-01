@@ -1,0 +1,363 @@
+{
+  "name": "ms-sql-mcp",
+  "displayName": "APoint-ms-sql",
+  "description": "SQL Server MCP server for VS Code, Cursor and Claude - multi-connection, object explorer with DDL, read-only profiles, AI schema insights.",
+  "publisher": "apoint",
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/A-Point-Systems-ltd/ms-sql-mcp"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "apoint.ms-sql-mcp",
+        "label": "APoint-ms-sql"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "msSqlMcp",
+          "title": "APoint-ms-sql",
+          "icon": "media/db.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "msSqlMcpResults",
+          "title": "APoint-ms-sql Results",
+          "icon": "media/db.svg"
+        }
+      ]
+    },
+    "views": {
+      "msSqlMcp": [
+        {
+          "id": "msSqlMcp.objectFilter",
+          "name": "Filter",
+          "type": "webview",
+          "when": "msSqlMcp.hasConnections"
+        },
+        {
+          "id": "msSqlMcp.explorer",
+          "name": "Connections"
+        }
+      ],
+      "msSqlMcpResults": [
+        {
+          "id": "msSqlMcp.results",
+          "name": "Results",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "msSqlMcp.explorer",
+        "contents": "No connections yet.\n[Add Connection](command:msSqlMcp.addConnection)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "msSqlMcp.addConnection",
+        "title": "Add Connection",
+        "category": "APoint-ms-sql",
+        "icon": "$(add)"
+      },
+      {
+        "command": "msSqlMcp.editConnection",
+        "title": "Edit Connection",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.removeConnection",
+        "title": "Remove Connection",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.testConnection",
+        "title": "Test Connection",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.openConnection",
+        "title": "Open (expose to MCP)",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.closeConnection",
+        "title": "Close (hide from MCP)",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.dataView",
+        "title": "Data View",
+        "category": "APoint-ms-sql",
+        "icon": "$(table)"
+      },
+      {
+        "command": "msSqlMcp.showDdl",
+        "title": "Show DDL",
+        "category": "APoint-ms-sql",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "msSqlMcp.registerClients",
+        "title": "Register with Cursor / Claude...",
+        "category": "APoint-ms-sql",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "msSqlMcp.showLogs",
+        "title": "Show Logs",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.refresh",
+        "title": "Refresh",
+        "category": "APoint-ms-sql",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "msSqlMcp.clearFilter",
+        "title": "Clear Filter",
+        "category": "APoint-ms-sql",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "msSqlMcp.newQuery",
+        "title": "New Query",
+        "category": "APoint-ms-sql",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "msSqlMcp.changeConnection",
+        "title": "Change Connection",
+        "category": "APoint-ms-sql",
+        "icon": "$(database)"
+      },
+      {
+        "command": "msSqlMcp.runQuery",
+        "title": "Run (F5)",
+        "category": "APoint-ms-sql",
+        "icon": "$(play)"
+      },
+      {
+        "command": "msSqlMcp.cancelQuery",
+        "title": "Cancel Query",
+        "category": "APoint-ms-sql",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "msSqlMcp.runQueryReadOnly",
+        "title": "Run (F5) - disabled: read-only connection. Apply changes on a read-write connection.",
+        "category": "APoint-ms-sql",
+        "icon": "$(play)",
+        "enablement": "false"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "msSqlMcp.addConnection",
+          "when": "view == msSqlMcp.explorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "msSqlMcp.registerClients",
+          "when": "view == msSqlMcp.explorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "msSqlMcp.refresh",
+          "when": "view == msSqlMcp.explorer",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "msSqlMcp.newQuery",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.conn.open",
+          "group": "inline@0"
+        },
+        {
+          "command": "msSqlMcp.newQuery",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.conn.open",
+          "group": "0@1"
+        },
+        {
+          "command": "msSqlMcp.dataView",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\.(table|view)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "msSqlMcp.showDdl",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "msSqlMcp.refresh",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.(conn\\.open|category)/",
+          "group": "inline@3"
+        },
+        {
+          "command": "msSqlMcp.testConnection",
+          "when": "viewItem =~ /^msSqlMcp\\.conn/",
+          "group": "1@1"
+        },
+        {
+          "command": "msSqlMcp.openConnection",
+          "when": "viewItem == msSqlMcp.conn.closed",
+          "group": "1@2"
+        },
+        {
+          "command": "msSqlMcp.closeConnection",
+          "when": "viewItem == msSqlMcp.conn.open",
+          "group": "1@2"
+        },
+        {
+          "command": "msSqlMcp.editConnection",
+          "when": "viewItem =~ /^msSqlMcp\\.conn/",
+          "group": "2@1"
+        },
+        {
+          "command": "msSqlMcp.removeConnection",
+          "when": "viewItem =~ /^msSqlMcp\\.conn/",
+          "group": "2@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "msSqlMcp.dataView",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.showDdl",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.changeConnection",
+          "when": "editorLangId == sql || msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.runQuery",
+          "when": "msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.cancelQuery",
+          "when": "msSqlMcp.queryRunning"
+        },
+        {
+          "command": "msSqlMcp.runQueryReadOnly",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "msSqlMcp.refresh",
+          "when": "resourceScheme == mssql-ddl",
+          "group": "navigation"
+        },
+        {
+          "command": "msSqlMcp.runQuery",
+          "when": "resource in msSqlMcp.runnableDocs",
+          "group": "navigation@1"
+        },
+        {
+          "command": "msSqlMcp.runQueryReadOnly",
+          "when": "resource in msSqlMcp.blockedDocs",
+          "group": "navigation@1"
+        },
+        {
+          "command": "msSqlMcp.cancelQuery",
+          "when": "resource in msSqlMcp.runningDocs",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "APoint-ms-sql",
+      "properties": {
+        "msSqlMcp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to MssqlMcp.exe (default: bundled)."
+        },
+        "msSqlMcp.insights": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the AI Insights layer for the agent-facing server (USE_INSIGHTS_LAYER). The object explorer never uses it."
+        },
+        "msSqlMcp.allowAdhocConnections": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let agents open ad-hoc connections with open_connection (MSSQL_ALLOW_ADHOC_CONNECTIONS)."
+        },
+        "msSqlMcp.dataViewRows": {
+          "type": "number",
+          "default": 500,
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Rows loaded by Data View."
+        },
+        "msSqlMcp.query.maxRows": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Rows kept per result set when a query window runs (F5). Further rows are counted but not shown."
+        },
+        "msSqlMcp.logLevel": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "description": "Log verbosity. When unset: error in a normal (Production) install, debug when running in Development or Test mode."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "msSqlMcp.runQuery",
+        "key": "f5",
+        "when": "editorTextFocus && msSqlMcp.editorConnected && !inDebugMode"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "test:unit": "npm run compile && node --test test/*.test.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "package": "vsce package --target win32-x64",
+    "publish:vsce": "vsce publish --target win32-x64",
+    "publish:ovsx": "ovsx publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.101.0",
+    "@vscode/vsce": "^3.2.0",
+    "ovsx": "^0.10.0",
+    "typescript": "^5.5.0",
+    "vscode-uri": "^3.2.0"
+  }
+}

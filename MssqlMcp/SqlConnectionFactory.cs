@@ -1,17 +1,27 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
 using Microsoft.Data.SqlClient;
+using Mssql.McpServer.Connections;
 
 namespace Mssql.McpServer;
 
-public class SqlConnectionFactory : ISqlConnectionFactory
+public class SqlConnectionFactory(ConnectionRegistry registry) : ISqlConnectionFactory
 {
-    public async Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
-    {
-        var connectionString = GetConnectionString();
+    public Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
+        OpenAsync(CurrentProfile().ConnectionString, cancellationToken);
 
-        // Let ADO.Net handle connection pooling
+    public Task<SqlConnection> GetOpenUnpooledConnectionAsync(CancellationToken cancellationToken)
+    {
+        var builder = new SqlConnectionStringBuilder(CurrentProfile().ConnectionString) { Pooling = false };
+        return OpenAsync(builder.ConnectionString, cancellationToken);
+    }
+
+    // The routing filter binds CurrentConnection per tool call; background work binds it per connection.
+    private ConnectionProfile CurrentProfile() => CurrentConnection.Value ?? registry.Resolve(null);
+
+    private static async Task<SqlConnection> OpenAsync(string connectionString, CancellationToken cancellationToken)
+    {
         var conn = new SqlConnection(connectionString);
         try
         {
@@ -23,14 +33,5 @@ public class SqlConnectionFactory : ISqlConnectionFactory
             await conn.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-    }
-
-    private static string GetConnectionString()
-    {
-        var connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
-
-        return string.IsNullOrEmpty(connectionString)
-            ? throw new InvalidOperationException("Connection string is not set in the environment variable 'CONNECTION_STRING'.\n\nHINT: Have a local SQL Server, with a database called 'test', from console, run `SET CONNECTION_STRING=Server=.;Database=test;Trusted_Connection=True;TrustServerCertificate=True` and the load the .sln file")
-            : connectionString;
     }
 }

@@ -18,11 +18,12 @@ public partial class Tools
         ReadOnly = false,
         Idempotent = true,
         Destructive = false),
-        Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has at least a baseline insight row. Rows authored with llmModel='auto-mechanical' will still require enrichment (see enrichmentSuggested/insightEnrichment in " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " responses).")]
+        Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has at least a baseline insight row. Rows authored with llmModel='auto-mechanical' will still require enrichment (see enrichmentSuggested/insightEnrichment in " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " responses)." + MultiConnectionNote)]
     public async Task<DbOperationResult> RebuildBaselineInsights(
         [Description("Optional schema filter. Pass null for all schemas.")] string? schemaName = null,
         [Description("Optional object type filter: 'Table' | 'View' | 'Procedure' | 'Function'. Pass null for all supported types. Triggers are not covered by baseline scans.")] string? objectType = null,
         [Description("Maximum objects to scan (1..2000).")] int take = 200,
+        [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {
         if (!_insightsLayer.IsEnabled || !InsightsLayerEnvironment.IsAutoPopulationEnabled)

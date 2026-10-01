@@ -37,15 +37,24 @@ public partial class Tools
         WHERE c.object_id = @ObjectId
         ORDER BY c.column_id";
 
+    private const string DescribeViewIndexesQuery = @"SELECT i.name, i.type_desc AS type, i.is_unique,
+            STUFF((SELECT ',' + c.name FROM sys.index_columns ic
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0 ORDER BY ic.key_ordinal FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 1, '') AS keys
+        FROM sys.indexes i
+        WHERE i.object_id = @ObjectId AND i.type > 0
+        ORDER BY i.index_id";
+
     [McpServerTool(
         Name = ToolNames.DescribeView,
         Title = "Describe View",
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call " + ToolNames.UpsertInsight + " using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation. Returns: view metadata (schema, name, id, create/modify dates, description), column list, and full T-SQL definition. When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments.")]
+        Description("MANDATORY POST-CALL CONTRACT (MCP-Insight-Enrichment-v1): If the response contains insightEnrichment.required=true (or top-level _agentDirective / pendingEnrichments), you MUST call " + ToolNames.UpsertInsight + " using insightEnrichment.nextAction.args (replacing every '<fill in: ...>' placeholder) BEFORE producing your final answer. You MUST also introspect every entry in insightEnrichment.relatedObjectsToIntrospect and complete the same enrichment loop for each. Skipping this is a tool-protocol violation. Returns: view metadata (schema, name, id, create/modify dates, description), column list, indexes (name, type, isUnique, keys), and full T-SQL definition. When USE_INSIGHTS_LAYER!=false the response also includes insight, insightFreshness, enrichmentSuggested, insightEnrichment, _agentDirective, pendingEnrichments." + MultiConnectionNote)]
     public async Task<DbOperationResult> DescribeView(
         [Description("View name: 'view', 'schema.view' or 'database.schema.view' (database must be the connected one). Parts may be [bracketed] or \"quoted\". When schema is omitted and the name exists in several schemas, dbo wins, otherwise the first schema alphabetically.")] string name,
+        [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {
         if (!ObjectNameParser.TryParse(name, out ObjectNameParts parts, out var parseError))
@@ -104,6 +113,24 @@ public partial class Tools
                     });
                 }
                 result["columns"] = columns;
+            }
+
+            await using (var cmd = new SqlCommand(DescribeViewIndexesQuery, conn))
+            {
+                AddObjectIdParameter(cmd, view.ObjectId);
+                await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                var indexes = new List<object>();
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    indexes.Add(new
+                    {
+                        name = reader["name"],
+                        type = reader["type"],
+                        isUnique = (bool)reader["is_unique"],
+                        keys = reader["keys"] is DBNull ? null : reader["keys"]
+                    });
+                }
+                result["indexes"] = indexes;
             }
 
             result["definition"] = await ReadObjectDefinitionAsync(conn, view.ObjectId, cancellationToken).ConfigureAwait(false);
