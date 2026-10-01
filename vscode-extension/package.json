@@ -122,6 +122,18 @@
         "title": "Clear Filter",
         "category": "MSSQL-MCP",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "msSqlMcp.newQuery",
+        "title": "New Query",
+        "category": "MSSQL-MCP",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "msSqlMcp.changeConnection",
+        "title": "Change Connection",
+        "category": "MSSQL-MCP",
+        "icon": "$(database)"
       }
     ],
     "menus": {
@@ -143,6 +155,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "msSqlMcp.newQuery",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.conn.open",
+          "group": "inline@0"
+        },
+        {
+          "command": "msSqlMcp.newQuery",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.conn.open",
+          "group": "0@1"
+        },
         {
           "command": "msSqlMcp.dataView",
           "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\.(table|view)$/",
@@ -192,6 +214,10 @@
         {
           "command": "msSqlMcp.showDdl",
           "when": "false"
+        },
+        {
+          "command": "msSqlMcp.changeConnection",
+          "when": "editorLangId == sql || msSqlMcp.editorConnected"
         }
       ],
       "editor/title": [

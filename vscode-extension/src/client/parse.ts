@@ -12,7 +12,16 @@ export interface McpToolResultEnvelope {
   isError?: boolean;
 }
 
-export class McpToolError extends Error {}
+export class McpToolError extends Error {
+  /** True when the call was abandoned because its AbortSignal fired (not a server error or a timeout). */
+  readonly cancelled: boolean;
+
+  constructor(message: string, options: { cancelled?: boolean } = {}) {
+    super(message);
+    this.name = 'McpToolError';
+    this.cancelled = options.cancelled === true;
+  }
+}
 
 /** Case-insensitive property lookup over a plain object. */
 export function pick(obj: unknown, ...keys: string[]): unknown {
@@ -90,13 +99,26 @@ function errorText(payload: unknown): string | undefined {
 }
 
 /**
- * What trace logging may record for a tool result. read_data rows can hold client personal data, so only the row
- * count and truncation flag are kept; other results are returned unchanged.
+ * What trace logging may record for a tool result. read_data and run_script rows can hold client personal data, so
+ * only counts are kept for them (read_data: row count and truncation flag; run_script: result sets, returned rows,
+ * messages and the error flag). Other results are returned unchanged.
  */
 export function traceablePayload(tool: string, payload: unknown): unknown {
+  if (tool === 'run_script') {
+    const data = pick(payload, 'data');
+    const sets = asArray(pick(data, 'resultSets'));
+    return {
+      resultSets: sets.length,
+      rows: sets.reduce<number>((total, set) => total + asArray(pick(set, 'rows')).length, 0),
+      messages: asArray(pick(data, 'messages')).length,
+      hadErrors: pick(data, 'hadErrors') === true,
+    };
+  }
   if (tool !== 'read_data') {
     return payload;
   }
   const rows = pick(payload, 'data');
   return { rowCount: Array.isArray(rows) ? rows.length : 0, truncated: pick(payload, 'truncated') === true };
 }
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);

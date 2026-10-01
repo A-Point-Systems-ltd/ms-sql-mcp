@@ -17,7 +17,11 @@ function argName(arg: unknown): string | undefined {
   return undefined;
 }
 
-async function pickProfile(store: ConnectionStore, arg: unknown, placeHolder: string, filter?: (p: ConnectionProfile) => boolean): Promise<ConnectionProfile | undefined> {
+/**
+ * The profile a command acts on: the one named by `arg` (an error when it does not exist), else a quick pick of the
+ * profiles that pass `filter`.
+ */
+export async function pickProfile(store: ConnectionStore, arg: unknown, placeHolder: string, filter?: (p: ConnectionProfile) => boolean): Promise<ConnectionProfile | undefined> {
   const all = store.list();
   const wanted = argName(arg);
   if (wanted) {

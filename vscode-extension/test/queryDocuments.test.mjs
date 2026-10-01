@@ -1,0 +1,69 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { QUERY_DOCUMENTS_KEY, QueryDocuments } from '../out/query/queryDocuments.js';
+
+/** In-memory stand-in for vscode.Memento. */
+function memento(initial = {}) {
+  const data = { ...initial };
+  return { data, get: (key, def) => (key in data ? data[key] : def), update: async (key, value) => { data[key] = value; } };
+}
+const uri = s => ({ toString: () => s });
+
+test('set / get / delete persist under msSqlMcp.queryDocuments and fire onDidChange with the key', async () => {
+  const m = memento();
+  const docs = new QueryDocuments(m);
+  const changes = [];
+  const sub = docs.onDidChange(k => changes.push(k));
+  await docs.set(uri('untitled:Untitled-1'), { connection: 'dev', kind: 'query' });
+  assert.equal(QUERY_DOCUMENTS_KEY, 'msSqlMcp.queryDocuments');
+  assert.deepEqual(m.data[QUERY_DOCUMENTS_KEY], { 'untitled:Untitled-1': { connection: 'dev', kind: 'query' } });
+  assert.deepEqual(docs.get(uri('untitled:Untitled-1')), { connection: 'dev', kind: 'query' });
+  assert.deepEqual(docs.get('untitled:Untitled-1'), { connection: 'dev', kind: 'query' });
+  assert.equal(docs.get(uri('untitled:Untitled-2')), undefined);
+
+  await docs.delete(uri('untitled:Untitled-1'));
+  assert.equal(docs.get(uri('untitled:Untitled-1')), undefined);
+  assert.deepEqual(m.data[QUERY_DOCUMENTS_KEY], {});
+  // Deleting a missing entry is a no-op.
+  await docs.delete(uri('untitled:Untitled-1'));
+  assert.deepEqual(changes, ['untitled:Untitled-1', 'untitled:Untitled-1']);
+
+  sub.dispose();
+  await docs.set(uri('file:///a.sql'), { connection: 'dev', kind: 'query' });
+  assert.equal(changes.length, 2, 'disposed listener is not called');
+});
+
+test('entries are loaded from the memento; invalid ones are ignored', () => {
+  const m = memento({
+    [QUERY_DOCUMENTS_KEY]: {
+      'file:///a.sql': { connection: 'dev', kind: 'object', object: { connection: 'dev', scriptType: 'View', schema: 'dbo', name: 'v' } },
+      'file:///bad.sql': { connection: 7, kind: 'query' },
+      'file:///bad2.sql': { connection: 'dev', kind: 'other' },
+    },
+  });
+  const docs = new QueryDocuments(m);
+  assert.equal(docs.get('file:///a.sql').kind, 'object');
+  assert.equal(docs.get('file:///bad.sql'), undefined);
+  assert.equal(docs.get('file:///bad2.sql'), undefined);
+});
+
+test('prune drops the entries the predicate rejects; rename moves an entry', async () => {
+  const m = memento();
+  const docs = new QueryDocuments(m);
+  await docs.set('untitled:Untitled-1', { connection: 'dev', kind: 'query' });
+  await docs.set('file:///a.sql', { connection: 'dev', kind: 'query' });
+  await docs.set('file:///b.sql', { connection: 'prod', kind: 'query' });
+  const changes = [];
+  docs.onDidChange(k => changes.push(k));
+
+  await docs.prune(key => key !== 'untitled:Untitled-1');
+  assert.deepEqual(Object.keys(m.data[QUERY_DOCUMENTS_KEY]).sort(), ['file:///a.sql', 'file:///b.sql']);
+  assert.deepEqual(changes, ['untitled:Untitled-1']);
+
+  await docs.rename('file:///a.sql', 'file:///c.sql');
+  assert.equal(docs.get('file:///a.sql'), undefined);
+  assert.equal(docs.get('file:///c.sql').connection, 'dev');
+  // Renaming an unassociated document changes nothing.
+  await docs.rename('file:///zzz.sql', 'file:///y.sql');
+  assert.equal(docs.get('file:///y.sql'), undefined);
+});

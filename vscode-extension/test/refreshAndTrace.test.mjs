@@ -95,3 +95,22 @@ test('other tool results are traced unchanged', () => {
   const payload = { success: true, data: { ddl: 'CREATE TABLE' } };
   assert.equal(traceablePayload('script_object', payload), payload);
 });
+
+test('run_script results are traced as counts only, never rows or message text', () => {
+  const payload = {
+    success: true,
+    data: {
+      resultSets: [
+        { batch: 1, columns: [{ name: 'Name', type: 'nvarchar' }], rows: [['Dana'], ['Avi']], rowCount: 2, truncated: false },
+        { batch: 2, columns: [{ name: 'Id', type: 'int' }], rows: [[1]], rowCount: 5, truncated: true },
+      ],
+      messages: [{ kind: 'rows', text: '(2 rows affected)', line: null }, { kind: 'info', text: 'secret Dana', line: 3 }],
+      hadErrors: false, batches: 2, elapsedMs: 12,
+    },
+  };
+  const t = traceablePayload('run_script', payload);
+  assert.deepEqual(t, { resultSets: 2, rows: 3, messages: 2, hadErrors: false });
+  assert.ok(!JSON.stringify(t).includes('Dana'));
+  assert.deepEqual(traceablePayload('run_script', { Success: true, Data: { HadErrors: true } }), { resultSets: 0, rows: 0, messages: 0, hadErrors: true });
+  assert.deepEqual(traceablePayload('run_script', undefined), { resultSets: 0, rows: 0, messages: 0, hadErrors: false });
+});

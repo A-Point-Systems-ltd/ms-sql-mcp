@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { RUNNER_OPTIONS, ServerProcessClient } from './client/serverProcessClient';
 import { registerExplorerCommands } from './commands/explorerCommands';
 import { disposeDataPanel } from './dataPanel';
 import { registerConnectionCommands } from './connections/connectionCommands';
@@ -12,6 +13,7 @@ import { Logger } from './logger';
 import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, hasMsSqlEntry } from './cursorMcp';
 import { resolveExePath } from './exe';
 import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
+import { registerQueryCommands } from './query/queryCommands';
 import { cursorConfigPath } from './register/clientPaths';
 import { registerClientCommand } from './register/registerClients';
 import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
@@ -28,6 +30,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const explorer = new ExplorerClient(context, store, log);
   context.subscriptions.push(explorer);
   registerConnectionCommands(context, store, log, explorer);
+  // Query windows run scripts in a third private process that keeps each profile's own read-only flag.
+  const runner = new ServerProcessClient(context, store, log, RUNNER_OPTIONS);
+  context.subscriptions.push(runner);
+  registerQueryCommands(context, store, log);
 
   const tree = new ExplorerTreeProvider(store, explorer, log);
   const ddlProvider = new DdlDocumentProvider(explorer, log);
@@ -48,7 +54,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-    if (e.affectsConfiguration('msSqlMcp.serverPath')) explorer.reset();
+    if (e.affectsConfiguration('msSqlMcp.serverPath')) {
+      explorer.reset();
+      runner.reset();
+    }
   }));
 
   // Cursor ignores vscode.lm MCP providers and has its own API, so it gets the registrar instead (never both).

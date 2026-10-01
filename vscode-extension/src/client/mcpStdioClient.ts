@@ -1,17 +1,29 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
-import { McpClient } from './mcpClient';
+import { CallToolOptions, McpClient } from './mcpClient';
 import { McpToolError, traceablePayload, unwrapToolResult } from './parse';
-import { Logger } from '../logger';
+import type { Logger } from '../logger';
 
 const PROTOCOL_VERSION = '2024-11-05';
-const REQUEST_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
+const CANCEL_REASON = 'Cancelled by user';
+/** How many cancelled / timed-out request ids are remembered so their late responses are dropped quietly. */
+const MAX_ABANDONED_IDS = 256;
+
+export interface McpStdioClientOptions {
+  /** Timeout of every request that does not pass its own `timeoutMs` (default 60 000 ms). */
+  defaultTimeoutMs?: number;
+  /** Command-line arguments for the server executable (the tests run a node script). */
+  args?: string[];
+}
 
 interface PendingRequest {
   method: string;
   startedAt: number;
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
+  /** Detaches the AbortSignal listener. */
+  unlisten?: () => void;
 }
 
 /**
@@ -23,6 +35,9 @@ export class McpStdioClient implements McpClient {
   private child: ChildProcessWithoutNullStreams | undefined;
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
+  /** Ids of requests given up on (cancelled / timed out); a late response for one of them is ignored. */
+  private readonly abandoned = new Set<number>();
+  private readonly defaultTimeoutMs: number;
   private stdoutBuffer = '';
   private initialized = false;
   private disposed = false;
@@ -33,7 +48,10 @@ export class McpStdioClient implements McpClient {
     private readonly log: Logger,
     /** Called when the server dies on its own (not via dispose()). */
     private readonly onUnexpectedExit?: () => void,
-  ) {}
+    private readonly options: McpStdioClientOptions = {},
+  ) {
+    this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) {
@@ -52,20 +70,39 @@ export class McpStdioClient implements McpClient {
     this.log.info('client', 'MCP handshake complete; ready.');
   }
 
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  /**
+   * Calls a tool and returns its unwrapped payload.
+   * - `timeoutMs` overrides the default timeout; `null` waits without a limit.
+   * - Aborting `signal` sends `notifications/cancelled` to the server and rejects at once with
+   *   `McpToolError('Cancelled.')` (`cancelled === true`); the server's late response is ignored.
+   */
+  async callTool(name: string, args: Record<string, unknown> = {}, opts: CallToolOptions = {}): Promise<unknown> {
     this.log.debug('tool', `→ ${name}`);
     this.log.trace('tool', `${name} arguments`, args);
     const startedAt = Date.now();
     try {
-      const result = await this.request('tools/call', { name, arguments: args });
+      const result = await this.request('tools/call', { name, arguments: args }, opts);
       const payload = unwrapToolResult(result);
       this.log.debug('tool', `← ${name} ok (${Date.now() - startedAt} ms)`);
       this.log.trace('tool', `${name} result`, traceablePayload(name, payload));
       return payload;
     } catch (err) {
-      this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`, err);
+      if (err instanceof McpToolError && err.cancelled) {
+        this.log.info('tool', `← ${name} cancelled (${Date.now() - startedAt} ms)`);
+      } else {
+        this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`, err);
+      }
       throw err;
     }
+  }
+
+  /** Sends a JSON-RPC notification (no response expected). A no-op when the process is not running. */
+  notify(method: string, params: Record<string, unknown> = {}): void {
+    if (!this.child) {
+      return;
+    }
+    this.log.trace('rpc', `→ notification ${method}`);
+    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
   }
 
   dispose(): void {
@@ -81,7 +118,7 @@ export class McpStdioClient implements McpClient {
 
   private spawnProcess(): void {
     this.log.info('client', `Spawning ${this.exePath}`);
-    const child = spawn(this.exePath, [], { windowsHide: true, env: { ...process.env, ...this.env } });
+    const child = spawn(this.exePath, this.options.args ?? [], { windowsHide: true, env: { ...process.env, ...this.env } });
     this.child = child;
 
     child.stdout.setEncoding('utf8');
@@ -127,11 +164,14 @@ export class McpStdioClient implements McpClient {
     }
     const pending = this.pending.get(message.id);
     if (!pending) {
-      this.log.warn('rpc', `Response for unknown request id ${message.id}`);
+      if (this.abandoned.delete(message.id)) {
+        this.log.debug('rpc', `Ignoring late response for abandoned request #${message.id}`);
+      } else {
+        this.log.warn('rpc', `Response for unknown request id ${message.id}`);
+      }
       return;
     }
-    this.pending.delete(message.id);
-    clearTimeout(pending.timer);
+    this.settle(message.id, pending);
     if (message.error) {
       pending.reject(
         new McpToolError(
@@ -159,42 +199,66 @@ export class McpStdioClient implements McpClient {
   }
 
   private failAll(error: Error): void {
-    for (const [, pending] of this.pending) {
-      clearTimeout(pending.timer);
+    for (const [id, pending] of [...this.pending]) {
+      this.settle(id, pending);
       pending.reject(error);
     }
-    this.pending.clear();
   }
 
-  private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  /** Removes a pending request and releases its timer and abort listener; the caller resolves or rejects it. */
+  private settle(id: number, pending: PendingRequest): void {
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    pending.unlisten?.();
+  }
+
+  /** Gives up on a pending request: tells the server to stop working on it and drops its late response. */
+  private abandon(id: number, pending: PendingRequest, reason: string, error: McpToolError): void {
+    this.settle(id, pending);
+    this.abandoned.add(id);
+    if (this.abandoned.size > MAX_ABANDONED_IDS) {
+      this.abandoned.delete(this.abandoned.values().next().value as number);
+    }
+    this.notify('notifications/cancelled', { requestId: id, reason });
+    pending.reject(error);
+  }
+
+  private request(method: string, params: Record<string, unknown>, opts: CallToolOptions = {}): Promise<unknown> {
+    if (opts.signal?.aborted) {
+      return Promise.reject(new McpToolError('Cancelled.', { cancelled: true }));
+    }
     if (!this.child) {
       return Promise.reject(new McpToolError('Server process is not running.'));
     }
     const id = this.nextId++;
+    const timeoutMs = opts.timeoutMs === undefined ? this.defaultTimeoutMs : opts.timeoutMs;
     const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.log.error('rpc', `Request #${id} (${method}) timed out after ${REQUEST_TIMEOUT_MS} ms.`);
-        reject(new McpToolError(`Timed out after ${REQUEST_TIMEOUT_MS} ms calling ${method}.`));
-      }, REQUEST_TIMEOUT_MS);
-      this.pending.set(id, { method, startedAt: Date.now(), resolve, reject, timer });
+      const pending: PendingRequest = { method, startedAt: Date.now(), resolve, reject };
+      if (timeoutMs !== null) {
+        pending.timer = setTimeout(() => {
+          this.log.error('rpc', `Request #${id} (${method}) timed out after ${timeoutMs} ms.`);
+          this.abandon(id, pending, `Timed out after ${timeoutMs} ms`, new McpToolError(`Timed out after ${timeoutMs} ms calling ${method}.`));
+        }, timeoutMs);
+      }
+      const signal = opts.signal;
+      if (signal) {
+        const onAbort = () => {
+          if (this.pending.get(id) !== pending) return;
+          this.log.debug('rpc', `Request #${id} (${method}) cancelled.`);
+          this.abandon(id, pending, CANCEL_REASON, new McpToolError('Cancelled.', { cancelled: true }));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending.unlisten = () => signal.removeEventListener('abort', onAbort);
+      }
+      this.pending.set(id, pending);
       this.child!.stdin.write(payload, (err) => {
-        if (err) {
-          this.pending.delete(id);
-          clearTimeout(timer);
+        if (err && this.pending.get(id) === pending) {
+          this.settle(id, pending);
           this.log.error('rpc', `Failed to write request #${id} (${method})`, err);
           reject(new McpToolError(`Failed to write to server: ${err.message}`));
         }
       });
     });
-  }
-
-  private notify(method: string): void {
-    if (!this.child) {
-      return;
-    }
-    this.log.trace('rpc', `→ notification ${method}`);
-    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params: {} }) + '\n');
   }
 }
