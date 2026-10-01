@@ -37,6 +37,16 @@ public sealed class ScriptBatchSplitterTests
     }
 
     [Fact]
+    public void Go_with_a_count_beyond_int_still_splits_with_the_largest_count()
+    {
+        var batches = ScriptBatchSplitter.Split("INSERT dbo.t DEFAULT VALUES\nGO 99999999999\nSELECT 2");
+
+        Assert.Equal(2, batches.Count);
+        Assert.Equal(int.MaxValue, batches[0].RepeatCount);
+        Assert.Equal("SELECT 2", batches[1].Text);
+    }
+
+    [Fact]
     public void Go_followed_by_line_comment_splits()
     {
         var batches = ScriptBatchSplitter.Split("SELECT 1\nGO -- c\nSELECT 2");

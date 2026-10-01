@@ -210,5 +210,8 @@ public sealed class InsightsLayerScratchDbTests
 
             return conn;
         }
+
+        public Task<SqlConnection> GetOpenUnpooledConnectionAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Insights tests use pooled connections only.");
     }
 }

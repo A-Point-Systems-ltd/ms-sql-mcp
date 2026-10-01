@@ -46,7 +46,8 @@ public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, I
         SqlConnection conn;
         try
         {
-            conn = await connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            // Unpooled: each run is a new session, so SET / sp_setapprole / EXECUTE AS from an earlier run cannot leak in.
+            conn = await connectionFactory.GetOpenUnpooledConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

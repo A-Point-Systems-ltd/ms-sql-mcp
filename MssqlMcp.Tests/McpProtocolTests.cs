@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using Mssql.McpServer;
 
 namespace MssqlMcp.Tests;
@@ -262,6 +264,90 @@ public sealed class McpProtocolTests
         Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, "SELECT CASE WHEN OBJECT_ID(N'dbo.never_created') IS NULL THEN 1 ELSE 0 END"));
     }
 
+    /// <summary>
+    /// notifications/cancelled for a running run_script call must stop the script on the server: the open transaction
+    /// is rolled back and its locks are released while the server process keeps running. The cancel is sent the way the
+    /// extension's runner client sends it (mcpStdioClient.ts <c>abandon</c>): cancel the call locally, then send the
+    /// notification for its request id. The SDK 2.2.0 client only does the first part: cancelling the CallToolAsync token
+    /// ends the call locally but sends no notification (its trace log shows none), so the test sends it explicitly.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("2024-11-05")] // the extension's runner client (mcpStdioClient.ts PROTOCOL_VERSION)
+    [InlineData(null)] // the SDK's default revision
+    public async Task Cancelling_a_run_script_call_rolls_back_on_the_server_and_releases_locks(string? protocolVersion)
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, "CREATE TABLE dbo.T (i int)");
+        var connections = System.Text.Json.JsonSerializer.Serialize(new object[] { new { name = "main", connectionString = cs } });
+        await using var client = await StartClientAsync(connections, insights: false, scriptRunner: true, protocolVersion);
+
+        var requestId = new RequestId("run-script-cancel-probe");
+        using var cts = new CancellationTokenSource();
+        var call = client.SendRequestAsync(
+            new JsonRpcRequest
+            {
+                Id = requestId,
+                Method = RequestMethods.ToolsCall,
+                Params = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["name"] = ToolNames.RunScript,
+                    ["arguments"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["script"] = "BEGIN TRAN; INSERT dbo.T VALUES (1); WAITFOR DELAY '00:00:30'; COMMIT",
+                        ["connection"] = "main",
+                    },
+                },
+            },
+            cts.Token);
+
+        // Cancel only once the server holds the uncommitted row (visible to a dirty read).
+        await WaitUntilAsync(
+            async () => await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM dbo.T WITH (NOLOCK)") == 1,
+            TimeSpan.FromSeconds(15),
+            "the script never inserted its row");
+        Assert.False(call.IsCompleted);
+
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+        await client.SendNotificationAsync(
+            NotificationMethods.CancelledNotification,
+            new CancelledNotificationParams { RequestId = requestId, Reason = "Cancelled by the user." });
+
+        // On a separate connection, within 10 s: the row is gone and the table can be read without waiting on a lock.
+        int? count = null;
+        await WaitUntilAsync(
+            async () =>
+            {
+                try
+                {
+                    count = await ScratchDatabases.ScalarAsync<int>(cs, "SET LOCK_TIMEOUT 2000; SELECT COUNT(*) FROM dbo.T");
+                    return true;
+                }
+                catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 1222)
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10),
+            "dbo.T stayed locked after the cancel");
+        Assert.Equal(0, count);
+
+        // The server process is still serving: the cancel ended the call, not the runner.
+        var after = await client.CallToolAsync(ToolNames.RunScript, new Dictionary<string, object?> { ["script"] = "SELECT 1 AS alive", ["connection"] = "main" });
+        Assert.Contains("\"success\":true", Text(after), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, string failure)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!await condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, failure);
+            await Task.Delay(100);
+        }
+    }
+
     private static async Task<(int Insights, int History, int Watermark)> CountInsightRowsAsync(string cs) => (
         await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM AIInsights.SchemaInsights;"),
         await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM AIInsights.InsightHistory;"),
@@ -287,7 +373,8 @@ public sealed class McpProtocolTests
     /// <param name="connectionsJson">MSSQL_CONNECTIONS value; null runs the single CONNECTION_STRING profile.</param>
     /// <param name="insights">Value of USE_INSIGHTS_LAYER for the server process.</param>
     /// <param name="scriptRunner">True sets MSSQL_SCRIPT_RUNNER=true (registers run_script); false removes it.</param>
-    private static async Task<McpClient> StartClientAsync(string? connectionsJson, bool insights, bool scriptRunner = false)
+    /// <param name="protocolVersion">MCP revision the client requests; null keeps the SDK default.</param>
+    private static async Task<McpClient> StartClientAsync(string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -311,7 +398,7 @@ public sealed class McpProtocolTests
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            return await McpClient.CreateAsync(transport, cancellationToken: timeout.Token);
+            return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion }, cancellationToken: timeout.Token);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
         {

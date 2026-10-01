@@ -218,8 +218,22 @@ This keeps destructive operations behind an explicitly flagged tool and prevents
 - Arguments: `script` (required), `maxRows` (per result set, default 1000, clamped to 1..10000), `connection`.
 - Splits the script on SSMS-style `GO` lines (`GO n` repeats a batch; `GO` inside strings, comments or `[identifiers]` does not split) and runs every batch on one session, so `SET` options and `#temp` tables carry across batches.
 - Returns `data: { resultSets, messages, hadErrors, batches, elapsedMs }`. Each result set has `batch`, `columns` (`name`, `type`), `rows` (arrays in column order), `rowCount` (total) and `truncated`. Messages have `kind` (`info`, `rows`, `error`, `warning`), `text` and `line` (1-based script line, or null). Errors that name a procedure, function, view or trigger use the SSMS header `Msg n, Level l, State s, Procedure p, Line n`. When the batch is that module's own `CREATE` / `ALTER` (a compile error), the line is mapped to the script; otherwise (for example an error raised inside an `EXEC`'d procedure) it is the module's own line number and `line` is null. SQL errors are `error` messages and execution continues with the next batch, like SSMS; `success: false` only for an empty script or a connection that cannot be opened.
-- At most 50000 rows are kept per run across all result sets. After that, result sets keep their columns and `rowCount` but have no rows and `truncated: true`, and one `warning` says so.
-- On a read-only connection every batch must be a single read-only `SELECT` (the `read_data` rules) and runs inside a transaction that is always rolled back; other batches are refused with an `error` message. Comment-only batches are skipped silently there.
+- **New session per run.** Each call opens its own connection outside the connection pool (`Pooling=false`) and closes it at the end, so session state from an earlier run (`SET TRANSACTION ISOLATION LEVEL`, other `SET` options, `sp_setapprole`, `EXECUTE AS` without `REVERT`) never reaches the next one. Within one run, all batches share that session.
+- **Size caps.** A cap never stops execution: the script runs to the end, only what is kept and returned is limited, and `error` messages are always kept. Each cap adds one `warning` per run.
+
+  | Cap | Limit | After the cap |
+  |---|---|---|
+  | Rows | 50000 per run, across all result sets | Result sets keep their columns and `rowCount` but have no rows, and `truncated: true`. |
+  | Response size | about 32 MB per run (rendered cell length x2 + 16 bytes per cell) | Later rows are counted in `rowCount` but not kept (`truncated: true`). |
+  | Result sets | 200 per run | Later result sets are read to the end but not returned. |
+  | Messages | 10000 per run | Later `info` and `rows` messages are dropped; `error` and `warning` messages are kept. |
+  | String value | 65536 characters | Cut, with the suffix `… (truncated, N chars)` (N = full length). |
+  | Binary value | 32768 bytes | Cut before hex encoding, with the suffix `… (truncated, N bytes)`. |
+  | `GO n` | n at most 10000 | That batch is not run and gets an `error` message; later batches still run. |
+
+- **Value formats.** Values that a JSON number (a double in the extension) would round are sent as exact strings: `decimal` / `numeric`, `money` / `smallmoney` (invariant culture, for example `"12345678901234.5678"`), and `bigint` values outside +/-2^53 (`"9223372036854775807"`). Smaller `bigint` values, `int`, `float` and `bit` stay JSON numbers or booleans; dates, times and `uniqueidentifier` are strings as before. Binary values (`varbinary`, `binary`, `timestamp`) are SSMS-style `0x` + uppercase hex (`"0x00FF10"`), no longer base64.
+- **Cancel.** Cancelling the call (the client sends `notifications/cancelled` for its request id; the extension does this for Cancel and when the tab closes) cancels the running command on SQL Server, rolls back a transaction the script left open, and closes the session, so its locks are released. Statements that already completed outside a transaction, and transactions the script already committed, stay applied.
+- On a read-only connection every batch must be a single read-only `SELECT` (the `read_data` rules) and runs inside a transaction that is always rolled back; other batches are refused with an `error` message that starts with `Read-only connection: only a single read-only SELECT per batch can run here.` and gives a short reason (no agent-tool advice). Comment-only batches are skipped silently there.
 - When `MSSQL_SCRIPT_RUNNER` is not set, `run_script` is an unknown tool (no connection routing either).
 - On a read/write connection, a transaction the script leaves open is rolled back at the end with a `warning`: each run uses a new session, so `COMMIT` in the same run.
 

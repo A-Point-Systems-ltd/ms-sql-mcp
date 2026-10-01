@@ -201,8 +201,13 @@ internal static class ScriptBatchSplitter
                     }
 
                     break;
-                case TSqlTokenType.Integer when !sawCount && !sawComment:
-                    if (!int.TryParse(t.Text, out repeatCount) || repeatCount < 1)
+                // The tokenizer reads a digit run too long for int as Numeric. A count beyond int still separates
+                // (as int.MaxValue) so the runner refuses it by its GO n cap instead of sending "GO n" to the server.
+                case TSqlTokenType.Integer or TSqlTokenType.Numeric when !sawCount && !sawComment && t.Text.All(char.IsAsciiDigit):
+                    repeatCount = int.TryParse(t.Text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var count)
+                        ? count
+                        : int.MaxValue;
+                    if (repeatCount < 1)
                     {
                         return false;
                     }

@@ -8,11 +8,21 @@ namespace Mssql.McpServer;
 
 public class SqlConnectionFactory(ConnectionRegistry registry) : ISqlConnectionFactory
 {
-    public async Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+    public Task<SqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
+        OpenAsync(CurrentProfile().ConnectionString, cancellationToken);
+
+    public Task<SqlConnection> GetOpenUnpooledConnectionAsync(CancellationToken cancellationToken)
     {
-        // The routing filter binds CurrentConnection per tool call; background work binds it per connection.
-        var profile = CurrentConnection.Value ?? registry.Resolve(null);
-        var conn = new SqlConnection(profile.ConnectionString);
+        var builder = new SqlConnectionStringBuilder(CurrentProfile().ConnectionString) { Pooling = false };
+        return OpenAsync(builder.ConnectionString, cancellationToken);
+    }
+
+    // The routing filter binds CurrentConnection per tool call; background work binds it per connection.
+    private ConnectionProfile CurrentProfile() => CurrentConnection.Value ?? registry.Resolve(null);
+
+    private static async Task<SqlConnection> OpenAsync(string connectionString, CancellationToken cancellationToken)
+    {
+        var conn = new SqlConnection(connectionString);
         try
         {
             await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
