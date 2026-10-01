@@ -14,7 +14,7 @@ import { openDocumentUris } from '../query/sqlDocFs';
 import { SQL_DOC_SCHEME, objectDisplayName } from '../query/sqlDocNames';
 import { HistoryDocumentProvider } from './historyDocs';
 import {
-  HISTORY_SCHEME, HISTORY_TOOL, HistoryEntry, LIST_TOP, SET_UP_BUTTON, currentDiffTitle, disabledWarning, emptyHistoryOutcome,
+  HISTORY_SCHEME, HISTORY_TOOL, HistoryEntry, LIST_TOP, LOGGING_SUPPRESSED_WARNING, SET_UP_BUTTON, currentDiffTitle, disabledWarning, emptyHistoryOutcome,
   entryDiffTitle, filterEntries, historyDocKeys, historyPickItems, historyUri, isModuleType, isNotInstalledError,
   latestDefinitionEntry, moreNotLoaded, noHistoryMessage, parseHistoryEntries, parseHistoryStatus, previousEntry, statusTargetText,
   supportsHistory, targetText, triggerMissingWarning,
@@ -190,6 +190,7 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
     }
     if (outcome === 'triggerMissing') await offerSetUp(triggerMissingWarning(where));
     else if (outcome === 'triggerDisabled') void vscode.window.showWarningMessage(disabledWarning(where));
+    else if (outcome === 'loggingSuppressed') void vscode.window.showWarningMessage(`DDL history on ${where}: ${LOGGING_SUPPRESSED_WARNING}`);
     else void vscode.window.showInformationMessage(noHistoryMessage(obj, profile.name));
   }
 }

@@ -9,6 +9,7 @@ import { EditorRunState, editorRunState, findProfile, runContextDocs } from './e
 import { QueryAssociation, QueryDocuments, defersRunCleanup, isNeverBound } from './queryDocuments';
 import { SqlDocFileSystem, openDocumentKeys } from './sqlDocFs';
 import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
+import { resultsToCarry } from './sqlDocTitles';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
 import type { ResultsState } from './resultsHtml';
 import { RunRegistry } from './runRegistry';
@@ -165,6 +166,11 @@ export function registerQueryCommands(
     return active ? { key: active.editor.document.uri.toString(), bound: !!active.assoc } : undefined;
   }, cancel);
   const setKey = contextSetter();
+  // A retitled document keeps its Results / Messages (the old uri's state moves to the new one).
+  context.subscriptions.push(lifecycle.onDidRetitle(({ oldKey, newKey }) => {
+    const carried = resultsToCarry(results.stateOf(oldKey), results.stateOf(newKey));
+    if (carried) results.set(newKey, carried);
+  }));
   const closeTimers = new Set<NodeJS.Timeout>();
   const updateRunning = () => {
     const editor = vscode.window.activeTextEditor;

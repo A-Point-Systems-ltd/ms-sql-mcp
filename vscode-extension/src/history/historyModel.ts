@@ -90,8 +90,13 @@ export interface HistoryStatus {
   serverName?: string;
   /** The server's DB_NAME(), when reported. */
   databaseName?: string;
-  /** Compatible but lossy notes about an existing table (for example a varchar(max) CommandText). */
+  /**
+   * The server's notes: compatible but lossy choices of an existing table (for example a varchar(max) CommandText), or
+   * why an existing DDL_Audit_Writer must not be used (then canInstall is false).
+   */
   warnings?: string[];
+  /** dbo.DDL_AuditLog has DML triggers, so the installed DDL_Audit records nothing. */
+  loggingSuppressed?: boolean;
 }
 
 /** `ddl_history status` data; a missing or non-boolean flag reads as false, and a missing or blank name is left out. */
@@ -114,27 +119,35 @@ export function parseHistoryStatus(data: unknown): HistoryStatus {
     ...(serverName ? { serverName } : {}),
     ...(databaseName ? { databaseName } : {}),
     ...(warnings.length ? { warnings } : {}),
+    ...(flag('loggingSuppressed') ? { loggingSuppressed: true } : {}),
   };
 }
 
-export type InstallDecision = 'none' | 'warnDisabled' | 'warnReadOnly' | 'warnIncompatible' | 'confirmInstall';
+export type InstallDecision = 'none' | 'warnDisabled' | 'warnReadOnly' | 'warnIncompatible' | 'warnBlocked' | 'confirmInstall';
+
+/** Shown whenever status reports loggingSuppressed. */
+export const LOGGING_SUPPRESSED_WARNING = 'dbo.DDL_AuditLog has triggers, so DDL_Audit does not record changes.';
 
 /**
  * What the form does after a save, in order:
  * - an existing table the trigger cannot insert into: a warning (whether or not the trigger exists); nothing is created;
  * - table and trigger exist: nothing when the trigger is enabled, else a warning (it is never enabled for the user);
- * - something is missing: a modal confirmation before `install` only when the server reports `canInstall`; otherwise
- *   the read-only warning (the server refuses to install on connections it serves read-only).
+ * - something is missing: a modal confirmation before `install` only when the server reports `canInstall`; on a
+ *   read/write connection whose status says why it cannot (`warnings`, for example an over-privileged existing
+ *   DDL_Audit_Writer), those warnings and no modal; otherwise the read-only warning (the server refuses to install on
+ *   connections it serves read-only).
  */
 export function installDecision(status: HistoryStatus, readOnly: boolean): InstallDecision {
   if (status.tableExists && !status.tableCompatible) return 'warnIncompatible';
   if (status.tableExists && status.triggerExists) return status.triggerEnabled ? 'none' : 'warnDisabled';
-  return !readOnly && status.canInstall ? 'confirmInstall' : 'warnReadOnly';
+  if (!readOnly && status.canInstall) return 'confirmInstall';
+  return !readOnly && status.warnings?.length ? 'warnBlocked' : 'warnReadOnly';
 }
 
 /** Why an object's history list came back empty: the trigger is missing or disabled, or nothing was recorded yet. */
-export function emptyHistoryOutcome(status: HistoryStatus): 'triggerMissing' | 'triggerDisabled' | 'noHistory' {
+export function emptyHistoryOutcome(status: HistoryStatus): 'triggerMissing' | 'triggerDisabled' | 'loggingSuppressed' | 'noHistory' {
   if (!status.triggerExists) return 'triggerMissing';
+  if (status.triggerEnabled && status.loggingSuppressed) return 'loggingSuppressed';
   return status.triggerEnabled ? 'noHistory' : 'triggerDisabled';
 }
 

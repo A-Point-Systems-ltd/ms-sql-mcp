@@ -6,7 +6,7 @@ import { errorMessage } from '../errorFormat';
 import { Logger } from '../logger';
 import {
   CREATE_BUTTON, HISTORY_TOOL, NOT_SET_UP_MESSAGE, OPEN_FIRST_MESSAGE, disabledWarning, incompatibleWarning, installDecision,
-  installPrompt, parseHistoryStatus, readOnlyWarning, setUpMessage, statusTargetText, targetText,
+  LOGGING_SUPPRESSED_WARNING, installPrompt, parseHistoryStatus, readOnlyWarning, setUpMessage, statusTargetText, targetText,
 } from './historyModel';
 
 /**
@@ -34,10 +34,11 @@ export async function setUpDdlHistory(runner: ServerProcessClient, profile: Conn
     }
     where = statusTargetText(status, profile);
     const decision = installDecision(status, profile.readOnly);
-    // The server's notes about a compatible but lossy existing table; the modal lists them itself.
-    if (decision !== 'confirmInstall') {
+    // The server's notes (a lossy existing table): the modal lists them itself, and warnBlocked shows them as warnings.
+    if (decision !== 'confirmInstall' && decision !== 'warnBlocked') {
       for (const w of status.warnings ?? []) void vscode.window.showInformationMessage(`DDL history on ${where}: ${w}`);
     }
+    if (status.loggingSuppressed) void vscode.window.showWarningMessage(`DDL history on ${where}: ${LOGGING_SUPPRESSED_WARNING}`);
     switch (decision) {
       case 'none':
         return;
@@ -49,6 +50,10 @@ export async function setUpDdlHistory(runner: ServerProcessClient, profile: Conn
         return;
       case 'warnIncompatible':
         void vscode.window.showWarningMessage(incompatibleWarning(where));
+        return;
+      case 'warnBlocked':
+        // The server says why it cannot install here (for example an over-privileged DDL_Audit_Writer): no modal.
+        for (const w of status.warnings ?? []) void vscode.window.showWarningMessage(`DDL history on ${where}: ${w}`);
         return;
       case 'confirmInstall':
         break;

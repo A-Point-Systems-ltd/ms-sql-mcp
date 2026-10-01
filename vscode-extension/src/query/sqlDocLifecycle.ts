@@ -74,6 +74,9 @@ export class SqlDocLifecycle implements vscode.Disposable {
   private readonly retitling = new Set<string>();
   /** Dirty documents (by uri) whose title is out of date: the title they get after the next save. */
   private readonly pendingTitles = new Map<string, string>();
+  private readonly retitled = new vscode.EventEmitter<{ oldKey: string; newKey: string }>();
+  /** Fires when a document was reopened under a new title, before its old tab closes (results can move over). */
+  readonly onDidRetitle = this.retitled.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -147,6 +150,7 @@ export class SqlDocLifecycle implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.retitled.dispose();
     for (const s of this.subs) s.dispose();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
@@ -380,6 +384,7 @@ export class SqlDocLifecycle implements vscode.Disposable {
       const wasActive = vscode.window.activeTextEditor?.document.uri.toString() === oldKey;
       const reopened = await this.sqlDocs.sqlDocument(await vscode.workspace.openTextDocument(newUri));
       await vscode.window.showTextDocument(reopened, { viewColumn: tabs[0]?.group.viewColumn, preview: false, preserveFocus: !wasActive });
+      this.retitled.fire({ oldKey, newKey: newUri.toString() });
       if (tabs.length) await vscode.window.tabGroups.close(tabs, true);
       await this.docs.delete(oldKey);
       this.log.debug('sqldocs', `A ${address.kind} document was reopened under its new title.`);

@@ -191,3 +191,35 @@ test('runsHistorySetup: an edit that moves the connection to another server or d
   assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: false, database: 'Other' }), before), false, 'turned off');
   assert.equal(runsHistorySetup(true, profile('a', { ddlHistory: true, database: 'Other' })), false, 'no previous profile');
 });
+
+// ---- Fix round 3 ----
+
+test('installDecision: a status that cannot install on a read/write connection and says why gets warnBlocked, not the modal (NET-022)', async () => {
+  const { installDecision } = await import('../out/history/historyModel.js');
+  const conflict = 'A user named DDL_Audit_Writer already exists with more rights than INSERT/SELECT on dbo.DDL_AuditLog; nothing was created. Remove its extra rights or drop it, then retry.';
+  assert.equal(installDecision(status({ canInstall: false, warnings: [conflict] }), false), 'warnBlocked');
+  assert.equal(installDecision(status({ canInstall: false, warnings: [conflict] }), true), 'warnReadOnly', 'read-only stays read-only');
+  assert.equal(installDecision(status({ canInstall: false }), false), 'warnReadOnly', 'no reason given');
+  assert.equal(installDecision(status({ canInstall: true, warnings: ['lossy'] }), false), 'confirmInstall', 'a lossy note does not block');
+  assert.equal(installDecision(status({ tableExists: true, tableCompatible: false, canInstall: false, warnings: [conflict] }), false), 'warnIncompatible');
+});
+
+test('loggingSuppressed: parsed only when true, and an empty list then says why (NET-022)', async () => {
+  const { LOGGING_SUPPRESSED_WARNING, emptyHistoryOutcome } = await import('../out/history/historyModel.js');
+  assert.equal(LOGGING_SUPPRESSED_WARNING, 'dbo.DDL_AuditLog has triggers, so DDL_Audit does not record changes.');
+  assert.equal(parseHistoryStatus({ loggingSuppressed: true }).loggingSuppressed, true);
+  assert.equal('loggingSuppressed' in parseHistoryStatus({ loggingSuppressed: false }), false);
+  const on = { tableExists: true, tableCompatible: true, triggerExists: true, triggerEnabled: true, canInstall: false };
+  assert.equal(emptyHistoryOutcome({ ...on, loggingSuppressed: true }), 'loggingSuppressed');
+  assert.equal(emptyHistoryOutcome(on), 'noHistory');
+  assert.equal(emptyHistoryOutcome({ ...on, triggerEnabled: false, loggingSuppressed: true }), 'triggerDisabled');
+  assert.equal(emptyHistoryOutcome({ ...on, triggerExists: false, loggingSuppressed: true }), 'triggerMissing');
+});
+
+test('resultsToCarry: a retitled document takes over the old results unless it already has its own (R2M1)', async () => {
+  const { resultsToCarry } = await import('../out/query/sqlDocTitles.js');
+  const old = { kind: 'done' };
+  assert.equal(resultsToCarry(old, undefined), old);
+  assert.equal(resultsToCarry(old, { kind: 'running' }), undefined);
+  assert.equal(resultsToCarry(undefined, undefined), undefined);
+});

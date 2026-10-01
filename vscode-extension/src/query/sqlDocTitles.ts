@@ -49,3 +49,12 @@ export function titleAction(input: TitleInput): TitleAction {
   if (title === undefined || title === input.address.title) return { kind: 'none' };
   return input.isDirty || input.running ? { kind: 'defer', title } : { kind: 'retitle', title };
 }
+
+/**
+ * The results state a document reopened under a new title takes over from its old uri (so its Results / Messages stay
+ * visible after a retitle right after a run): the old one, unless the new uri already has its own (then undefined:
+ * nothing is copied).
+ */
+export function resultsToCarry<T>(previous: T | undefined, current: T | undefined): T | undefined {
+  return current === undefined ? previous : undefined;
+}
