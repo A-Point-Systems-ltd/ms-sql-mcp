@@ -130,6 +130,25 @@ public sealed class McpProtocolTests
         Assert.Contains("no_such_tool", text, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Run_script_without_its_env_var_gets_unknown_tool_error_in_multi_connection_mode()
+    {
+        await using var client = await StartClientAsync(multiConnection: true);
+
+        string text;
+        try
+        {
+            text = Text(await client.CallToolAsync(ToolNames.RunScript, new Dictionary<string, object?> { ["script"] = "SELECT 1" }));
+        }
+        catch (ModelContextProtocol.McpException ex)
+        {
+            text = ex.Message;
+        }
+
+        Assert.DoesNotContain("connection", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(ToolNames.RunScript, text, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Two throwaway LocalDB databases, the real server over stdio, the Insights layer ON:
     /// concurrent calls land on the database they name, and a read-only profile writes nothing.

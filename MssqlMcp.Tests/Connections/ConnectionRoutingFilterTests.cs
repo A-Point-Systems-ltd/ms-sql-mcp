@@ -54,9 +54,18 @@ public sealed class ConnectionRoutingFilterTests
     [InlineData(ToolNames.CloseConnection, false)]
     [InlineData(ToolNames.ReadData, true)]
     [InlineData(ToolNames.ExecuteSql, true)]
-    [InlineData(ToolNames.RunScript, true)]
+    [InlineData(ToolNames.RunScript, false)]
     public void Only_known_data_tools_are_routed(string tool, bool routed) =>
         Assert.Equal(routed, ConnectionRoutingFilter.IsRouted(tool));
+
+    [Fact]
+    public void Run_script_is_routed_only_when_the_script_runner_is_enabled()
+    {
+        Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.RunScript, scriptRunnerEnabled: false));
+        Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.RunScript, scriptRunnerEnabled: true));
+        Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.ReadData, scriptRunnerEnabled: true));
+        Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.ListConnections, scriptRunnerEnabled: true));
+    }
 
     [Fact]
     public void Every_non_management_tool_is_routed() =>

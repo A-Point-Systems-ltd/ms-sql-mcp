@@ -217,8 +217,10 @@ This keeps destructive operations behind an explicitly flagged tool and prevents
 
 - Arguments: `script` (required), `maxRows` (per result set, default 1000, clamped to 1..10000), `connection`.
 - Splits the script on SSMS-style `GO` lines (`GO n` repeats a batch; `GO` inside strings, comments or `[identifiers]` does not split) and runs every batch on one session, so `SET` options and `#temp` tables carry across batches.
-- Returns `data: { resultSets, messages, hadErrors, batches, elapsedMs }`. Each result set has `batch`, `columns` (`name`, `type`), `rows` (arrays in column order), `rowCount` (total) and `truncated`. Messages have `kind` (`info`, `rows`, `error`, `warning`), `text` and `line` (1-based script line, or null). SQL errors are `error` messages and execution continues with the next batch, like SSMS; `success: false` only for an empty script or a connection that cannot be opened.
-- On a read-only connection every batch must be a single read-only `SELECT` (the `read_data` rules) and runs inside a transaction that is always rolled back; other batches are refused with an `error` message.
+- Returns `data: { resultSets, messages, hadErrors, batches, elapsedMs }`. Each result set has `batch`, `columns` (`name`, `type`), `rows` (arrays in column order), `rowCount` (total) and `truncated`. Messages have `kind` (`info`, `rows`, `error`, `warning`), `text` and `line` (1-based script line, or null). Errors raised inside a procedure use the SSMS header `Msg n, Level l, State s, Procedure p, Line n` with the procedure's own line number, and their `line` is null. SQL errors are `error` messages and execution continues with the next batch, like SSMS; `success: false` only for an empty script or a connection that cannot be opened.
+- At most 50000 rows are kept per run across all result sets. After that, result sets keep their columns and `rowCount` but have no rows and `truncated: true`, and one `warning` says so.
+- On a read-only connection every batch must be a single read-only `SELECT` (the `read_data` rules) and runs inside a transaction that is always rolled back; other batches are refused with an `error` message. Comment-only batches are skipped silently there.
+- When `MSSQL_SCRIPT_RUNNER` is not set, `run_script` is an unknown tool (no connection routing either).
 - On a read/write connection, a transaction the script leaves open is rolled back at the end with a `warning`: each run uses a new session, so `COMMIT` in the same run.
 
 ## Multiple connections

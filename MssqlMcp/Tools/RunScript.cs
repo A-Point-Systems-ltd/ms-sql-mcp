@@ -18,6 +18,11 @@ public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, I
 {
     internal const int DefaultMaxRows = 1000;
     internal const int MaxRowsCeiling = 10_000;
+    internal const string EnableVariable = "MSSQL_SCRIPT_RUNNER";
+
+    /// <summary>The single switch for registering and routing run_script: <c>MSSQL_SCRIPT_RUNNER=true</c> (case-insensitive).</summary>
+    internal static bool IsEnabled(Func<string, string?> getEnvironmentVariable) =>
+        string.Equals(getEnvironmentVariable(EnableVariable), "true", StringComparison.OrdinalIgnoreCase);
 
     [McpServerTool(
         Name = ToolNames.RunScript,

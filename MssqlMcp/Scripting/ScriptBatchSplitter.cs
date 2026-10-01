@@ -68,6 +68,21 @@ internal static class ScriptBatchSplitter
         return batches;
     }
 
+    /// <summary>True when the text tokenizes cleanly into nothing but whitespace and comments.</summary>
+    public static bool IsCommentOnly(string text)
+    {
+        try
+        {
+            var tokens = new TSql170Parser(true).GetTokenStream(new StringReader(text ?? string.Empty), out var errors);
+            return errors.Count == 0 && tokens.All(static t => t.TokenType
+                is TSqlTokenType.WhiteSpace or TSqlTokenType.SingleLineComment or TSqlTokenType.MultilineComment or TSqlTokenType.EndOfFile);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>True when only whitespace precedes the token on its line.</summary>
     private static bool StartsLine(IList<TSqlParserToken> tokens, int index)
     {

@@ -129,15 +129,17 @@ internal class Program
             _ = builder.Services.AddSingleton<IInsightDdlProcessingQueue>(NoOpInsightDdlProcessingQueue.Instance);
         }
 
+        // Opt-in, for the VS Code extension's private runner process only: agents must never see run_script.
+        var scriptRunnerEnabled = ScriptRunnerTools.IsEnabled(Environment.GetEnvironmentVariable);
+
         // The SDK creates a Tools instance per call via ActivatorUtilities, so Tools must stay stateless.
         var mcp = builder.Services
             .AddMcpServer(options => options.ServerInstructions = ServerInstructions.Build(registry))
             .WithStdioServerTransport()
-            .WithRequestFilters(filters => filters.AddCallToolFilter(ConnectionRoutingFilter.Create))
+            .WithRequestFilters(filters => filters.AddCallToolFilter(next => ConnectionRoutingFilter.Create(next, scriptRunnerEnabled)))
             .WithToolsFromAssembly();
 
-        // Opt-in, for the VS Code extension's private runner process only: agents must never see run_script.
-        if (string.Equals(Environment.GetEnvironmentVariable("MSSQL_SCRIPT_RUNNER"), "true", StringComparison.OrdinalIgnoreCase))
+        if (scriptRunnerEnabled)
         {
             _ = mcp.WithTools<ScriptRunnerTools>();
             log.Append("Script runner tool enabled (MSSQL_SCRIPT_RUNNER) - intended for the VS Code extension only.");

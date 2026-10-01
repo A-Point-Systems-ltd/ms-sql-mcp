@@ -61,16 +61,20 @@ internal static class ConnectionRoutingFilter
     /// True for tools bound to a connection. Connection-management tools and names that are not tools at all pass
     /// straight through, so an unknown tool gets the SDK's unknown-tool error instead of a connection error.
     /// </summary>
-    public static bool IsRouted(string toolName) =>
-        (ToolNames.All.Contains(toolName, StringComparer.Ordinal) || ToolNames.ExtensionOnlyTools.Contains(toolName))
+    /// <param name="scriptRunnerEnabled">
+    /// True when MSSQL_SCRIPT_RUNNER registered the extension-only tools; otherwise they are unknown tools and pass through.
+    /// </param>
+    public static bool IsRouted(string toolName, bool scriptRunnerEnabled = false) =>
+        (ToolNames.All.Contains(toolName, StringComparer.Ordinal)
+            || (scriptRunnerEnabled && ToolNames.ExtensionOnlyTools.Contains(toolName)))
         && !ToolNames.ConnectionManagementTools.Contains(toolName);
 
     public static McpRequestHandler<CallToolRequestParams, CallToolResult> Create(
-        McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>
+        McpRequestHandler<CallToolRequestParams, CallToolResult> next, bool scriptRunnerEnabled) =>
         async (context, cancellationToken) =>
         {
             var toolName = context.Params?.Name ?? string.Empty;
-            if (!IsRouted(toolName))
+            if (!IsRouted(toolName, scriptRunnerEnabled))
             {
                 return await next(context, cancellationToken).ConfigureAwait(false);
             }

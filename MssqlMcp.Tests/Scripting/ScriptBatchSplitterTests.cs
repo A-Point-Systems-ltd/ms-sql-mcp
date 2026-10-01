@@ -113,6 +113,15 @@ public sealed class ScriptBatchSplitterTests
     public void Go_with_anything_else_on_its_line_is_not_a_separator(string script) =>
         Assert.Equal(script, Assert.Single(ScriptBatchSplitter.Split(script)).Text);
 
+    [Theory]
+    [InlineData("-- note\n", true)]
+    [InlineData("  /* a */\r\n-- b", true)]
+    [InlineData("/* GO */ SELECT 1", false)]
+    [InlineData("/* unterminated", false)]
+    [InlineData("'-- not a comment'", false)]
+    public void Is_comment_only_is_true_only_for_whitespace_and_comments(string text, bool expected) =>
+        Assert.Equal(expected, ScriptBatchSplitter.IsCommentOnly(text));
+
     [Fact]
     public void Comment_only_batch_is_kept_and_indented_go_splits()
     {

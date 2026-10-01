@@ -34,6 +34,8 @@ public sealed record ScriptRunResult(
 internal static class ScriptRunner
 {
     public const string ReadOnlyRefusedPrefix = "Read-only connection: only a single read-only SELECT per batch can run here.";
+    /// <summary>Rows kept per run across all result sets; later rows are only counted.</summary>
+    public const int MaxTotalRows = 50_000;
     public const string ConnectionClosedMessage = "Connection was closed by the server; remaining batches were not run.";
 
     public static async Task<ScriptRunResult> RunAsync(
@@ -42,7 +44,8 @@ internal static class ScriptRunner
         bool readOnly,
         int maxRowsPerResultSet,
         CancellationToken ct,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        int maxTotalRows = MaxTotalRows)
     {
         logger ??= NullLogger.Instance;
         var stopwatch = Stopwatch.StartNew();
@@ -51,11 +54,19 @@ internal static class ScriptRunner
         var messages = new List<ScriptMessage>();
         var hadErrors = false;
         var startLine = 1;
+        var budget = new RowBudget(maxTotalRows);
+        var budgetWarned = false;
+
+        // Inside a procedure, LineNumber counts from the procedure's text, so it is not a script line.
+        int? ScriptLine(SqlError error) =>
+            string.IsNullOrEmpty(error.Procedure) && error.LineNumber > 0 ? startLine + error.LineNumber - 1 : null;
 
         void AddError(SqlError error)
         {
-            int? line = error.LineNumber > 0 ? startLine + error.LineNumber - 1 : null;
-            var header = $"Msg {error.Number}, Level {error.Class}, State {error.State}" + (line is null ? string.Empty : $", Line {line}");
+            var line = ScriptLine(error);
+            var header = !string.IsNullOrEmpty(error.Procedure)
+                ? $"Msg {error.Number}, Level {error.Class}, State {error.State}, Procedure {error.Procedure}, Line {error.LineNumber}"
+                : $"Msg {error.Number}, Level {error.Class}, State {error.State}" + (line is null ? string.Empty : $", Line {line}");
             messages.Add(new ScriptMessage("error", header + Environment.NewLine + error.Message, line));
             hadErrors = true;
         }
@@ -70,7 +81,7 @@ internal static class ScriptRunner
                 }
                 else
                 {
-                    messages.Add(new ScriptMessage("info", error.Message, error.LineNumber > 0 ? startLine + error.LineNumber - 1 : null));
+                    messages.Add(new ScriptMessage("info", error.Message, ScriptLine(error)));
                 }
             }
         }
@@ -87,6 +98,13 @@ internal static class ScriptRunner
             {
                 var batch = batches[b];
                 startLine = batch.StartLine;
+
+                // SSMS sends comment-only batches; on a read-only connection they would only be refused, so skip them.
+                if (readOnly && ScriptBatchSplitter.IsCommentOnly(batch.Text))
+                {
+                    continue;
+                }
+
                 if (readOnly && !SqlStatementClassifier.TryValidateReadOnly(batch.Text, out var validationError))
                 {
                     messages.Add(new ScriptMessage("error", $"{ReadOnlyRefusedPrefix} ({validationError})", batch.StartLine));
@@ -98,7 +116,7 @@ internal static class ScriptRunner
                 {
                     try
                     {
-                        await ExecuteBatchAsync(conn, batch.Text, b + 1, readOnly, maxRowsPerResultSet, resultSets, OnStatementCompleted, logger, ct)
+                        await ExecuteBatchAsync(conn, batch.Text, b + 1, readOnly, maxRowsPerResultSet, budget, resultSets, OnStatementCompleted, logger, ct)
                             .ConfigureAwait(false);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException && ct.IsCancellationRequested)
@@ -117,6 +135,12 @@ internal static class ScriptRunner
                         // e.g. the session broke between batches; reported like a SQL error, then the state check stops the run.
                         messages.Add(new ScriptMessage("error", ex.Message, batch.StartLine));
                         hadErrors = true;
+                    }
+
+                    if (budget.Exhausted && !budgetWarned)
+                    {
+                        budgetWarned = true;
+                        messages.Add(new ScriptMessage("warning", $"Row budget of {maxTotalRows} rows per run reached; later result sets show no rows.", null));
                     }
 
                     if (conn.State != ConnectionState.Open)
@@ -160,6 +184,7 @@ internal static class ScriptRunner
         int batchNumber,
         bool readOnly,
         int maxRows,
+        RowBudget budget,
         List<ResultSet> resultSets,
         StatementCompletedEventHandler onStatementCompleted,
         ILogger logger,
@@ -179,7 +204,7 @@ internal static class ScriptRunner
             {
                 if (reader.FieldCount > 0)
                 {
-                    resultSets.Add(await ReadResultSetAsync(reader, batchNumber, maxRows, ct).ConfigureAwait(false));
+                    resultSets.Add(await ReadResultSetAsync(reader, batchNumber, maxRows, budget, ct).ConfigureAwait(false));
                 }
             }
             while (await reader.NextResultAsync(ct).ConfigureAwait(false));
@@ -194,7 +219,7 @@ internal static class ScriptRunner
         }
     }
 
-    private static async Task<ResultSet> ReadResultSetAsync(SqlDataReader reader, int batchNumber, int maxRows, CancellationToken ct)
+    private static async Task<ResultSet> ReadResultSetAsync(SqlDataReader reader, int batchNumber, int maxRows, RowBudget budget, CancellationToken ct)
     {
         var columns = new ResultColumn[reader.FieldCount];
         for (var i = 0; i < columns.Length; i++)
@@ -211,6 +236,14 @@ internal static class ScriptRunner
             {
                 continue;
             }
+
+            if (budget.Remaining == 0)
+            {
+                budget.Exhausted = true;
+                continue;
+            }
+
+            budget.Remaining--;
 
             var row = new object?[columns.Length];
             for (var i = 0; i < row.Length; i++)
@@ -232,9 +265,26 @@ internal static class ScriptRunner
         }
         catch (Exception ex) when (ex is not SqlException)
         {
-            // e.g. a CLR UDT (hierarchyid, geography) whose assembly is not loaded in this process.
-            return $"<{reader.GetDataTypeName(ordinal)}>";
+            // e.g. decimal(38) beyond the .NET decimal range: the Sql* value still has an exact text form.
+            try
+            {
+                return reader.GetSqlValue(ordinal)?.ToString();
+            }
+            catch (Exception inner) when (inner is not SqlException)
+            {
+                // e.g. a CLR UDT (hierarchyid, geography) whose assembly is not loaded in this process.
+                return $"<{reader.GetDataTypeName(ordinal)}>";
+            }
         }
+    }
+
+    /// <summary>Rows that may still be kept in this run, across all result sets (<see cref="MaxTotalRows"/> by default).</summary>
+    private sealed class RowBudget(int limit)
+    {
+        public int Remaining { get; set; } = Math.Max(limit, 0);
+
+        /// <summary>True once a row was dropped because the budget was used up.</summary>
+        public bool Exhausted { get; set; }
     }
 
     /// <summary>Each run is its own session: a transaction left open would roll back invisibly on dispose, so say so.</summary>

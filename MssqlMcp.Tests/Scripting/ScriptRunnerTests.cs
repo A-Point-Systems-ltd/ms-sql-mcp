@@ -180,6 +180,68 @@ public sealed class ScriptRunnerTests
     }
 
     [SkippableFact]
+    public async Task Read_only_skips_comment_only_batches_silently()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+
+        var result = await RunAsync(cs, "-- header\nGO\nSELECT 1 AS a\nGO\n/* trailing */\n-- end", readOnly: true);
+
+        Assert.False(result.HadErrors, string.Join(" | ", result.Messages.Select(m => m.Text)));
+        Assert.Equal(3, result.Batches);
+        Assert.Single(result.ResultSets);
+        Assert.DoesNotContain(result.Messages, m => m.Kind is "error" or "warning");
+    }
+
+    [SkippableFact]
+    public async Task Error_raised_inside_an_executed_procedure_uses_the_procedure_header_and_no_script_line()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+        await ScratchDatabases.ExecAsync(cs, "CREATE PROCEDURE dbo.boom AS\nRAISERROR('bad thing', 16, 1);");
+
+        var result = await RunAsync(cs, "SELECT 1 AS a\nGO\nEXEC dbo.boom;\nSELECT 2 AS b");
+
+        Assert.True(result.HadErrors);
+        var error = Assert.Single(result.Messages, m => m.Kind == "error");
+        Assert.Equal("Msg 50000, Level 16, State 1, Procedure dbo.boom, Line 2" + Environment.NewLine + "bad thing", error.Text);
+        Assert.Null(error.Line);
+        Assert.Equal(2, result.ResultSets.Count);
+    }
+
+    [SkippableFact]
+    public async Task Row_budget_caps_rows_across_result_sets_with_one_warning()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync();
+        const string Five = "SELECT v FROM (VALUES (1), (2), (3), (4), (5)) AS t(v) ORDER BY v;";
+
+        var result = await ScriptRunner.RunAsync(
+            conn, $"{Five}\n{Five}\nGO\n{Five}", readOnly: false, maxRowsPerResultSet: 1000, CancellationToken.None, maxTotalRows: 7);
+
+        Assert.Equal([5, 2, 0], result.ResultSets.Select(s => s.Rows.Count));
+        Assert.All(result.ResultSets, s => Assert.Equal(5, s.RowCount));
+        Assert.Equal([false, true, true], result.ResultSets.Select(s => s.Truncated));
+        Assert.Equal("v", result.ResultSets[2].Columns[0].Name);
+        var warning = Assert.Single(result.Messages, m => m.Kind == "warning");
+        Assert.Equal("Row budget of 7 rows per run reached; later result sets show no rows.", warning.Text);
+        Assert.Equal(50_000, ScriptRunner.MaxTotalRows);
+    }
+
+    [SkippableFact]
+    public async Task Value_outside_the_dotnet_range_falls_back_to_the_sql_value_text()
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+
+        var result = await RunAsync(cs, "SELECT CAST(REPLICATE('9', 38) AS decimal(38,0)) AS d");
+
+        Assert.Equal(new string('9', 38), Assert.Single(result.ResultSets).Rows[0][0]);
+    }
+
+    [SkippableFact]
     public async Task Repeat_count_runs_the_batch_n_times()
     {
         var (scratch, cs) = await ScratchAsync();
