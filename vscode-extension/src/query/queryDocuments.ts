@@ -55,6 +55,25 @@ export function keepOnActivation(scheme: string, isOpen: boolean, fileExists: ()
 }
 
 /**
+ * What a document close means once the reopen grace has passed. `reopened`: the uri is open again (a language change
+ * closes and reopens the same document), so nothing is dropped, deleted or cancelled. `keep`: the binding stays
+ * ({@link dropOnClose} is false). `drop`: the binding goes (and a query document's content is kept or deleted).
+ */
+export function afterCloseGrace(input: { scheme: string; isDirty: boolean; reopened: boolean }): 'reopened' | 'keep' | 'drop' {
+  if (input.reopened) return 'reopened';
+  return dropOnClose(input.scheme, input.isDirty) ? 'drop' : 'keep';
+}
+
+/**
+ * Whether a closed document's run is cancelled and its results dropped only after the reopen grace (and not when it was
+ * reopened): `mssql-sql:` uris are never reused by another document. Other schemes clean up at once, because a new
+ * untitled document may reuse the uri immediately.
+ */
+export function defersRunCleanup(scheme: string): boolean {
+  return scheme === SQL_DOC_SCHEME;
+}
+
+/**
  * The query document ids (from this workspace's own list) whose backing file may be deleted: no tab shows them.
  * Malformed ids are left out, so nothing read back from workspace state becomes a path.
  */

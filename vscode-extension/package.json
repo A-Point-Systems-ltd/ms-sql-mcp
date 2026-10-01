@@ -145,6 +145,12 @@
         "icon": "$(new-file)"
       },
       {
+        "command": "msSqlMcp.openRecentQuery",
+        "title": "Open Recent Query…",
+        "category": "APoint-ms-sql",
+        "icon": "$(history)"
+      },
+      {
         "command": "msSqlMcp.changeConnection",
         "title": "Change Connection",
         "category": "APoint-ms-sql",
@@ -186,6 +192,11 @@
           "command": "msSqlMcp.refresh",
           "when": "view == msSqlMcp.explorer",
           "group": "navigation@3"
+        },
+        {
+          "command": "msSqlMcp.openRecentQuery",
+          "when": "view == msSqlMcp.explorer",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [

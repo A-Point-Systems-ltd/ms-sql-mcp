@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { McpToolError } from '../client/parse';
 import type { ServerProcessClient } from '../client/serverProcessClient';
@@ -6,11 +5,10 @@ import { pickProfile } from '../connections/connectionCommands';
 import type { ConnectionProfile } from '../connections/profile';
 import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
-import { removeLegacyEdits } from '../explorer/editableDdl';
 import { EditorRunState, editorRunState, findProfile, runContextDocs } from './editorState';
-import { QueryAssociation, QueryDocuments, dropOnClose, isNeverBound, keepOnActivation, orphanQueryIds } from './queryDocuments';
-import { SqlDocFileSystem } from './sqlDocFs';
-import { QueryCounter, isValidDocId, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
+import { QueryAssociation, QueryDocuments, defersRunCleanup, isNeverBound } from './queryDocuments';
+import { SqlDocFileSystem, openDocumentKeys } from './sqlDocFs';
+import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
 import type { ResultsState } from './resultsHtml';
 import { RunRegistry } from './runRegistry';
@@ -56,65 +54,6 @@ function commandTarget(arg: unknown): { document: vscode.TextDocument; editor: v
   }
   const editor = vscode.window.activeTextEditor;
   return editor ? { document: editor.document, editor } : undefined;
-}
-
-/** A closed document reopens at once when only its language changed; wait this long before forgetting it. */
-const REOPEN_GRACE_MS = 200;
-
-/**
- * The ids of the `mssql-sql:/query/` documents this workspace created, so the activation prune never deletes another
- * window's (the backing files live in global storage).
- */
-const QUERY_DOC_IDS_KEY = 'msSqlMcp.queryDocIds';
-
-/** `uri.toString()` of every loaded document and every text tab (restored background tabs may have no document yet). */
-function openDocumentKeys(): Set<string> {
-  const open = new Set(vscode.workspace.textDocuments.map(d => d.uri.toString()));
-  for (const group of vscode.window.tabGroups.all) {
-    for (const tab of group.tabs) {
-      if (tab.input instanceof vscode.TabInputText) open.add(tab.input.uri.toString());
-    }
-  }
-  return open;
-}
-
-/** The ids and `Query N` numbers of the query documents open in a tab or loaded. */
-function openQueryDocs(): { ids: Set<string>; numbers: Set<number> } {
-  const ids = new Set<string>();
-  const numbers = new Set<number>();
-  for (const key of openDocumentKeys()) {
-    const addr = SqlDocFileSystem.address(vscode.Uri.parse(key));
-    if (addr?.kind !== 'query') continue;
-    ids.add(addr.id);
-    const n = queryNumberOf(addr.title);
-    if (n !== undefined) numbers.add(n);
-  }
-  return { ids, numbers };
-}
-
-/** This workspace's query document ids (workspace state), with add / remove. */
-class OwnedQueryIds {
-  /** Created in this session: never pruned, even when New Query runs while the activation prune is under way. */
-  readonly created = new Set<string>();
-
-  constructor(private readonly memento: vscode.Memento) {}
-
-  all(): string[] {
-    const v = this.memento.get<unknown>(QUERY_DOC_IDS_KEY, []);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
-  }
-
-  async add(id: string): Promise<void> {
-    this.created.add(id);
-    const ids = this.all();
-    if (!ids.includes(id)) await this.memento.update(QUERY_DOC_IDS_KEY, [...ids, id]);
-  }
-
-  async remove(ids: readonly string[]): Promise<void> {
-    if (!ids.length) return;
-    const drop = new Set(ids);
-    await this.memento.update(QUERY_DOC_IDS_KEY, this.all().filter(id => !drop.has(id)));
-  }
 }
 
 /** Everything known about one document's binding. */
@@ -193,69 +132,6 @@ export class QueryEditorTracker implements vscode.Disposable {
 }
 
 /**
- * Documents other than files whose editor is gone (untitled, `mssql-sql:`) and files that no longer exist lose their
- * association; this workspace's query documents that no tab shows lose their backing file.
- */
-async function pruneStale(docs: QueryDocuments, sqlDocs: SqlDocFileSystem, owned: OwnedQueryIds): Promise<void> {
-  const open = openDocumentKeys();
-  await docs.prune(key => {
-    const uri = vscode.Uri.parse(key);
-    return keepOnActivation(uri.scheme, open.has(key), () => fs.existsSync(uri.fsPath));
-  });
-  const all = owned.all();
-  const orphans = orphanQueryIds(all, new Set([...openQueryDocs().ids, ...owned.created]));
-  for (const id of orphans) await sqlDocs.deleteBacking('query', id);
-  // Malformed ids are dropped from the list too.
-  await owned.remove(all.filter(id => !isValidDocId(id) || orphans.includes(id)));
-}
-
-/**
- * Keeps associations in step with document lifecycle: closed documents other than files (untitled, `mssql-sql:` and
- * other schemes; a closed query document also loses its backing file) and renamed files.
- */
-function trackDocumentLifecycle(
-  context: vscode.ExtensionContext, docs: QueryDocuments, sqlDocs: SqlDocFileSystem, owned: OwnedQueryIds, log: Logger,
-): void {
-  const timers = new Set<NodeJS.Timeout>();
-  context.subscriptions.push(
-    vscode.workspace.onDidCloseTextDocument(doc => {
-      const query = SqlDocFileSystem.address(doc.uri);
-      const queryId = query?.kind === 'query' ? query.id : undefined;
-      // A dirty mssql-sql document keeps its binding and content; the activation prune cleans up when no tab shows it.
-      if (!dropOnClose(doc.uri.scheme, doc.isDirty) || (!docs.get(doc.uri) && !queryId)) return;
-      const key = doc.uri.toString();
-      const timer = setTimeout(() => {
-        timers.delete(timer);
-        if (openDocumentKeys().has(key)) return;
-        void docs.delete(key);
-        if (queryId) {
-          void sqlDocs.deleteBacking('query', queryId)
-            .then(() => owned.remove([queryId]))
-            .catch(err => log.debug('query', `Forgetting a closed query document failed: ${String(err)}`));
-        }
-      }, REOPEN_GRACE_MS);
-      timers.add(timer);
-    }),
-    vscode.workspace.onDidRenameFiles(e => {
-      for (const { oldUri, newUri } of e.files) {
-        const oldKey = oldUri.toString();
-        const newKey = newUri.toString();
-        for (const [key] of docs.all()) {
-          // The file itself, or a file inside a renamed folder.
-          if (key === oldKey) void docs.rename(key, newKey);
-          else if (key.startsWith(`${oldKey}/`)) void docs.rename(key, newKey + key.slice(oldKey.length));
-        }
-      }
-    }),
-    { dispose: () => { for (const t of timers) clearTimeout(t); timers.clear(); } },
-  );
-  // The legacy edits/ folder first, so its associations are gone before the prune looks for their files.
-  void removeLegacyEdits(context.globalStorageUri.fsPath, docs, log)
-    .then(() => pruneStale(docs, sqlDocs, owned))
-    .catch(err => log.error('query', 'Pruning stale query document associations failed', err));
-}
-
-/**
  * What the query commands need beyond the store: the runner process, the `mssql-sql:` file system and a way to refresh
  * the object tree.
  */
@@ -269,8 +145,8 @@ export interface QueryRunDeps {
 
 /**
  * Creates the query-document association store, the editor tracker and the results view, and registers
- * `msSqlMcp.newQuery`, `msSqlMcp.changeConnection`, `msSqlMcp.runQuery`, `msSqlMcp.cancelQuery` and
- * `msSqlMcp.runQueryReadOnly`.
+ * `msSqlMcp.newQuery`, `msSqlMcp.openRecentQuery`, `msSqlMcp.changeConnection`, `msSqlMcp.runQuery`,
+ * `msSqlMcp.cancelQuery` and `msSqlMcp.runQueryReadOnly`.
  */
 export function registerQueryCommands(
   context: vscode.ExtensionContext, store: ConnectionStore, log: Logger, deps: QueryRunDeps,
@@ -278,9 +154,8 @@ export function registerQueryCommands(
   const docs = new QueryDocuments(context.workspaceState);
   const tracker = new QueryEditorTracker(store, docs);
   context.subscriptions.push(docs, tracker);
-  const owned = new OwnedQueryIds(context.workspaceState);
-  trackDocumentLifecycle(context, docs, deps.sqlDocs, owned, log);
-  const counter = new QueryCounter();
+  const lifecycle = new SqlDocLifecycle(context, docs, deps.sqlDocs, log);
+  context.subscriptions.push(lifecycle);
 
   /** One run per document, each with its own token (see RunRegistry). */
   const running = new RunRegistry();
@@ -290,6 +165,7 @@ export function registerQueryCommands(
     return active ? { key: active.editor.document.uri.toString(), bound: !!active.assoc } : undefined;
   }, cancel);
   const setKey = contextSetter();
+  const closeTimers = new Set<NodeJS.Timeout>();
   const updateRunning = () => {
     const editor = vscode.window.activeTextEditor;
     setKey(RUNNING_KEY, !!editor && running.has(editor.document.uri.toString()));
@@ -302,16 +178,29 @@ export function registerQueryCommands(
       updateRunning();
       results.update();
     }),
-    // Results are kept in memory per document. Closing a document aborts its run and drops its results and guard at
-    // once, so a new document reusing the uri (untitled) starts clean; the old run no longer updates anything.
+    // Results are kept in memory per document. Closing a document aborts its run and drops its results and guard: at
+    // once for untitled documents, so a new document reusing the uri starts clean (the old run no longer updates
+    // anything); after the reopen grace for mssql-sql documents, whose language change closes and reopens them.
     vscode.workspace.onDidCloseTextDocument(doc => {
       const key = doc.uri.toString();
-      if (running.close(key)) {
-        log.info('query', 'The document of a running query was closed: the run was cancelled.');
-        updateRunning();
+      const cleanUp = () => {
+        if (running.close(key)) {
+          log.info('query', 'The document of a running query was closed: the run was cancelled.');
+          updateRunning();
+        }
+        results.forget(key);
+      };
+      if (!defersRunCleanup(doc.uri.scheme)) {
+        cleanUp();
+        return;
       }
-      results.forget(key);
+      const timer = setTimeout(() => {
+        closeTimers.delete(timer);
+        if (!openDocumentKeys().has(key)) cleanUp();
+      }, REOPEN_GRACE_MS);
+      closeTimers.add(timer);
     }),
+    { dispose: () => { for (const t of closeTimers) clearTimeout(t); closeTimers.clear(); } },
     running,
   );
   updateRunning();
@@ -334,15 +223,11 @@ export function registerQueryCommands(
       return;
     }
     // An empty mssql-sql: document titled "Query N - <server> - <database>" (not untitled: its tab shows the target).
-    const id = newQueryId();
-    const uri = SqlDocFileSystem.uri('query', id, queryObjectName(counter.next(openQueryDocs().numbers)), profileTarget(p));
-    await owned.add(id);
-    await deps.sqlDocs.writeContent(uri, '');
-    await docs.set(uri, { connection: p.name, kind: 'query' });
-    const doc = await vscode.workspace.openTextDocument(uri);
-    const sqlDoc = doc.languageId === 'sql' ? doc : await vscode.languages.setTextDocumentLanguage(doc, 'sql');
-    await vscode.window.showTextDocument(sqlDoc, { preview: false });
+    await lifecycle.createQuery(p);
   });
+
+  // Palette and the explorer title: kept query windows (closed with text), newest first.
+  reg('openRecentQuery', () => lifecycle.openRecentQuery(store));
 
   // The status bar item calls this without arguments (the active editor).
   reg('changeConnection', async () => {
@@ -448,7 +333,9 @@ export function registerQueryCommands(
     } finally {
       running.finish(token);
       // Closed while running: its results must not outlive it (close() already dropped the guard).
-      if (document.isClosed && shown !== undefined && results.stateOf(key) === shown) results.forget(key);
+      if (document.isClosed && !openDocumentKeys().has(key) && shown !== undefined && results.stateOf(key) === shown) {
+        results.forget(key);
+      }
       updateRunning();
     }
   });

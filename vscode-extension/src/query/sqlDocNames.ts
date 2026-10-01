@@ -10,7 +10,7 @@ export const SQL_DOC_SCHEME = 'mssql-sql';
 
 export type SqlDocKind = 'query' | 'object';
 
-/** What a `mssql-sql:/<kind>/<id>/<title>.sql` path identifies. The title is display-only; kind + id find the content. */
+/** What a `mssql-sql:/<kind>/<id>/<title>` path identifies. The title is display-only; kind + id find the content. */
 export interface SqlDocAddress {
   kind: SqlDocKind;
   id: string;
@@ -101,20 +101,40 @@ export class QueryCounter {
   }
 }
 
-/** `/<kind>/<id>/<title>.sql`; the title goes through {@link titlePart}. Use with `Uri.from({ scheme, path })`. */
+/**
+ * `/<kind>/<id>/<title>`: no extension, so the tab reads exactly the title (the language is set to sql on open, see
+ * {@link needsSqlLanguage}). The title goes through {@link titlePart}. Use with `Uri.from({ scheme, path })`.
+ */
 export function sqlDocPath(addr: SqlDocAddress): string {
   if (!isKind(addr.kind) || !isValidDocId(addr.id)) throw new Error(`Invalid SQL document address: ${addr.kind}/${addr.id}`);
-  return `/${addr.kind}/${addr.id}/${titlePart(addr.title)}.sql`;
+  return `/${addr.kind}/${addr.id}/${titlePart(addr.title)}`;
 }
 
-/** The address in a `mssql-sql:` path, or undefined when it is not exactly `/<kind>/<id>/<title>.sql`. */
+/** The address in a `mssql-sql:` path, or undefined when it is not exactly `/<kind>/<id>/<title>`. */
 export function parseSqlDocPath(p: string): SqlDocAddress | undefined {
   const parts = p.split('/');
   if (parts.length !== 4 || parts[0] !== '') return undefined;
-  const [, kind, id, file] = parts;
-  if (!isKind(kind) || !isValidDocId(id) || !file.endsWith('.sql')) return undefined;
-  const title = file.slice(0, -'.sql'.length);
-  return title ? { kind, id, title } : undefined;
+  const [, kind, id, title] = parts;
+  if (!isKind(kind) || !isValidDocId(id) || !title || title === '.' || title === '..') return undefined;
+  return { kind, id, title };
+}
+
+/** `/`, `/<kind>` and `/<kind>/<id>` (optionally with a trailing `/`): the virtual directories of the file system. */
+export function isSqlDocDirectory(p: string): boolean {
+  return /^\/(?:(?:query|object)(?:\/[0-9a-f]{8,40})?)?\/?$/.test(p);
+}
+
+/** A `mssql-sql:` document whose language is not sql (no file extension to detect it from) gets it set. */
+export function needsSqlLanguage(scheme: string, languageId: string): boolean {
+  return scheme === SQL_DOC_SCHEME && languageId !== 'sql';
+}
+
+/** FileSystemProvider.writeFile: whether the `create` / `overwrite` flags allow the write, given whether the file exists. */
+export function writeFileCheck(
+  exists: boolean, options: { readonly create: boolean; readonly overwrite: boolean },
+): 'write' | 'FileNotFound' | 'FileExists' {
+  if (!exists) return options.create ? 'write' : 'FileNotFound';
+  return options.create && !options.overwrite ? 'FileExists' : 'write';
 }
 
 /** `<root>/sqldocs/<kind>/<id>.sql`. Throws for an unknown kind or a malformed id, so no input escapes the folder. */

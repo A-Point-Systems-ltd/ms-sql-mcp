@@ -5,7 +5,7 @@ import { pick } from '../client/parse';
 import type { ConnectionProfile } from '../connections/profile';
 import { Logger } from '../logger';
 import type { QueryAssociation, QueryDocuments } from '../query/queryDocuments';
-import { SqlDocFileSystem } from '../query/sqlDocFs';
+import { SqlDocFileSystem, openSqlDocs } from '../query/sqlDocFs';
 import { LEGACY_EDITS_DIR, isLegacyEditPath, objectDisplayName, profileTarget } from '../query/sqlDocNames';
 import { ScriptTarget, targetOf } from '../query/targetGuard';
 import type { ObjectRef } from './catalog';
@@ -25,26 +25,7 @@ const objectBinding = (ref: ObjectRef, target: ScriptTarget | undefined): QueryA
   ({ connection: ref.connection, kind: 'object', object: ref, ...(target ? { target } : {}) });
 
 /**
- * The uri of an open document (or tab) of object document `id`, whatever its title: the title is display-only, so a
- * document opened before the profile's server/database changed is still the same document.
- */
-function openObjectUri(id: string): vscode.Uri | undefined {
-  const matches = (uri: vscode.Uri) => {
-    const addr = SqlDocFileSystem.address(uri);
-    return addr?.kind === 'object' && addr.id === id;
-  };
-  const doc = vscode.workspace.textDocuments.find(d => matches(d.uri));
-  if (doc) return doc.uri;
-  for (const group of vscode.window.tabGroups.all) {
-    for (const tab of group.tabs) {
-      if (tab.input instanceof vscode.TabInputText && matches(tab.input.uri)) return tab.input.uri;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Opens a view / procedure / function as an editable `mssql-sql:/object/<id>/<schema.name - server - db>.sql` document
+ * Opens a view / procedure / function as an editable `mssql-sql:/object/<id>/<schema.name - server - db>` document
  * bound to its connection, so Run / F5 applies it. The script comes from the read-only explorer process (form 'alter':
  * CREATE OR ALTER or ALTER by server version). The binding records `profile`'s server/database now, so Run can warn when
  * the connection later points elsewhere. A clean open document gets the new script through the file system provider
@@ -63,7 +44,8 @@ export async function openEditableDdl(
   const scriptedFrom = profile ? targetOf(profile) : undefined;
   const label = `${ref.scriptType} ${objectDisplayName(ref)} from ${ref.connection}`;
   const id = objectDocId(ref);
-  const uri = openObjectUri(id) ?? SqlDocFileSystem.uri('object', id, objectDisplayName(ref), profileTarget(profile, ref.connection));
+  // An open document of this object keeps its uri whatever its title (the title is display-only).
+  const uri = openSqlDocs('object').get(id) ?? SqlDocFileSystem.uri('object', id, objectDisplayName(ref), profileTarget(profile, ref.connection));
   const key = uri.toString();
   const findOpen = () => vscode.workspace.textDocuments.find(d => d.uri.toString() === key);
 

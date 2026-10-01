@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { URI, Utils } from 'vscode-uri';
 import {
-  SQL_DOC_SCHEME, QueryCounter, backingFile, docTitle, isLegacyEditPath, isValidDocId, newQueryId, objectDisplayName,
-  parseSqlDocPath, profileTarget, queryNumberOf, queryObjectName, sqlDocPath, titlePart,
+  SQL_DOC_SCHEME, QueryCounter, backingFile, docTitle, isLegacyEditPath, isSqlDocDirectory, isValidDocId, needsSqlLanguage,
+  newQueryId, objectDisplayName, parseSqlDocPath, profileTarget, queryNumberOf, queryObjectName, sqlDocPath, titlePart,
+  writeFileCheck,
 } from '../out/query/sqlDocNames.js';
 
 const profile = (over = {}) => ({
@@ -46,13 +47,15 @@ test('title parts: "/" becomes U+2215, control characters are dropped, empty par
   assert.equal(docTitle('x/y', { server: 's/t', database: 'd\nb' }), 'x∕y - s∕t - db');
 });
 
-test('path is /<kind>/<id>/<title>.sql and parses back', () => {
-  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'Query 1 - S - D' }), '/query/abcd1234/Query 1 - S - D.sql');
-  assert.deepEqual(parseSqlDocPath('/object/0123456789abcdef/dbo.v - S - D.sql'), { kind: 'object', id: '0123456789abcdef', title: 'dbo.v - S - D' });
+test('path is /<kind>/<id>/<title> (no extension) and parses back', () => {
+  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'Query 1 - S - D' }), '/query/abcd1234/Query 1 - S - D');
+  assert.deepEqual(parseSqlDocPath('/object/0123456789abcdef/dbo.v - S - D'), { kind: 'object', id: '0123456789abcdef', title: 'dbo.v - S - D' });
+  // Whatever the title ends with belongs to it: no extension is stripped.
+  assert.deepEqual(parseSqlDocPath('/query/abcd1234/x.sql'), { kind: 'query', id: 'abcd1234', title: 'x.sql' });
   // A slash or control character in the title never adds a segment.
-  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'a/b\u0001' }), '/query/abcd1234/a∕b.sql');
-  for (const bad of ['/', '/query', '/query/abcd1234', '/other/abcd1234/x.sql', '/query/ABCD1234/x.sql', '/query/abc/x.sql',
-    '/query/abcd1234/x.txt', '/query/abcd1234/a/b.sql', 'query/abcd1234/x.sql', '/query/../x.sql']) {
+  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'a/b\u0001' }), '/query/abcd1234/a∕b');
+  for (const bad of ['/', '/query', '/query/abcd1234', '/query/abcd1234/', '/other/abcd1234/x', '/query/ABCD1234/x', '/query/abc/x',
+    '/query/abcd1234/a/b', 'query/abcd1234/x', '/query/../x', '/query/abcd1234/.', '/query/abcd1234/..']) {
     assert.equal(parseSqlDocPath(bad), undefined, bad);
   }
 });
@@ -77,7 +80,7 @@ const TITLES = [
   'x∕y - s - d',
 ];
 
-test('the title survives vscode-uri: URI.parse(uri.toString()) and Utils.basename give the exact title', () => {
+test('the title survives vscode-uri: URI.parse(uri.toString()) and Utils.basename give the exact title (the tab label)', () => {
   for (const title of TITLES) {
     const p = sqlDocPath({ kind: 'object', id: '0123456789abcdef', title });
     const uri = URI.from({ scheme: SQL_DOC_SCHEME, path: p });
@@ -85,8 +88,8 @@ test('the title survives vscode-uri: URI.parse(uri.toString()) and Utils.basenam
     assert.equal(back.scheme, SQL_DOC_SCHEME, title);
     assert.equal(back.path, p, title);
     assert.equal(back.toString(), uri.toString(), title);
-    assert.equal(Utils.basename(back), `${title}.sql`, title);
-    assert.equal(Utils.basename(uri), `${title}.sql`, title);
+    assert.equal(Utils.basename(back), title, title);
+    assert.equal(Utils.basename(uri), title, title);
     assert.deepEqual(parseSqlDocPath(back.path), { kind: 'object', id: '0123456789abcdef', title }, title);
     assert.equal(back.query, '', title);
     assert.equal(back.fragment, '', title);
@@ -102,8 +105,30 @@ test('query numbers: per session, start at 1, increment, skip numbers already op
   const restored = new QueryCounter();
   assert.equal(restored.next(new Set([1, 2])), 3, 'tabs restored from the last session keep their numbers');
   assert.equal(queryNumberOf('Query 12 - S - D'), 12);
-  assert.equal(queryNumberOf('Query 12 - S - D.sql'), 12);
   for (const t of ['dbo.v - S - D', 'Query x - S - D', 'Query 0 - S - D', 'MyQuery 1 - S - D']) assert.equal(queryNumberOf(t), undefined, t);
+});
+
+test('writeFile flags: create / overwrite decide between write, FileNotFound and FileExists', () => {
+  assert.equal(writeFileCheck(true, { create: false, overwrite: false }), 'write', 'editor save of an existing document');
+  assert.equal(writeFileCheck(true, { create: false, overwrite: true }), 'write');
+  assert.equal(writeFileCheck(true, { create: true, overwrite: true }), 'write');
+  assert.equal(writeFileCheck(true, { create: true, overwrite: false }), 'FileExists');
+  assert.equal(writeFileCheck(false, { create: true, overwrite: false }), 'write');
+  assert.equal(writeFileCheck(false, { create: true, overwrite: true }), 'write');
+  assert.equal(writeFileCheck(false, { create: false, overwrite: true }), 'FileNotFound');
+  assert.equal(writeFileCheck(false, { create: false, overwrite: false }), 'FileNotFound');
+});
+
+test('directory paths: /, /<kind> and /<kind>/<id> only', () => {
+  for (const p of ['/', '/query', '/object', '/query/', '/query/abcd1234', '/object/0123456789abcdef/']) assert.equal(isSqlDocDirectory(p), true, p);
+  for (const p of ['/query/abcd1234/Query 1 - S - D', '/other', '/query/ABCD1234', '/query/abc', '']) assert.equal(isSqlDocDirectory(p), false, p);
+});
+
+test('language: mssql-sql documents are always sql, other schemes are left alone', () => {
+  assert.equal(needsSqlLanguage('mssql-sql', 'plaintext'), true);
+  assert.equal(needsSqlLanguage('mssql-sql', 'sql'), false);
+  assert.equal(needsSqlLanguage('file', 'plaintext'), false);
+  assert.equal(needsSqlLanguage('untitled', 'plaintext'), false);
 });
 
 test('backing file is <root>/sqldocs/<kind>/<id>.sql; legacy edits/ paths are recognized', () => {
