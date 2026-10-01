@@ -1,5 +1,5 @@
 -- dbo.DDL_AuditLog for the extension's DDL history (ddl_history install). Created only when missing:
--- an existing table (possibly another team's) is never altered. Compatible with SQL Server 2008 R2+.
+-- an existing table (possibly another team's) is never altered or given an index. Compatible with SQL Server 2008 R2+.
 -- The DDL_Audit trigger is applied separately from CreateDdlAuditTrigger.sql.
 
 SET ANSI_NULLS ON
@@ -24,5 +24,8 @@ BEGIN
         [ProgramName] [varchar](100) NULL,
         CONSTRAINT [PK_DDL_AuditLog] PRIMARY KEY CLUSTERED ([ID] ASC)
     );
+
+    -- ddl_history list and the trigger's "last modified" lookup filter by ObjectName. Only a table created here gets it.
+    CREATE NONCLUSTERED INDEX [IX_DDL_AuditLog_ObjectName] ON [dbo].[DDL_AuditLog] ([ObjectName], [ID]) INCLUDE ([SchemaName], [LoginName], [PostTime]);
 END
 GO

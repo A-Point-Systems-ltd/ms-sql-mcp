@@ -209,7 +209,7 @@ public sealed class InsightsLayerService(
     }
 
     private const string InstallPermissionHint =
-        "Hint: installing the database DDL trigger requires ALTER ANY DATABASE DDL TRIGGER (or membership in ddl_admin / sysadmin).";
+        "Hint: installing the DDL_Audit database trigger (it runs WITH EXECUTE AS 'dbo') requires db_owner, or ALTER ANY DATABASE DDL TRIGGER plus IMPERSONATE on dbo.";
 
     /// <summary>Existence of every object the install creates.</summary>
     internal sealed record InstallState(

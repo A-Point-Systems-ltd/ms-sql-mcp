@@ -44,4 +44,41 @@ public sealed class ConsoleLogLevelTests
         Assert.DoesNotContain('\n', warning);
         Assert.Contains(ConsoleLogLevel.Variable, warning, StringComparison.Ordinal);
     }
+
+    [Theory]
+    // 1. MSSQL_CONSOLE_LOG_LEVEL wins whenever it is set.
+    [InlineData("Debug", "Error", "Critical", LogLevel.Debug)]
+    [InlineData("none", null, "Information", LogLevel.None)]
+    // 2. Otherwise the standard configuration: Logging:Console:LogLevel:Default before Logging:LogLevel:Default.
+    [InlineData(null, "Information", "Error", LogLevel.Information)]
+    [InlineData("", "Trace", null, LogLevel.Trace)]
+    [InlineData(null, null, "Information", LogLevel.Information)]
+    [InlineData("  ", " error ", null, LogLevel.Error)]
+    [InlineData(null, "", "Debug", LogLevel.Debug)]
+    // 3. Otherwise Warning.
+    [InlineData(null, null, null, LogLevel.Warning)]
+    [InlineData(null, "", "  ", LogLevel.Warning)]
+    public void Precedence_is_variable_then_console_config_then_default_config_then_warning(
+        string? variable, string? consoleDefault, string? loggingDefault, LogLevel expected)
+    {
+        Assert.Equal(expected, ConsoleLogLevel.Resolve(variable, consoleDefault, loggingDefault, out var warning));
+        Assert.Null(warning);
+    }
+
+    [Fact]
+    public void An_invalid_variable_warns_and_falls_through_to_the_configuration()
+    {
+        Assert.Equal(LogLevel.Information, ConsoleLogLevel.Resolve("verbose", null, "Information", out var warning));
+        Assert.NotNull(warning);
+        Assert.Contains(ConsoleLogLevel.Variable, warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_invalid_configuration_level_is_skipped_and_numbers_are_read_like_microsoft_logging_reads_them()
+    {
+        Assert.Equal(LogLevel.Error, ConsoleLogLevel.Resolve(null, "loud", "Error", out var warning));
+        Assert.Null(warning);
+        Assert.Equal(LogLevel.Warning, ConsoleLogLevel.Resolve(null, "loud", "42", out _));
+        Assert.Equal(LogLevel.Debug, ConsoleLogLevel.Resolve(null, "1", "Error", out _));
+    }
 }

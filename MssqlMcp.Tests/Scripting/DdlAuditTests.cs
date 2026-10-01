@@ -24,6 +24,10 @@ public sealed class DdlAuditTests
         return await tools.DdlHistory(action, schema, name, id, top);
     }
 
+    /// <summary>The status without the server/database names, which differ per scratch database.</summary>
+    private static DdlAuditStatus Core(object? data) =>
+        Assert.IsType<DdlAuditStatus>(data) with { ServerName = null, DatabaseName = null };
+
     private static async Task<DdlAuditInstallResult> InstallAsync(string cs)
     {
         var result = await CallAsync(cs, readOnly: false, "install");
@@ -41,9 +45,9 @@ public sealed class DdlAuditTests
         var ro = await CallAsync(cs, readOnly: true, "STATUS");
 
         Assert.True(rw.Success, rw.Error);
-        Assert.Equal(new DdlAuditStatus(false, TableCompatible: false, false, false, CanInstall: true), rw.Data);
+        Assert.Equal(new DdlAuditStatus(false, TableCompatible: false, false, false, CanInstall: true), Core(rw.Data));
         Assert.True(ro.Success, ro.Error);
-        Assert.Equal(new DdlAuditStatus(false, TableCompatible: false, false, false, CanInstall: false), ro.Data);
+        Assert.Equal(new DdlAuditStatus(false, TableCompatible: false, false, false, CanInstall: false), Core(ro.Data));
     }
 
     [SkippableFact]
@@ -61,7 +65,7 @@ public sealed class DdlAuditTests
         Assert.Equal(definition, await ScratchDatabases.ScalarAsync<string>(cs, TriggerDefinitionSql));
         Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, TriggerCountSql));
         var status = await CallAsync(cs, readOnly: false, "status");
-        Assert.Equal(new DdlAuditStatus(true, TableCompatible: true, true, true, CanInstall: false), status.Data);
+        Assert.Equal(new DdlAuditStatus(true, TableCompatible: true, true, true, CanInstall: false), Core(status.Data));
 
         // The exact table definition from the brief: named default and named primary key.
         Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM sys.default_constraints WHERE name = N'DF_DDL_Audit_PostTime' AND parent_object_id = OBJECT_ID(N'dbo.DDL_AuditLog')"));
@@ -188,17 +192,106 @@ public sealed class DdlAuditTests
             "CREATE TABLE dbo.DDL_AuditLog (ID int NOT NULL PRIMARY KEY, PostTime datetime NOT NULL, ObjectName varchar(100) NULL, CommandText nvarchar(max) NULL)");
 
         var status = await CallAsync(cs, readOnly: false, "status");
-        Assert.Equal(new DdlAuditStatus(true, TableCompatible: false, false, false, CanInstall: false), status.Data);
+        Assert.Equal(new DdlAuditStatus(true, TableCompatible: false, false, false, CanInstall: false), Core(status.Data));
 
         var install = await CallAsync(cs, readOnly: false, "install");
 
         Assert.False(install.Success);
         Assert.Equal(
-            "dbo.DDL_AuditLog exists but does not have the columns the DDL_Audit trigger writes (missing: HostName, LoginName, SchemaName, "
-            + "ObjectType, EventType, CommandXML, ProgramName, ID (NOT NULL without a default or identity), "
-            + "PostTime (NOT NULL without a default or identity)); nothing was created.",
+            "dbo.DDL_AuditLog exists but the DDL_Audit trigger cannot write to it: HostName missing; LoginName missing; SchemaName missing; "
+            + "ObjectType missing; EventType missing; CommandXML missing; ProgramName missing; ID NOT NULL without a default or identity; "
+            + "PostTime NOT NULL without a default or identity. Nothing was created.",
             install.Error);
         Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, TriggerCountSql));
+    }
+
+    [SkippableFact]
+    public async Task An_existing_table_with_narrow_or_wrong_typed_columns_blocks_the_trigger_and_names_each_problem()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, """
+            CREATE TABLE dbo.DDL_AuditLog (
+                ID int IDENTITY(1,1) NOT NULL PRIMARY KEY, PostTime datetime NOT NULL DEFAULT (getdate()),
+                HostName varchar(100) NULL, LoginName nvarchar(100) NULL, SchemaName varchar(100) NULL, ObjectName varchar(50) NULL,
+                ObjectType varchar(100) NULL, EventType varchar(20) NULL, CommandText nvarchar(4000) NULL, CommandXML xml NULL,
+                ProgramName AS CAST('x' AS varchar(100)))
+            """);
+
+        var status = await CallAsync(cs, readOnly: false, "status");
+        var install = await CallAsync(cs, readOnly: false, "install");
+
+        Assert.Equal(new DdlAuditStatus(true, TableCompatible: false, false, false, CanInstall: false), Core(status.Data));
+        Assert.False(install.Success);
+        Assert.Equal(
+            "dbo.DDL_AuditLog exists but the DDL_Audit trigger cannot write to it: ObjectName varchar(50), needs at least 100 characters; "
+            + "EventType varchar(20), needs at least 64 characters; CommandText nvarchar(4000), needs nvarchar(max) or varchar(max); "
+            + "ProgramName is a computed column. Nothing was created.",
+            install.Error);
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, TriggerCountSql));
+    }
+
+    [SkippableFact]
+    public async Task A_varchar_max_command_text_is_compatible_and_status_warns_that_it_is_lossy()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, """
+            CREATE TABLE dbo.DDL_AuditLog (
+                ID bigint IDENTITY(1,1) NOT NULL PRIMARY KEY, PostTime datetime2 NOT NULL DEFAULT (sysdatetime()),
+                HostName nvarchar(128) NULL, LoginName nvarchar(128) NULL, SchemaName nvarchar(128) NULL, ObjectName nvarchar(128) NULL,
+                ObjectType nvarchar(128) NULL, EventType nvarchar(64) NULL, CommandText varchar(max) NULL, CommandXML xml NULL,
+                ProgramName nvarchar(128) NULL)
+            """);
+
+        var status = Assert.IsType<DdlAuditStatus>((await CallAsync(cs, readOnly: false, "status")).Data);
+
+        Assert.True(status.TableCompatible);
+        Assert.True(status.CanInstall);
+        Assert.Equal(["CommandText is varchar(max); non-Latin text in DDL will be stored lossy."], status.Warnings);
+        Assert.Equal(new DdlAuditInstallResult(CreatedTable: false, CreatedTrigger: true, TriggerEnabled: true), await InstallAsync(cs));
+    }
+
+    /// <summary>Why CommandXML must be xml: the trigger cannot even be created against a character CommandXML (257).</summary>
+    [SkippableFact]
+    public async Task A_character_command_xml_column_is_incompatible_because_sql_server_refuses_the_trigger_on_it()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, """
+            CREATE TABLE dbo.DDL_AuditLog (
+                ID int IDENTITY(1,1) NOT NULL PRIMARY KEY, PostTime datetime NOT NULL DEFAULT (getdate()),
+                HostName varchar(100) NULL, LoginName varchar(100) NULL, SchemaName varchar(100) NULL, ObjectName varchar(100) NULL,
+                ObjectType varchar(100) NULL, EventType varchar(64) NULL, CommandText nvarchar(max) NULL, CommandXML nvarchar(max) NULL,
+                ProgramName varchar(100) NULL)
+            """);
+
+        var install = await CallAsync(cs, readOnly: false, "install");
+        Assert.Equal(
+            "dbo.DDL_AuditLog exists but the DDL_Audit trigger cannot write to it: CommandXML nvarchar(max), needs xml. Nothing was created.",
+            install.Error);
+
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(cs);
+        await conn.OpenAsync();
+        var script = await Mssql.McpServer.InsightsLayer.InsightsLayerService.ReadEmbeddedResourceAsync(
+            typeof(DdlAudit).Assembly, Mssql.McpServer.InsightsLayer.InsightsLayerService.TriggerScriptResource, CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<Microsoft.Data.SqlClient.SqlException>(
+            () => Mssql.McpServer.InsightsLayer.InsightsLayerService.ExecuteBatchesAsync(conn, script, CancellationToken.None));
+        Assert.Equal(257, ex.Number);
+    }
+
+    [SkippableFact]
+    public async Task Status_reports_the_server_and_database_names_the_connection_actually_reached()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+
+        var status = Assert.IsType<DdlAuditStatus>((await CallAsync(cs, readOnly: true, "status")).Data);
+
+        Assert.Equal(scratch.Names[0], status.DatabaseName);
+        Assert.Equal(await ScratchDatabases.ScalarAsync<string>(cs, "SELECT CAST(COALESCE(@@SERVERNAME, SERVERPROPERTY('ServerName')) AS nvarchar(256))"), status.ServerName);
+        Assert.False(string.IsNullOrWhiteSpace(status.ServerName));
+        Assert.Null(status.Warnings);
     }
 
     [SkippableFact]
@@ -217,6 +310,9 @@ public sealed class DdlAuditTests
         var result = await InstallAsync(cs);
 
         Assert.Equal(new DdlAuditInstallResult(CreatedTable: false, CreatedTrigger: true, TriggerEnabled: true), result);
+
+        // The object-name index belongs to the create-only table script: an existing table is never given one.
+        Assert.Equal(0, await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.DDL_AuditLog') AND name = N'IX_DDL_AuditLog_ObjectName'"));
     }
 
     [SkippableFact]

@@ -311,6 +311,9 @@ public sealed class McpProtocolTests
             Assert.False(data.GetProperty("triggerExists").GetBoolean());
             Assert.False(data.GetProperty("triggerEnabled").GetBoolean());
             Assert.False(data.GetProperty("canInstall").GetBoolean());
+            Assert.False(string.IsNullOrWhiteSpace(data.GetProperty("serverName").GetString()));
+            Assert.False(string.IsNullOrWhiteSpace(data.GetProperty("databaseName").GetString()));
+            Assert.False(data.TryGetProperty("warnings", out _));
         }
     }
 
