@@ -62,7 +62,8 @@ internal static class ConnectionRoutingFilter
     /// straight through, so an unknown tool gets the SDK's unknown-tool error instead of a connection error.
     /// </summary>
     public static bool IsRouted(string toolName) =>
-        ToolNames.All.Contains(toolName, StringComparer.Ordinal) && !ToolNames.ConnectionManagementTools.Contains(toolName);
+        (ToolNames.All.Contains(toolName, StringComparer.Ordinal) || ToolNames.ExtensionOnlyTools.Contains(toolName))
+        && !ToolNames.ConnectionManagementTools.Contains(toolName);
 
     public static McpRequestHandler<CallToolRequestParams, CallToolResult> Create(
         McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>

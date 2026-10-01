@@ -54,12 +54,23 @@ public sealed class ConnectionRoutingFilterTests
     [InlineData(ToolNames.CloseConnection, false)]
     [InlineData(ToolNames.ReadData, true)]
     [InlineData(ToolNames.ExecuteSql, true)]
+    [InlineData(ToolNames.RunScript, true)]
     public void Only_known_data_tools_are_routed(string tool, bool routed) =>
         Assert.Equal(routed, ConnectionRoutingFilter.IsRouted(tool));
 
     [Fact]
     public void Every_non_management_tool_is_routed() =>
         Assert.All(ToolNames.All.Where(t => !ToolNames.ConnectionManagementTools.Contains(t)), t => Assert.True(ConnectionRoutingFilter.IsRouted(t), t));
+
+    [Fact]
+    public void Run_script_is_not_an_agent_tool_and_handles_read_only_itself()
+    {
+        Assert.Equal(23, ToolNames.All.Count);
+        Assert.DoesNotContain(ToolNames.RunScript, ToolNames.All);
+        Assert.DoesNotContain(ToolNames.RunScript, ToolNames.WriteTools);
+        Assert.Null(ConnectionRoutingFilter.Route(Multi(), ToolNames.RunScript, "ro", out var p));
+        Assert.True(p!.ReadOnly);
+    }
 
     [Fact]
     public void Read_tools_are_allowed_on_read_only_connection()

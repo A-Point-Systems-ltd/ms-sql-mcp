@@ -130,11 +130,18 @@ internal class Program
         }
 
         // The SDK creates a Tools instance per call via ActivatorUtilities, so Tools must stay stateless.
-        _ = builder.Services
+        var mcp = builder.Services
             .AddMcpServer(options => options.ServerInstructions = ServerInstructions.Build(registry))
             .WithStdioServerTransport()
             .WithRequestFilters(filters => filters.AddCallToolFilter(ConnectionRoutingFilter.Create))
             .WithToolsFromAssembly();
+
+        // Opt-in, for the VS Code extension's private runner process only: agents must never see run_script.
+        if (string.Equals(Environment.GetEnvironmentVariable("MSSQL_SCRIPT_RUNNER"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = mcp.WithTools<ScriptRunnerTools>();
+            log.Append("Script runner tool enabled (MSSQL_SCRIPT_RUNNER) - intended for the VS Code extension only.");
+        }
 
         log.Append("Building host...");
         var host = builder.Build();

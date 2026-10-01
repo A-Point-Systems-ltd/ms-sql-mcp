@@ -30,6 +30,7 @@ public sealed class McpProtocolTests
         var tools = await client.ListToolsAsync();
 
         Assert.Equal(23, tools.Count);
+        Assert.DoesNotContain(tools, t => t.Name == ToolNames.RunScript);
         Assert.Equal(ToolNames.All.OrderBy(n => n, StringComparer.Ordinal), tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
         foreach (var tool in tools)
         {
@@ -193,6 +194,55 @@ public sealed class McpProtocolTests
         Assert.Equal(before, await CountInsightRowsAsync(csA));
     }
 
+    /// <summary>
+    /// MSSQL_SCRIPT_RUNNER=true adds run_script (24 tools); it runs batches on a read/write profile and refuses writes
+    /// on a read-only one. A scratch database stands in for CONNECTION_STRING so a regression cannot leave a table behind.
+    /// </summary>
+    [SkippableFact]
+    public async Task Script_runner_env_var_adds_run_script_which_honours_read_only_profiles()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await using var client = await StartClientAsync(TwoProfiles(cs), insights: false, scriptRunner: true);
+
+        var tools = await client.ListToolsAsync();
+        Assert.Equal(24, tools.Count);
+        var runScript = Assert.Single(tools, t => t.Name == ToolNames.RunScript);
+        Assert.True(runScript.ProtocolTool.Annotations?.DestructiveHint);
+
+        var main = await client.CallToolAsync(
+            ToolNames.RunScript,
+            new Dictionary<string, object?> { ["script"] = "SELECT 1 AS n UNION ALL SELECT 2\nGO\nSELECT 3 AS m", ["connection"] = "main" });
+        using (var doc = System.Text.Json.JsonDocument.Parse(Text(main)))
+        {
+            var root = doc.RootElement;
+            Assert.True(root.GetProperty("success").GetBoolean(), Text(main));
+            var data = root.GetProperty("data");
+            Assert.False(data.GetProperty("hadErrors").GetBoolean());
+            Assert.Equal(2, data.GetProperty("batches").GetInt32());
+            var sets = data.GetProperty("resultSets");
+            Assert.Equal(2, sets.GetArrayLength());
+            Assert.Equal("[[1],[2]]", sets[0].GetProperty("rows").GetRawText());
+            Assert.Equal("n", sets[0].GetProperty("columns")[0].GetProperty("name").GetString());
+            Assert.Equal(2, sets[1].GetProperty("batch").GetInt32());
+        }
+
+        var ro = await client.CallToolAsync(
+            ToolNames.RunScript,
+            new Dictionary<string, object?> { ["script"] = "CREATE TABLE dbo.never_created (id int)", ["connection"] = "ro" });
+        using (var doc = System.Text.Json.JsonDocument.Parse(Text(ro)))
+        {
+            var data = doc.RootElement.GetProperty("data");
+            Assert.True(data.GetProperty("hadErrors").GetBoolean());
+            Assert.Contains(
+                data.GetProperty("messages").EnumerateArray(),
+                m => m.GetProperty("kind").GetString() == "error"
+                    && m.GetProperty("text").GetString()!.StartsWith("Read-only connection:", StringComparison.Ordinal));
+        }
+
+        Assert.Equal(1, await ScratchDatabases.ScalarAsync<int>(cs, "SELECT CASE WHEN OBJECT_ID(N'dbo.never_created') IS NULL THEN 1 ELSE 0 END"));
+    }
+
     private static async Task<(int Insights, int History, int Watermark)> CountInsightRowsAsync(string cs) => (
         await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM AIInsights.SchemaInsights;"),
         await ScratchDatabases.ScalarAsync<int>(cs, "SELECT COUNT(*) FROM AIInsights.InsightHistory;"),
@@ -204,19 +254,21 @@ public sealed class McpProtocolTests
     private static Task<McpClient> StartClientAsync(bool multiConnection = false)
     {
         TestConnectionString.EnsureInitialized();
-        var connections = multiConnection
-            ? System.Text.Json.JsonSerializer.Serialize(new object[]
-            {
-                new { name = "main", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING") },
-                new { name = "ro", connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING"), readOnly = true },
-            })
-            : null;
+        var connections = multiConnection ? TwoProfiles(Environment.GetEnvironmentVariable("CONNECTION_STRING")) : null;
         return StartClientAsync(connections, insights: false);
     }
 
+    /// <summary>The two-profile config: 'main' (read/write) and 'ro' (read-only) on the same database.</summary>
+    private static string TwoProfiles(string? cs) => System.Text.Json.JsonSerializer.Serialize(new object[]
+    {
+        new { name = "main", connectionString = cs },
+        new { name = "ro", connectionString = cs, readOnly = true },
+    });
+
     /// <param name="connectionsJson">MSSQL_CONNECTIONS value; null runs the single CONNECTION_STRING profile.</param>
     /// <param name="insights">Value of USE_INSIGHTS_LAYER for the server process.</param>
-    private static async Task<McpClient> StartClientAsync(string? connectionsJson, bool insights)
+    /// <param name="scriptRunner">True sets MSSQL_SCRIPT_RUNNER=true (registers run_script); false removes it.</param>
+    private static async Task<McpClient> StartClientAsync(string? connectionsJson, bool insights, bool scriptRunner = false)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -232,6 +284,7 @@ public sealed class McpProtocolTests
                 ["MSSQL_CONNECTIONS"] = connectionsJson,
                 ["MSSQL_CONNECTIONS_FILE"] = null,
                 ["USE_INSIGHTS_LAYER"] = insights ? "true" : "false",
+                ["MSSQL_SCRIPT_RUNNER"] = scriptRunner ? "true" : null,
                 ["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log"),
             },
         });

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- New extension-only tool `run_script`, registered only when `MSSQL_SCRIPT_RUNNER=true` (not listed to agents; the agent tool count stays 23). It runs a multi-batch T-SQL script with SSMS-style `GO` / `GO n` separators on one session and returns every result set (row cap per set, total row count) and every message (PRINT, row counts, errors with script line numbers). Read-only connections run only single read-only `SELECT` batches, each inside a rolled-back transaction; a transaction left open on a read/write connection is rolled back with a warning. See README, "Script runner (extension only)".
 - Connection-string `${env:NAME}` placeholders enclosed in double quotes (`Password="${env:X}"`) now have any `"` in the substituted value doubled, so passwords containing `;`, `=` or `"` work. Unquoted placeholders are substituted raw, as before. See README, "Multiple connections".
 - Single-quoted placeholders (`Password='${env:X}'`) now have any `'` in the substituted value doubled, the same way.
 - Read-only connections make no writes at all: the AI Insights layer no longer creates baselines, archives stale insights or runs DDL processing on a read-only connection (cached insights are still returned).

@@ -141,13 +141,14 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 | `MSSQL_ADHOC_ALLOWED_HOSTS` | No | any host | Comma-separated host names. When set, ad-hoc connections are refused unless the host part of `Data Source` (without `tcp:`, instance or port) matches one of them, case-insensitively. |
 | `USE_INSIGHTS_LAYER` | No | enabled | Opt-**out** switch. Set to `false`, `0`, `no`, `off`, or `disabled` to disable the AI Insights layer. Any other value (including unset) leaves it enabled. |
 | `INSIGHTS_AUTOPOPULATE` | No | enabled | Opt-out. When enabled (and insights layer is on), introspection auto-creates mechanical baseline insights and attaches enrichment directives. Set to a falsey value to disable auto-population only. |
+| `MSSQL_SCRIPT_RUNNER` | No | disabled | Set to `true` to register the extension-only `run_script` tool. For the VS Code extension's private runner process only; do not enable it for agent clients. See [Script runner (extension only)](#script-runner-extension-only). |
 | `LOG_FILE_PATH` | No | `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/macOS) | Full file path, or a directory (timestamped log files are created inside it). |
 
 When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the server also enables baseline row-count probing, baseline refresh during DDL scans, and `insightEnrichment` response directives (all derived from those two flags — there are no separate env vars for them).
 
 ## MCP tools reference
 
-The server exposes **23 tools** through a single partial `Tools` class. MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
+The server exposes **23 tools** through a single partial `Tools` class (plus the opt-in, extension-only `run_script`; see [Script runner (extension only)](#script-runner-extension-only)). MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
 
 > **Breaking change (.NET 10 / MCP SDK 2.x upgrade):** tool names changed from PascalCase (`ReadData`, `ExecuteSQL`, …) to snake_case (`read_data`, `execute_sql`, …). Update client tool allow-lists, auto-approve rules and saved prompts that reference the old names.
 
@@ -209,6 +210,16 @@ These three tools take no `connection` argument. Every other tool accepts an opt
 - **execute_sql** — single DDL/DML statements (including `SELECT … INTO`; a `CREATE PROCEDURE` body counts as one statement). Any plain `SELECT` is rejected with a message pointing to `read_data`. `SET`, `DECLARE`, `USE`, `WAITFOR` and `SHUTDOWN` are rejected as unsupported.
 
 This keeps destructive operations behind an explicitly flagged tool and prevents accidental full-table reads through the write path.
+
+### Script runner (extension only)
+
+`run_script` is the query-window runner of the MSSQL-MCP VS Code extension. It is **not** one of the 23 agent tools: the server lists it only when the process environment has `MSSQL_SCRIPT_RUNNER=true`. **Do not enable it for agent clients** (Cursor, Copilot, Claude Desktop): it runs arbitrary multi-statement scripts on read/write connections.
+
+- Arguments: `script` (required), `maxRows` (per result set, default 1000, clamped to 1..10000), `connection`.
+- Splits the script on SSMS-style `GO` lines (`GO n` repeats a batch; `GO` inside strings, comments or `[identifiers]` does not split) and runs every batch on one session, so `SET` options and `#temp` tables carry across batches.
+- Returns `data: { resultSets, messages, hadErrors, batches, elapsedMs }`. Each result set has `batch`, `columns` (`name`, `type`), `rows` (arrays in column order), `rowCount` (total) and `truncated`. Messages have `kind` (`info`, `rows`, `error`, `warning`), `text` and `line` (1-based script line, or null). SQL errors are `error` messages and execution continues with the next batch, like SSMS; `success: false` only for an empty script or a connection that cannot be opened.
+- On a read-only connection every batch must be a single read-only `SELECT` (the `read_data` rules) and runs inside a transaction that is always rolled back; other batches are refused with an `error` message.
+- On a read/write connection, a transaction the script leaves open is rolled back at the end with a `warning`: each run uses a new session, so `COMMIT` in the same run.
 
 ## Multiple connections
 

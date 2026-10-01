@@ -19,6 +19,7 @@ public sealed class ServerInstructionsTests
         Assert.Contains("there is no default connection", text);
         Assert.Contains("Current connections at startup: 2.", text);
         Assert.DoesNotContain("may be omitted until", text);
+        Assert.DoesNotContain(Mssql.McpServer.ToolNames.RunScript, text, StringComparison.Ordinal);
     }
 
     [Fact]
