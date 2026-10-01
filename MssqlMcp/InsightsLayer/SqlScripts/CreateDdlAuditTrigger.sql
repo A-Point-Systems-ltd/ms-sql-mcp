@@ -99,7 +99,8 @@ BEGIN TRY
             FOR XML PATH(''), TYPE
         ).value('.', 'NVARCHAR(MAX)');
 
-    IF @@rowcount > 0 PRINT @s;
+    -- @s is NULL when no other login changed the object in the last month: print only when there is news.
+    IF @s IS NOT NULL PRINT @s;
 END TRY
 BEGIN CATCH
     -- Never re-raise: the audit must not fail the user's DDL. Only a short warning, no command text.
