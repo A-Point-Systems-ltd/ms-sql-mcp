@@ -56,16 +56,41 @@ internal static class ScriptRunner
         var startLine = 1;
         var budget = new RowBudget(maxTotalRows);
         var budgetWarned = false;
+        var batchText = string.Empty;
+        string? definedModule = null;
+        var definedModuleResolved = false;
 
-        // Inside a procedure, LineNumber counts from the procedure's text, so it is not a script line.
-        int? ScriptLine(SqlError error) =>
-            string.IsNullOrEmpty(error.Procedure) && error.LineNumber > 0 ? startLine + error.LineNumber - 1 : null;
+        // Inside a procedure, LineNumber counts from the procedure's text, so it is a script line only when the
+        // current batch is that module's own CREATE/ALTER (a compile error); otherwise (e.g. EXEC) there is none.
+        int? ScriptLine(SqlError error)
+        {
+            if (error.LineNumber <= 0)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrEmpty(error.Procedure))
+            {
+                if (!definedModuleResolved)
+                {
+                    definedModule = ScriptBatchSplitter.DefinedModuleName(batchText);
+                    definedModuleResolved = true;
+                }
+
+                if (definedModule is null || !string.Equals(definedModule, error.Procedure, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+            }
+
+            return startLine + error.LineNumber - 1;
+        }
 
         void AddError(SqlError error)
         {
             var line = ScriptLine(error);
             var header = !string.IsNullOrEmpty(error.Procedure)
-                ? $"Msg {error.Number}, Level {error.Class}, State {error.State}, Procedure {error.Procedure}, Line {error.LineNumber}"
+                ? $"Msg {error.Number}, Level {error.Class}, State {error.State}, Procedure {error.Procedure}, Line {line ?? error.LineNumber}"
                 : $"Msg {error.Number}, Level {error.Class}, State {error.State}" + (line is null ? string.Empty : $", Line {line}");
             messages.Add(new ScriptMessage("error", header + Environment.NewLine + error.Message, line));
             hadErrors = true;
@@ -98,6 +123,8 @@ internal static class ScriptRunner
             {
                 var batch = batches[b];
                 startLine = batch.StartLine;
+                batchText = batch.Text;
+                definedModuleResolved = false;
 
                 // SSMS sends comment-only batches; on a read-only connection they would only be refused, so skip them.
                 if (readOnly && ScriptBatchSplitter.IsCommentOnly(batch.Text))

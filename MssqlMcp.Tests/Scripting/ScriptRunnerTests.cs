@@ -209,6 +209,23 @@ public sealed class ScriptRunnerTests
         Assert.Equal(2, result.ResultSets.Count);
     }
 
+    [SkippableTheory]
+    [InlineData("/* edit */ CREATE OR ALTER PROCEDURE [dbo].[p1] AS", "p1")]
+    [InlineData("CREATE OR ALTER VIEW dbo.v1 AS", "v1")]
+    public async Task Compile_error_in_a_module_definition_maps_to_the_script_line(string header, string module)
+    {
+        var (scratch, cs) = await ScratchAsync();
+        await using var _ = scratch;
+        await ScratchDatabases.ExecAsync(cs, "CREATE TABLE dbo.t (a int)");
+
+        var result = await RunAsync(cs, $"SELECT 1 AS a\nGO\n{header}\nSELECT nope FROM dbo.t\nGO\nSELECT 2 AS b");
+
+        var error = Assert.Single(result.Messages, m => m.Kind == "error");
+        Assert.Equal($"Msg 207, Level 16, State 1, Procedure {module}, Line 4" + Environment.NewLine + "Invalid column name 'nope'.", error.Text);
+        Assert.Equal(4, error.Line);
+        Assert.Equal([1, 3], result.ResultSets.Select(s => s.Batch));
+    }
+
     [SkippableFact]
     public async Task Row_budget_caps_rows_across_result_sets_with_one_warning()
     {

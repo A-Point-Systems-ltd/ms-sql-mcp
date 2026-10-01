@@ -83,6 +83,71 @@ internal static class ScriptBatchSplitter
         }
     }
 
+    /// <summary>
+    /// The unquoted last name part of the module a batch defines, when its first statement is CREATE [OR ALTER] or
+    /// ALTER of a PROC/PROCEDURE/FUNCTION/VIEW/TRIGGER; otherwise null. Token scan only, comments and whitespace skipped.
+    /// </summary>
+    public static string? DefinedModuleName(string text)
+    {
+        List<TSqlParserToken> tokens;
+        try
+        {
+            tokens = new TSql170Parser(true).GetTokenStream(new StringReader(text ?? string.Empty), out _)
+                .Where(static t => t.TokenType is not (TSqlTokenType.WhiteSpace or TSqlTokenType.SingleLineComment
+                    or TSqlTokenType.MultilineComment or TSqlTokenType.EndOfFile))
+                .ToList();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        var i = 0;
+        TSqlTokenType At(int index) => index < tokens.Count ? tokens[index].TokenType : TSqlTokenType.EndOfFile;
+        switch (At(i))
+        {
+            case TSqlTokenType.Create:
+                i++;
+                if (At(i) == TSqlTokenType.Or && At(i + 1) == TSqlTokenType.Alter)
+                {
+                    i += 2;
+                }
+
+                break;
+            case TSqlTokenType.Alter:
+                i++;
+                break;
+            default:
+                return null;
+        }
+
+        if (At(i) is not (TSqlTokenType.Proc or TSqlTokenType.Procedure or TSqlTokenType.Function or TSqlTokenType.View or TSqlTokenType.Trigger))
+        {
+            return null;
+        }
+
+        i++;
+        string? last = null;
+        while (At(i) is TSqlTokenType.Identifier or TSqlTokenType.QuotedIdentifier or TSqlTokenType.AsciiStringOrQuotedIdentifier)
+        {
+            last = Unquote(tokens[i].Text);
+            if (At(i + 1) != TSqlTokenType.Dot)
+            {
+                break;
+            }
+
+            i += 2;
+        }
+
+        return last;
+    }
+
+    private static string Unquote(string identifier) => identifier.Length >= 2 && identifier[0] == '[' && identifier[^1] == ']'
+        ? identifier[1..^1].Replace("]]", "]", StringComparison.Ordinal)
+        : identifier.Length >= 2 && identifier[0] == '"' && identifier[^1] == '"'
+            ? identifier[1..^1].Replace("\"\"", "\"", StringComparison.Ordinal)
+            : identifier;
+
     /// <summary>True when only whitespace precedes the token on its line.</summary>
     private static bool StartsLine(IList<TSqlParserToken> tokens, int index)
     {

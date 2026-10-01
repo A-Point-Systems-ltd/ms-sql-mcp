@@ -122,6 +122,18 @@ public sealed class ScriptBatchSplitterTests
     public void Is_comment_only_is_true_only_for_whitespace_and_comments(string text, bool expected) =>
         Assert.Equal(expected, ScriptBatchSplitter.IsCommentOnly(text));
 
+    [Theory]
+    [InlineData("CREATE PROCEDURE dbo.p AS SELECT 1", "p")]
+    [InlineData("-- c\n/* d */ CREATE OR ALTER PROC [dbo].[My Proc] AS SELECT 1", "My Proc")]
+    [InlineData("ALTER FUNCTION \"s\".\"f\"() RETURNS int AS BEGIN RETURN 1 END", "f")]
+    [InlineData("create or alter view v AS SELECT 1 AS a", "v")]
+    [InlineData("CREATE TRIGGER dbo.tr ON dbo.t AFTER INSERT AS SET NOCOUNT ON", "tr")]
+    [InlineData("CREATE TABLE dbo.t (i int)", null)]
+    [InlineData("SELECT 1; CREATE PROCEDURE dbo.p AS SELECT 1", null)]
+    [InlineData("EXEC dbo.p", null)]
+    public void Defined_module_name_is_the_last_name_part_of_a_leading_module_ddl(string text, string? expected) =>
+        Assert.Equal(expected, ScriptBatchSplitter.DefinedModuleName(text));
+
     [Fact]
     public void Comment_only_batch_is_kept_and_indented_go_splits()
     {
