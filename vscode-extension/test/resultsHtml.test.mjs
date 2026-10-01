@@ -138,3 +138,9 @@ test('messages: kind classes in order, and a line becomes a reveal link', () => 
   assert.match(html, /type: 'reveal'/);
   assert.match(html, /type: 'cancel'/);
 });
+
+test('a run without result sets says so in the Results pane', () => {
+  const html = render(done(result({ messages: [{ kind: 'rows', text: '(1 row affected)', line: null }] })));
+  assert.match(html, /<section class="pane hidden" id="pane-results"[^>]*><p class="none">No result sets\.<\/p><\/section>/);
+  assert.doesNotMatch(render(done(result({ resultSets: [set()] }))), /No result sets\./);
+});

@@ -62,3 +62,17 @@ export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefine
     );
   });
 }
+
+/**
+ * Gets the current process from `ensure` (raced against `signal`) and checks it is still current, because a
+ * reset can land between `ensure()` resolving and the call being counted. Retries up to `attempts` times.
+ */
+export async function acquireCurrent<T>(
+  ensure: () => Promise<T>, isCurrent: (client: T) => boolean, signal: AbortSignal | undefined, attempts = 3,
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const client = await raceAbort(ensure(), signal);
+    if (isCurrent(client)) return client;
+    if (attempt >= attempts) throw new Error('The server process restarted while the call was starting.');
+  }
+}

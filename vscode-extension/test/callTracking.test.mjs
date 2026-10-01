@@ -73,3 +73,27 @@ test('raceAbort does not leave an unhandled rejection when the losing promise fa
     process.off('unhandledRejection', onUnhandled);
   }
 });
+
+test('acquireCurrent retries when a reset replaced the process between ensure() and the call', async () => {
+  const { acquireCurrent } = await import('../out/client/callTracking.js');
+  let current = 'old';
+  let calls = 0;
+  const ensure = async () => {
+    calls++;
+    const got = current;
+    current = 'new'; // a reset lands right after ensure() resolved
+    return got;
+  };
+  assert.equal(await acquireCurrent(ensure, c => c === current, undefined), 'new');
+  assert.equal(calls, 2);
+});
+
+test('acquireCurrent gives up after the attempts and honours the signal', async () => {
+  const { acquireCurrent } = await import('../out/client/callTracking.js');
+  let n = 0;
+  await assert.rejects(acquireCurrent(async () => ++n, () => false, undefined, 3), /restarted/);
+  assert.equal(n, 3);
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(acquireCurrent(() => new Promise(() => {}), () => true, ac.signal), err => err.cancelled === true);
+});

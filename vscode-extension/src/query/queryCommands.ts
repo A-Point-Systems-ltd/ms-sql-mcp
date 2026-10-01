@@ -9,6 +9,8 @@ import { Logger } from '../logger';
 import { EditorRunState, editorRunState, findProfile } from './editorState';
 import { QueryAssociation, QueryDocuments, dropOnClose, isNeverBound, keepOnActivation } from './queryDocuments';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
+import type { ResultsState } from './resultsHtml';
+import { RunRegistry } from './runRegistry';
 import { buildRunRequest, clampMaxRows, parseRunScriptResult } from './runScript';
 
 /** Context keys describing the active editor (used by menus and keybindings). */
@@ -176,9 +178,9 @@ export function registerQueryCommands(
   context.subscriptions.push(docs, tracker);
   trackDocumentLifecycle(context, docs, log);
 
-  /** One run per document: its AbortController while it runs. */
-  const running = new Map<string, AbortController>();
-  const cancel = (key: string) => running.get(key)?.abort();
+  /** One run per document, each with its own token (see RunRegistry). */
+  const running = new RunRegistry();
+  const cancel = (key: string) => running.cancel(key);
   const results = new ResultsViewProvider(() => {
     const active = tracker.active();
     return active ? { key: active.editor.document.uri.toString(), bound: !!active.assoc } : undefined;
@@ -198,12 +200,17 @@ export function registerQueryCommands(
       updateRunning();
       results.update();
     }),
-    // Results are kept in memory per document; a closed document's results go (a running one keeps its entry).
+    // Results are kept in memory per document. Closing a document aborts its run and drops its results and guard at
+    // once, so a new document reusing the uri (untitled) starts clean; the old run no longer updates anything.
     vscode.workspace.onDidCloseTextDocument(doc => {
       const key = doc.uri.toString();
-      if (!running.has(key)) results.forget(key);
+      if (running.close(key)) {
+        log.info('query', 'The document of a running query was closed: the run was cancelled.');
+        updateRunning();
+      }
+      results.forget(key);
     }),
-    { dispose: () => { for (const ac of running.values()) ac.abort(); running.clear(); } },
+    running,
   );
   updateRunning();
 
@@ -268,10 +275,17 @@ export function registerQueryCommands(
       void vscode.window.showInformationMessage('A query is already running in this window.');
       return;
     }
-    const ac = new AbortController();
-    running.set(key, ac);
+    const token = running.start(key);
+    if (!token) return;
     updateRunning();
     const connection = profile.name;
+    /** The last state this run set; updates stop once the run is no longer current (document closed). */
+    let shown: ResultsState | undefined;
+    const show = (state: ResultsState) => {
+      if (!running.isCurrent(token)) return;
+      shown = state;
+      results.set(key, state);
+    };
     try {
       if (assoc.kind === 'object' && document.isDirty && !(await document.save())) {
         void vscode.window.showWarningMessage('MSSQL-MCP: the document was not saved, so it was not run.');
@@ -286,14 +300,14 @@ export function registerQueryCommands(
         return;
       }
       const maxRows = clampMaxRows(vscode.workspace.getConfiguration('msSqlMcp').get('query.maxRows'));
-      results.set(key, { kind: 'running', connection, startedAt: Date.now() });
+      show({ kind: 'running', connection, startedAt: Date.now() });
       void results.reveal(editor).catch(err => log.debug('query', `Revealing the results view failed: ${String(err)}`));
       log.info('query', `run_script on '${connection}' (${request.script.length} chars, maxRows ${maxRows})`);
       try {
         const payload = await deps.runner.callResult(connection, 'run_script', { script: request.script, maxRows },
-          { timeoutMs: null, signal: ac.signal });
+          { timeoutMs: null, signal: token.controller.signal });
         const result = parseRunScriptResult(payload);
-        results.set(key, { kind: 'done', connection, result, lineOffset: request.lineOffset });
+        show({ kind: 'done', connection, result, lineOffset: request.lineOffset });
         log.info('query', `run_script on '${connection}': ${result.resultSets.length} result set(s), `
           + `${result.messages.length} message(s), hadErrors=${result.hadErrors}, ${result.elapsedMs} ms`);
         if (assoc.kind === 'object' && !result.hadErrors) {
@@ -301,15 +315,17 @@ export function registerQueryCommands(
           deps.refreshTree();
         }
       } catch (err) {
-        if (ac.signal.aborted || (err instanceof McpToolError && err.cancelled)) {
-          results.set(key, { kind: 'cancelled', connection });
+        if (token.controller.signal.aborted || (err instanceof McpToolError && err.cancelled)) {
+          show({ kind: 'cancelled', connection });
         } else {
           log.error('query', `run_script on '${connection}' failed`, err);
-          results.set(key, { kind: 'failed', connection, error: err instanceof Error ? err.message : String(err) });
+          show({ kind: 'failed', connection, error: err instanceof Error ? err.message : String(err) });
         }
       }
     } finally {
-      if (running.get(key) === ac) running.delete(key);
+      running.finish(token);
+      // Closed while running: its results must not outlive it (close() already dropped the guard).
+      if (document.isClosed && shown !== undefined && results.stateOf(key) === shown) results.forget(key);
       updateRunning();
     }
   });

@@ -58,7 +58,7 @@ function body(state: ResultsState): string {
   const multi = resultSets.length > 1;
   return `<nav class="tabs" role="tablist">${tab('results', `Results (${resultSets.length})`)}${tab('messages', `Messages (${messages.length})`)}</nav>
 <div class="content">
-${pane('results', resultSets.map((set, i) => grid(set, i + 1, multi)).join('\n'))}
+${pane('results', resultSets.length ? resultSets.map((set, i) => grid(set, i + 1, multi)).join('\n') : '<p class="none">No result sets.</p>')}
 ${pane('messages', messages.map(message).join('\n'))}
 </div>`;
 }
@@ -150,6 +150,7 @@ function page(nonce: string, headerHtml: string, bodyHtml: string): string {
   .msg a { color: inherit; text-decoration: none; }
   .msg a:hover { text-decoration: underline; }
   .hint { padding: 10px; color: var(--vscode-descriptionForeground); }
+  .none { margin: 0; color: var(--vscode-descriptionForeground); }
 </style>
 </head>
 <body>

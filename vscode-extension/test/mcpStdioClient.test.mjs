@@ -120,3 +120,13 @@ test('an initialize timeout does not send notifications/cancelled', async () => 
   assert.ok(!notifications(log).some(n => n.method === 'notifications/cancelled'), 'initialize is never cancelled');
   assert.ok(!log.lines.some(l => /unknown request id/i.test(l.message)), 'the late initialize response is dropped quietly');
 });
+
+test('dispose is idempotent: a second call neither throws nor logs a second termination', async () => {
+  const { client, log } = await startClient();
+  const child = client.child;
+  client.dispose();
+  client.dispose();
+  assert.ok(await waitFor(() => child.exitCode !== null || child.signalCode !== null), 'child exited');
+  assert.equal(log.lines.filter(l => /Terminating private server process/.test(l.message)).length, 1);
+  await assert.rejects(client.callTool('echo', {}), /not running/);
+});

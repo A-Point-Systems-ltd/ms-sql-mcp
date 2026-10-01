@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { CallCounter, cancelledError, raceAbort } from './callTracking';
+import { CallCounter, acquireCurrent, cancelledError } from './callTracking';
 import type { CallToolOptions } from './mcpClient';
 import { McpStdioClient } from './mcpStdioClient';
 import { pick } from './parse';
@@ -47,6 +47,8 @@ export class ServerProcessClient implements vscode.Disposable {
   private readonly calls = new WeakMap<McpStdioClient, CallCounter>();
   /** Replaced processes that still have calls running; disposed when idle (or by dispose()). */
   private readonly retiring = new Set<McpStdioClient>();
+  /** Processes already disposed by this client (each one is disposed once only). */
+  private readonly killed = new WeakSet<McpStdioClient>();
   private starting?: Promise<McpStdioClient>;
   private generation = 0;
   private timer?: NodeJS.Timeout;
@@ -87,9 +89,11 @@ export class ServerProcessClient implements vscode.Disposable {
     // A pending debounced reset means the running process has a stale profile set: apply it first.
     if (this.timer) this.reset();
     // Starting the process can take seconds: a Cancel during that time rejects at once (the start goes on).
-    const client = await raceAbort(this.ensure(), opts?.signal);
-    this.log.debug(this.options.label, `${tool} connection='${connection}'`);
+    // The process must still be the current one when the call is counted, or a reset in between would dispose it.
+    const client = await acquireCurrent(() => this.ensure(), c => c === this.client, opts?.signal);
+    // Counted synchronously after the check: no reset can run in between.
     const end = this.counterOf(client).begin();
+    this.log.debug(this.options.label, `${tool} connection='${connection}'`);
     try {
       return await client.callTool(tool, { ...args, connection }, opts);
     } finally {
@@ -118,7 +122,7 @@ export class ServerProcessClient implements vscode.Disposable {
     this.disposed = true;
     this.sub.dispose();
     this.reset();
-    for (const client of this.retiring) client.dispose();
+    for (const client of this.retiring) this.kill(client);
     this.retiring.clear();
     this.resetEmitter.dispose();
   }
@@ -141,8 +145,15 @@ export class ServerProcessClient implements vscode.Disposable {
     }
     counter.whenIdle(() => {
       this.retiring.delete(client);
-      client.dispose();
+      this.kill(client);
     });
+  }
+
+  /** Disposes `client` once; later calls (dispose() first, then its last call ending) do nothing. */
+  private kill(client: McpStdioClient): void {
+    if (this.killed.has(client)) return;
+    this.killed.add(client);
+    client.dispose();
   }
 
   private scheduleReset(): void {
