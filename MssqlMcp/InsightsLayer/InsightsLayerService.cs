@@ -1124,9 +1124,18 @@ public sealed class InsightsLayerService(
 
     private async Task ExecuteScriptBatchesAsync(string script, CancellationToken cancellationToken)
     {
+        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await ExecuteBatchesAsync(conn, script, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the <c>GO</c>-separated batches of <paramref name="script"/> one by one on <paramref name="conn"/>, with no
+    /// transaction around them. The first failing batch throws and later batches do not run.
+    /// </summary>
+    internal static async Task ExecuteBatchesAsync(SqlConnection conn, string script, CancellationToken cancellationToken)
+    {
         // Errors must surface as SqlException: FireInfoMessageEventOnUserErrors would turn severity <= 16
         // errors (for example permission denied on CREATE TRIGGER) into dropped info messages.
-        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         foreach (var batch in SqlBatchSplitter.SplitBatches(script))
         {
             if (string.IsNullOrWhiteSpace(batch))
@@ -1139,7 +1148,7 @@ public sealed class InsightsLayerService(
         }
     }
 
-    private static async Task<string> ReadEmbeddedResourceAsync(Assembly assembly, string resourceName, CancellationToken cancellationToken)
+    internal static async Task<string> ReadEmbeddedResourceAsync(Assembly assembly, string resourceName, CancellationToken cancellationToken)
     {
         var stream = assembly.GetManifestResourceStream(resourceName)
             ?? throw new InvalidOperationException($"Embedded resource not found: {resourceName}. Available: {string.Join(", ", assembly.GetManifestResourceNames())}");

@@ -96,7 +96,9 @@ public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, I
             return new DbOperationResult(success: false, error: "action must be status, install, list or get.");
         }
 
-        if (verb == "list" && string.IsNullOrWhiteSpace(name))
+        name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        schema = string.IsNullOrWhiteSpace(schema) ? null : schema.Trim();
+        if (verb == "list" && name is null)
         {
             return new DbOperationResult(success: false, error: "list requires name.");
         }
@@ -129,7 +131,7 @@ public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, I
                         return new DbOperationResult(success: true, data: await DdlAudit.InstallAsync(conn, cancellationToken).ConfigureAwait(false));
                     case "list":
                         var entries = await DdlAudit
-                            .ListAsync(conn, string.IsNullOrWhiteSpace(schema) ? null : schema, name!, top, cancellationToken)
+                            .ListAsync(conn, schema, name!, top, cancellationToken)
                             .ConfigureAwait(false);
                         return entries is null
                             ? new DbOperationResult(success: false, error: DdlAudit.NotInstalledError)

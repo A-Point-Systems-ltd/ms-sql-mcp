@@ -307,6 +307,7 @@ public sealed class McpProtocolTests
             Assert.True(root.GetProperty("success").GetBoolean(), Text(status));
             var data = root.GetProperty("data");
             Assert.False(data.GetProperty("tableExists").GetBoolean());
+            Assert.False(data.GetProperty("tableCompatible").GetBoolean());
             Assert.False(data.GetProperty("triggerExists").GetBoolean());
             Assert.False(data.GetProperty("triggerEnabled").GetBoolean());
             Assert.False(data.GetProperty("canInstall").GetBoolean());

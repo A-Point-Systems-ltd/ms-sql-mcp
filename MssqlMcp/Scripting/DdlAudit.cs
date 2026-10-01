@@ -4,15 +4,17 @@
 using System.Data;
 using System.Globalization;
 using System.Reflection;
-using System.Text;
 using System.Text.Json.Serialization;
 using Microsoft.Data.SqlClient;
 using Mssql.McpServer.InsightsLayer;
 
 namespace Mssql.McpServer.Scripting;
 
-/// <summary><c>ddl_history status</c>: what exists of the DDL history on the current database.</summary>
-public sealed record DdlAuditStatus(bool TableExists, bool TriggerExists, bool TriggerEnabled, bool CanInstall);
+/// <summary>
+/// <c>ddl_history status</c>: what exists of the DDL history on the current database. <see cref="TableCompatible"/> is
+/// true only for an existing table the trigger can insert into (false when the table is missing).
+/// </summary>
+public sealed record DdlAuditStatus(bool TableExists, bool TableCompatible, bool TriggerExists, bool TriggerEnabled, bool CanInstall);
 
 /// <summary><c>ddl_history install</c>: what this call created. Existing objects are never changed.</summary>
 public sealed record DdlAuditInstallResult(
@@ -57,12 +59,26 @@ internal static class DdlAudit
     public const string NotInstalledError = "DDL history is not installed on this database (dbo.DDL_AuditLog is missing).";
     public const string DisabledTriggerWarning = "DDL_Audit exists but is disabled; it was left unchanged.";
 
+    /// <summary>The columns the DDL_Audit trigger's INSERT names, in the order the incompatibility error lists them.</summary>
+    internal static readonly IReadOnlyList<string> TriggerColumns =
+        ["HostName", "LoginName", "SchemaName", "ObjectName", "ObjectType", "EventType", "CommandText", "CommandXML", "ProgramName"];
+
     private const string TableScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditLog.sql";
 
     private const string StateSql = """
         SELECT
             CASE WHEN OBJECT_ID(N'dbo.DDL_AuditLog', N'U') IS NULL THEN 0 ELSE 1 END,
             (SELECT TOP (1) CAST(t.is_disabled AS int) FROM sys.triggers AS t WHERE t.parent_class = 0 AND t.name = N'DDL_Audit');
+        """;
+
+    // Second column: can an INSERT leave this column out? (nullable, identity, computed, has a default, or rowversion = 189)
+    private const string ColumnsSql = """
+        SELECT c.name,
+               CAST(CASE WHEN c.is_nullable = 1 OR c.is_identity = 1 OR c.is_computed = 1 OR c.default_object_id <> 0
+                              OR c.system_type_id = 189 THEN 1 ELSE 0 END AS bit)
+        FROM sys.columns AS c
+        WHERE c.object_id = OBJECT_ID(N'dbo.DDL_AuditLog', N'U')
+        ORDER BY c.column_id;
         """;
 
     // ObjectName / SchemaName are varchar(100): the trigger stores LEFT(name, 100), so compare the same way.
@@ -81,35 +97,61 @@ internal static class DdlAudit
         WHERE ID = @id;
         """;
 
-    private readonly record struct State(bool TableExists, bool TriggerExists, bool TriggerEnabled);
+    /// <param name="Incompatibilities">Why the trigger's INSERT would fail on the existing table; empty when it would work or the table is missing.</param>
+    private sealed record State(bool TableExists, bool TriggerExists, bool TriggerEnabled, IReadOnlyList<string> Incompatibilities);
 
     public static async Task<DdlAuditStatus> GetStatusAsync(SqlConnection conn, bool readOnly, CancellationToken cancellationToken)
     {
         var state = await ReadStateAsync(conn, cancellationToken).ConfigureAwait(false);
+        var compatible = state.TableExists && state.Incompatibilities.Count == 0;
         return new DdlAuditStatus(
             state.TableExists,
+            TableCompatible: compatible,
             state.TriggerExists,
             state.TriggerEnabled,
-            CanInstall: !readOnly && (!state.TableExists || !state.TriggerExists));
+            CanInstall: !readOnly && (!state.TableExists || (compatible && !state.TriggerExists)));
     }
 
     /// <summary>
     /// Creates <c>dbo.DDL_AuditLog</c> and then the <c>DDL_Audit</c> trigger, each only when missing. Batches run one by
     /// one with no transaction around them. The caller must have refused read-only connections already.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The objects are still missing afterwards (for example, no permission).</exception>
-    public static async Task<DdlAuditInstallResult> InstallAsync(SqlConnection conn, CancellationToken cancellationToken)
+    /// <param name="triggerScript">Test hook: trigger script text to run instead of the embedded one.</param>
+    /// <exception cref="InvalidOperationException">
+    /// The existing table is incompatible (nothing created), the trigger failed after the table was created, or the
+    /// objects are still missing afterwards (for example, no permission).
+    /// </exception>
+    public static async Task<DdlAuditInstallResult> InstallAsync(SqlConnection conn, CancellationToken cancellationToken, string? triggerScript = null)
     {
+        var assembly = Assembly.GetExecutingAssembly();
         var before = await ReadStateAsync(conn, cancellationToken).ConfigureAwait(false);
+
+        // On an incompatible table the trigger's INSERT would fail and roll back every later DDL statement: create nothing.
+        if (before.TableExists && !before.TriggerExists && before.Incompatibilities.Count > 0)
+        {
+            throw new InvalidOperationException(IncompatibleTableError(before.Incompatibilities));
+        }
+
         if (!before.TableExists)
         {
-            await RunScriptAsync(conn, TableScriptResource, cancellationToken).ConfigureAwait(false);
+            var tableSql = await InsightsLayerService.ReadEmbeddedResourceAsync(assembly, TableScriptResource, cancellationToken).ConfigureAwait(false);
+            await InsightsLayerService.ExecuteBatchesAsync(conn, tableSql, cancellationToken).ConfigureAwait(false);
         }
 
         // The script's own ENABLE TRIGGER batch only ever reaches the trigger it has just created.
         if (!before.TriggerExists)
         {
-            await RunScriptAsync(conn, InsightsLayerService.TriggerScriptResource, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                triggerScript ??= await InsightsLayerService
+                    .ReadEmbeddedResourceAsync(assembly, InsightsLayerService.TriggerScriptResource, cancellationToken)
+                    .ConfigureAwait(false);
+                await InsightsLayerService.ExecuteBatchesAsync(conn, triggerScript, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!before.TableExists && ex is not OperationCanceledException)
+            {
+                throw new InvalidOperationException(PartialInstallError(ex.Message), ex);
+            }
         }
 
         var after = await ReadStateAsync(conn, cancellationToken).ConfigureAwait(false);
@@ -127,11 +169,17 @@ internal static class DdlAudit
             Warning: before.TriggerExists && !after.TriggerEnabled ? DisabledTriggerWarning : null);
     }
 
+    internal static string IncompatibleTableError(IEnumerable<string> incompatibilities) =>
+        $"dbo.DDL_AuditLog exists but does not have the columns the DDL_Audit trigger writes (missing: {string.Join(", ", incompatibilities)}); nothing was created.";
+
+    internal static string PartialInstallError(string message) =>
+        $"dbo.DDL_AuditLog was created, but creating the DDL_Audit trigger failed: {message}";
+
     /// <summary>The newest <paramref name="top"/> entries for one object; null when the table is missing.</summary>
     public static async Task<IReadOnlyList<DdlAuditEntry>?> ListAsync(
         SqlConnection conn, string? schema, string name, int top, CancellationToken cancellationToken)
     {
-        if (!(await ReadStateAsync(conn, cancellationToken).ConfigureAwait(false)).TableExists)
+        if (!await TableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -160,10 +208,10 @@ internal static class DdlAudit
         return entries;
     }
 
-    /// <summary>One entry with its command text. <paramref name="tableExists"/> is false when the table is missing.</summary>
+    /// <summary>One entry with its command text. <c>TableExists</c> is false when the table is missing.</summary>
     public static async Task<(bool TableExists, DdlAuditCommand? Command)> GetAsync(SqlConnection conn, int id, CancellationToken cancellationToken)
     {
-        if (!(await ReadStateAsync(conn, cancellationToken).ConfigureAwait(false)).TableExists)
+        if (!await TableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
         {
             return (false, null);
         }
@@ -187,34 +235,52 @@ internal static class DdlAudit
             CommandText: Text(reader.GetValue(7))));
     }
 
-    private static async Task<State> ReadStateAsync(SqlConnection conn, CancellationToken cancellationToken)
+    private static async Task<bool> TableExistsAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
-        await using var cmd = new SqlCommand(StateSql, conn);
-        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-        var tableExists = reader.GetInt32(0) == 1;
-        var triggerExists = !reader.IsDBNull(1);
-        return new State(tableExists, triggerExists, triggerExists && reader.GetInt32(1) == 0);
+        await using var cmd = new SqlCommand("SELECT CASE WHEN OBJECT_ID(N'dbo.DDL_AuditLog', N'U') IS NULL THEN 0 ELSE 1 END;", conn);
+        return await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1;
     }
 
-    private static async Task RunScriptAsync(SqlConnection conn, string resourceName, CancellationToken cancellationToken)
+    private static async Task<State> ReadStateAsync(SqlConnection conn, CancellationToken cancellationToken)
     {
-        var assembly = Assembly.GetExecutingAssembly();
-        await using var stream = assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Embedded resource not found: {resourceName}.");
-        using var streamReader = new StreamReader(stream, Encoding.UTF8);
-        var script = await streamReader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-
-        foreach (var batch in SqlBatchSplitter.SplitBatches(script))
+        bool tableExists, triggerExists, triggerEnabled;
+        await using (var cmd = new SqlCommand(StateSql, conn))
         {
-            if (string.IsNullOrWhiteSpace(batch))
-            {
-                continue;
-            }
-
-            await using var cmd = new SqlCommand(batch, conn) { CommandTimeout = 120 };
-            _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            tableExists = reader.GetInt32(0) == 1;
+            triggerExists = !reader.IsDBNull(1);
+            triggerEnabled = triggerExists && reader.GetInt32(1) == 0;
         }
+
+        var incompatibilities = tableExists ? await ReadIncompatibilitiesAsync(conn, cancellationToken).ConfigureAwait(false) : [];
+        return new State(tableExists, triggerExists, triggerEnabled, incompatibilities);
+    }
+
+    /// <summary>
+    /// The trigger columns the table lacks, then the columns the trigger leaves out that still need a value (NOT NULL
+    /// with no default, not identity, not computed, not rowversion), such as an ID that is not an identity or a PostTime
+    /// without a default. Column names compare case-insensitively.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> ReadIncompatibilitiesAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        var columns = new List<(string Name, bool Optional)>();
+        await using (var cmd = new SqlCommand(ColumnsSql, conn))
+        {
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                columns.Add((reader.GetString(0), reader.GetBoolean(1)));
+            }
+        }
+
+        var problems = TriggerColumns
+            .Where(required => !columns.Any(c => string.Equals(c.Name, required, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        problems.AddRange(columns
+            .Where(c => !c.Optional && !TriggerColumns.Contains(c.Name, StringComparer.OrdinalIgnoreCase))
+            .Select(c => $"{c.Name} (NOT NULL without a default or identity)"));
+        return problems;
     }
 
     private static string? Text(object value) =>
