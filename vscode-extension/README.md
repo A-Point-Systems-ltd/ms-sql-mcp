@@ -49,20 +49,23 @@ When you add, edit, open or close a connection, or change a setting that affects
 ## Setup
 
 1. Install the extension and open the **MSSQL-MCP** view.
-2. Click **Add Connection** (`+`) and answer the prompts:
-   - **Authentication**: Windows integrated, SQL login (user + password), Microsoft Entra interactive, Microsoft Entra default credential, or a raw connection string (without a password).
-   - **Server** (`host`, `host\instance` or `host,port`) and **Database**.
-   - **Encryption**:
+2. Click **Add Connection** (`+`). One form opens with every setting; to change a connection later, use **Edit Connection** (same form, name read-only):
+   - **Name**: letters, digits, `-`, `_`, `.`; unique, case-insensitive.
+   - **Authentication**: Windows integrated (default), SQL login (user + password), Microsoft Entra interactive, Microsoft Entra default credential, or a raw connection string (without a password; shown as a text area, and Server, Database and Encryption are hidden).
+   - **Server** (`host`, `host\instance` or `host,port`) and **Database**. **List databases** connects to the server (database `master`) with the values typed so far and fills the Database suggestions.
+   - **User** (SQL login and Entra interactive) and **Password** (SQL login). The password field is never pre-filled; when editing a connection that has a saved password, leave it empty to keep it.
+   - **Encryption** and **Trust server certificate**. Defaults: Mandatory + trust (self-signed / on-prem friendly):
 
      | Option | Use it when |
      |--------|-------------|
-     | Mandatory (verify certificate) | The server certificate is trusted by this machine. |
-     | Mandatory, trust server certificate | Self-signed / on-prem certificates on a trusted network (encrypted, but not protected against a man-in-the-middle). |
+     | Mandatory, trust off | The server certificate is trusted by this machine. |
+     | Mandatory, trust on | Self-signed / on-prem certificates on a trusted network (encrypted, but not protected against a man-in-the-middle). |
      | Optional (no encryption) | Legacy servers only; traffic, including SQL login credentials, may be unencrypted. |
-     | Strict (TDS 8) | SQL Server 2022+ with a trusted certificate. |
+     | Strict (TDS 8), trust off | SQL Server 2022+ with a trusted certificate. |
 
-   - **Read-only?** (default yes) and **AI Insights** for this connection.
-3. Right-click the connection and choose **Test Connection**.
+   - **Read-only** (default on), **AI Insights** (default on) and **Open (expose to agents)** (default on).
+   - **Test connection** checks the unsaved values (30 s limit) and shows the result in the form; **Save** validates every field and shows the errors next to them; **Cancel** closes the form.
+3. Right-click a saved connection and choose **Test Connection** to check it again later.
 
 The text `${env:` is not accepted in any field, because the server would expand it from its own environment.
 

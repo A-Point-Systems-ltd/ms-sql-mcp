@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GridTable, rowCountLabel } from './dataTable';
+import { escapeHtml, makeNonce } from './webviewUtil';
 
 let panel: vscode.WebviewPanel | undefined;
 
@@ -124,22 +125,4 @@ function renderHtml(objectName: string, table: GridTable, truncated: boolean): s
 </script>
 </body>
 </html>`;
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function makeNonce(): string {
-  let nonce = '';
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
 }

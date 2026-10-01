@@ -14,4 +14,5 @@
 - Connection fields reject `${env:`; trace logging records only the row count of `read_data` results.
 - Cursor: the agent server is registered with Cursor's own `cursor.mcp.registerServer` API (Cursor ignores VS Code's MCP server definition provider), so it appears in Cursor without any manual registration. A one-time warning flags an existing `ms-sql` entry in `~/.cursor/mcp.json`; the "Register with Cursor / Claude..." Cursor option is then only needed for the cursor-agent CLI.
 - The extension-only `MSSQL_SCRIPT_RUNNER` switch is never inherited by the agent server or by servers registered with external clients.
+- Add / Edit Connection is a single form (replacing the quick-pick wizard): all settings at once, inline per-field errors, **Test connection** and **List databases** on the unsaved values, and an existing saved password is kept when its field is left empty.
 - Windows x64 only.

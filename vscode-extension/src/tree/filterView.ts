@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { makeNonce } from '../webviewUtil';
 
 export const FILTER_VIEW_ID = 'msSqlMcp.objectFilter';
 
@@ -95,13 +96,4 @@ function renderHtml(initial: string): string {
 </script>
 </body>
 </html>`;
-}
-
-function makeNonce(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let nonce = '';
-  for (let i = 0; i < 32; i++) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
 }
