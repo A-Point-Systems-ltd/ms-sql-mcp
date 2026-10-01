@@ -35,7 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(runner);
 
   const tree = new ExplorerTreeProvider(store, explorer, log);
-  registerQueryCommands(context, store, log, { runner, refreshTree: () => tree.refresh() });
+  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, refreshTree: () => tree.refresh() });
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
@@ -49,7 +49,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, log);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, log);
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);

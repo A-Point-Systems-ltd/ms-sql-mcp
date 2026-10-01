@@ -2,10 +2,14 @@
 
 SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles the MSSQL-MCP server (a .NET 10 single-file exe) and gives you:
 
-- **Named connections** with Windows, SQL login and Microsoft Entra authentication. Passwords are kept in VS Code SecretStorage only.
-- **An object explorer** with DDL scripts and a data view.
-- **An MCP server for agents**: VS Code agent mode gets it automatically; Cursor, Claude Desktop and Claude Code with one command.
-- **Read-only connections** that the server enforces, and an optional **AI Insights** layer that caches what agents learn about your schema.
+- **Connection form**: one form to add or edit a named connection (Windows, SQL login or Microsoft Entra authentication), with **Test connection** and **List databases**. Passwords are kept in VS Code SecretStorage only.
+- **Object explorer**: tables, views, procedures, functions, triggers, types and security objects per connection, with a name filter and a data view.
+- **DDL scripts**: SSMS-style scripts for every object. Tables, indexes, foreign keys, triggers, types and security objects open read-only.
+- **Editing views, procedures and functions**: their DDL opens as an editable file bound to its connection; **Run** (F5) applies it to the database.
+- **Query windows**: New Query on a connection, run with F5 (the selection or the whole document) and cancel.
+- **Results panel**: one grid per result set and a Messages tab, kept on your machine.
+- **Agent server and registration**: VS Code agent mode and Cursor get the MCP server automatically; Cursor CLI, Claude Desktop and Claude Code with one command.
+- **Read-only semantics**: a read-only connection is enforced by the server for agents, the explorer and query windows alike. An optional **AI Insights** layer caches what agents learn about your schema.
 
 > **Windows x64 only.** The package is built for `win32-x64`; the bundled server is a Windows executable.
 
@@ -33,7 +37,7 @@ The **MSSQL-MCP** view in the activity bar lists your connections. Each open con
     └─ Database Roles
 ```
 
-- **Show DDL** (inline icon) opens the object's script in a read-only editor. Scripts are written from the catalog views, SSMS style: `CREATE TABLE` with keys, defaults, checks, indexes, foreign keys and the description; `CREATE OR ALTER` (SQL Server 2016 SP1+) or `ALTER` for programmable objects. Anything the script cannot express is listed as `-- WARNING:` lines at the top. Passwords, password hashes and SIDs are never scripted: SQL logins and application roles get the placeholder `N'<password not scripted - set before running>'`.
+- **Show DDL** (inline icon, or a click on the object) opens the object's script. Views, stored procedures and functions open as an editable file (see [Editing views, procedures and functions](#editing-views-procedures-and-functions)); everything else opens in a read-only editor. Scripts are written from the catalog views, SSMS style: `CREATE TABLE` with keys, defaults, checks, indexes, foreign keys and the description; `CREATE OR ALTER` (SQL Server 2016 SP1+) or `ALTER` for programmable objects. Anything the script cannot express is listed as `-- WARNING:` lines at the top. Passwords, password hashes and SIDs are never scripted: SQL logins and application roles get the placeholder `N'<password not scripted - set before running>'`.
 - **Data View** (inline icon on tables and views) shows the first rows in a grid. The row count is the `msSqlMcp.dataViewRows` setting (default 500, max 10000); when there are more rows, the view says it is truncated.
 - **Filter** shows only objects whose name contains the text you type (case-insensitive).
 - Closed connections stay in the list; right-click **Open** to browse them again.
@@ -77,6 +81,8 @@ In Cursor the extension registers the MSSQL-MCP server for you, through Cursor's
 
 If `~/.cursor/mcp.json` already has an `ms-sql` entry (from an earlier **Register with Cursor / Claude...**), the extension warns once that it duplicates the automatic registration. Remove that entry to avoid two MSSQL-MCP servers; the extension never edits the file on its own. Choose **Cursor** in the command below only for the `cursor-agent` CLI.
 
+Agents never get `run_script`. That tool exists only for the extension's own query-window runner process (`MSSQL_SCRIPT_RUNNER=true`, set by the extension for that process only); it is never set for the agent server or for servers registered with external clients, and the 23 agent tools do not change.
+
 ### Cursor CLI, Claude Desktop and Claude Code
 
 Run **Register with Cursor / Claude...** (the view's title bar, or the Command Palette) and pick the clients. The extension:
@@ -106,15 +112,28 @@ The extension keeps `connections.json` current when your connections change: clo
 
 The object explorer never uses the agent's server process. It starts its own private server process in which **every connection is forced read-only**, the AI Insights layer is off and ad-hoc connections are disabled, so browsing, DDL and the data view cannot modify anything. Query windows use a third private server process, the runner. It serves only open connections with **their own read-only setting** (not forced read-only) and is the only process with the extension-only `run_script` tool; agents never see that tool. Connection settings inherited from your environment (`CONNECTION_STRING`, `MSSQL_CONNECTIONS_FILE`) are ignored by all of these processes.
 
-## Query windows
+## Query window
 
 - **New Query** (the new-file icon or the right-click menu of an open connection, or the command palette) opens an empty SQL editor bound to that connection.
 - The status bar shows the connection of the active SQL editor (a lock marks a read-only connection). Click it, or run **Change Connection**, to bind the editor to another open connection.
-- On a read-only connection a query window runs only read-only single-SELECT batches.
+- On a read-only connection a query window runs only read-only single-SELECT batches, inside a transaction that is always rolled back. Anything else is refused with an error message.
+- Every run opens a new session: `SET` options and `#temp` tables do not carry over to the next run, and a transaction the script leaves open is rolled back at the end (with a warning). Use `COMMIT` inside the same run.
+- The row cap per result set is the `msSqlMcp.query.maxRows` setting (default 1000, max 10000); further rows are counted but not kept.
 - Bindings are kept per workspace; an untitled editor loses its binding when it is closed.
 - **Run** with F5 or the play button in the editor title runs the selection, or the whole document when nothing is selected. Results appear in the **MSSQL-MCP Results** panel at the bottom: a **Results** tab with one grid per result set and a **Messages** tab (errors in red; click a message with a line to jump to it). **Cancel** (the stop button in the editor title or in the panel) stops the run.
 - A running query is never killed by a connection change: the runner process is restarted for new runs, and the old one ends when its last run finishes.
 - DDL views (`mssql-ddl:` documents) are never bound to a connection.
+
+## Editing views, procedures and functions
+
+Show DDL on a view, stored procedure, table-valued function or scalar function opens its script as a normal, editable `.sql` file bound to that connection (the status bar shows it), instead of a read-only document.
+
+- The script is `CREATE OR ALTER` on SQL Server 2016 SP1 and later, and `ALTER` on older servers, so running it applies your change to the existing object. It is fetched through the explorer's read-only process; nothing is changed until you run it.
+- **Read/write connection**: the editor title shows **Run** and F5 applies the script. The file is saved first, a success message says "Applied to '<connection>'." and the tree refreshes.
+- **Read-only connection**: the editor title shows a disabled Run button whose tooltip explains that object changes can only be applied on a read/write connection. Edit the file if you like, then bind it to a read/write connection with **Change Connection** to apply it.
+- **Indexed views**: `ALTER` on an indexed view drops its indexes. The script carries a warning (shown once when the file opens) and includes the index statements that recreate them; run the whole file.
+- The files live in the extension's storage folder (`edits/<connection>/<type>/<schema.name>.sql`), one per object, so reopening an object reuses its file. If the file has unsaved edits, Show DDL only reveals it ("Unsaved edits kept - close the editor to reload from the server."); otherwise it is replaced with the current script from the server. If scripting fails, you get the read-only document with the error and a Refresh button.
+- Tables, indexes, foreign keys, triggers, types and security objects stay read-only.
 
 ## Settings
 
@@ -130,7 +149,7 @@ The object explorer never uses the agent's server process. It starts its own pri
 ## Privacy
 
 - **Principal names are visible to agents.** Logins, users and roles are listed and scripted by the explorer and by the agent tools. They are often personal names (for example Active Directory accounts). Passwords, hashes and SIDs are never returned.
-- **The data view is local only.** Rows are shown in the editor and are not sent anywhere; there is no export.
+- **The data view and query results are local only.** Rows are shown in the editor and in the Results panel and are not sent anywhere; there is no export, and the Output channel logs only row counts.
 - **Agents see what they query.** Data returned by `read_data` goes to the AI model the agent uses. Use read-only connections and least-privilege logins for databases with personal data.
 - **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged). Use `trace` only for troubleshooting and clear the channel afterwards.
 - Passwords are never written to settings, logs, the Output channel, tree labels or DDL documents.

@@ -118,9 +118,10 @@ export function dataViewRequest(ref: ObjectRef, rows: number): { sql: string; ma
   return { sql: previewSql(ref.schema, ref.name, rows + 1), maxRows: rows };
 }
 
-export function scriptArgs(ref: ObjectRef): { objectType: string; name: string; parent?: string } {
+/** script_object arguments. `form` (e.g. 'alter') is sent only when non-empty: the server rejects an empty form. */
+export function scriptArgs(ref: ObjectRef, form?: string): { objectType: string; name: string; parent?: string; form?: string } {
   const name = ref.schema && SCHEMA_SCOPED.has(ref.scriptType) ? qualified(ref.schema, ref.name) : ref.name;
-  return { objectType: ref.scriptType, name, ...(ref.parent ? { parent: ref.parent } : {}) };
+  return { objectType: ref.scriptType, name, ...(ref.parent ? { parent: ref.parent } : {}), ...(form ? { form } : {}) };
 }
 
 /** script_object `data` -> document text. With warnings, a provenance header and the warnings come first. */

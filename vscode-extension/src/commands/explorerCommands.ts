@@ -2,6 +2,9 @@ import * as vscode from 'vscode';
 import { showDataPreview } from '../dataPanel';
 import { parseReadData, rowsToTable } from '../dataTable';
 import type { ObjectRef } from '../explorer/catalog';
+import { openEditableDdl } from '../explorer/editableDdl';
+import { isEditable } from '../explorer/objectEdit';
+import type { QueryDocuments } from '../query/queryDocuments';
 import type { DdlDocumentProvider } from '../explorer/ddlDocuments';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import type { ExplorerNode, ExplorerTreeProvider } from '../explorer/explorerTree';
@@ -30,6 +33,7 @@ export function registerExplorerCommands(
   explorer: ExplorerClient,
   filterView: ObjectFilterViewProvider,
   ddl: DdlDocumentProvider,
+  docs: QueryDocuments,
   log: Logger,
 ): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void> | void) =>
@@ -47,6 +51,9 @@ export function registerExplorerCommands(
       void vscode.window.showInformationMessage('MSSQL-MCP: select an object in the MSSQL-MCP tree.');
       return;
     }
+    // Views, procedures and functions open as editable files bound to their connection; a failure falls back
+    // to the read-only document (which shows the error and offers Refresh).
+    if (isEditable(ref.scriptType) && await openEditableDdl(context, explorer, docs, log, ref)) return;
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(ddlUri(ref)));
     const sqlDoc = await vscode.languages.setTextDocumentLanguage(doc, 'sql');
     await vscode.window.showTextDocument(sqlDoc, { preview: true });
