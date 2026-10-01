@@ -66,3 +66,20 @@ export function editorRunState(assoc: QueryAssociation | undefined, profile: Con
   }
   return { connected: true, canRun: true, blockedReadOnly: false, statusText, tooltip: `${head}. ${CLICK}` };
 }
+
+/**
+ * Per-document context-key values for the editor title buttons (`resource in msSqlMcp.runnableDocs` ...): the keys of
+ * every bound document that can run now, and of those shown with the disabled read-only Run button.
+ */
+export function runContextDocs(
+  entries: readonly (readonly [string, QueryAssociation])[], profiles: readonly ConnectionProfile[],
+): { runnable: string[]; blocked: string[] } {
+  const runnable: string[] = [];
+  const blocked: string[] = [];
+  for (const [key, assoc] of entries) {
+    const state = editorRunState(assoc, findProfile(profiles, assoc.connection));
+    if (state.canRun) runnable.push(key);
+    else if (state.blockedReadOnly) blocked.push(key);
+  }
+  return { runnable, blocked };
+}

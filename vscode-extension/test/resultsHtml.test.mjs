@@ -144,3 +144,30 @@ test('a run without result sets says so in the Results pane', () => {
   assert.match(html, /<section class="pane hidden" id="pane-results"[^>]*><p class="none">No result sets\.<\/p><\/section>/);
   assert.doesNotMatch(render(done(result({ resultSets: [set()] }))), /No result sets\./);
 });
+
+test('exact-number strings (decimal, money, bigint) are right-aligned by column type; 0x binary is not', () => {
+  const html = render(done(result({ resultSets: [set({
+    columns: [{ name: 'd', type: 'decimal' }, { name: 'm', type: 'money' }, { name: 'b', type: 'bigint' }, { name: 'v', type: 'varbinary' }, { name: 's', type: 'nvarchar' }],
+    rows: [['12345678901234.5678', '922337203685477.5807', '9223372036854775807', '0x00FF10', '42']],
+  })] })));
+  assert.ok(html.includes('<td class="num">12345678901234.5678</td>'));
+  assert.ok(html.includes('<td class="num">922337203685477.5807</td>'));
+  assert.ok(html.includes('<td class="num">9223372036854775807</td>'));
+  assert.ok(html.includes('<td>0x00FF10</td>'));
+  // A numeric-looking string in a text column stays left-aligned.
+  assert.ok(html.includes('<td>42</td>'));
+});
+
+test('a value cut by the server cap is marked and explains the full size in its tooltip', () => {
+  const cutText = `abc\u2026 (truncated, 70000 chars)`;
+  const cutBinary = `0x4142\u2026 (truncated, 40000 bytes)`;
+  const html = render(done(result({ resultSets: [set({
+    columns: [{ name: 's', type: 'nvarchar' }, { name: 'b', type: 'varbinary' }],
+    rows: [[cutText, cutBinary]],
+  })] })));
+  assert.ok(html.includes(`<td class="trunc" title="Truncated by the server: the full value has 70000 chars.">${cutText}</td>`));
+  assert.ok(html.includes(`<td class="trunc" title="Truncated by the server: the full value has 40000 bytes.">${cutBinary}</td>`));
+  // Only the exact server suffix at the end counts.
+  const plain = render(done(result({ resultSets: [set({ columns: [{ name: 's', type: 'nvarchar' }], rows: [['(truncated, 5 chars) is just text']] })] })));
+  assert.ok(!plain.includes('class="trunc"'));
+});

@@ -52,3 +52,14 @@ test('dispose aborts every run', () => {
   assert.equal(a.controller.signal.aborted && b.controller.signal.aborted, true);
   assert.equal(r.has('a') || r.has('b'), false);
 });
+
+test('keys lists the documents with a current run', () => {
+  const r = new RunRegistry();
+  assert.deepEqual(r.keys(), []);
+  const a = r.start('untitled:a');
+  r.start('file:///b.sql');
+  assert.deepEqual(r.keys().sort(), ['file:///b.sql', 'untitled:a']);
+  r.finish(a);
+  r.close('file:///b.sql');
+  assert.deepEqual(r.keys(), []);
+});

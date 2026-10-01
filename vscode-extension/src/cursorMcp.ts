@@ -124,12 +124,21 @@ export class CursorMcpRegistrar {
 }
 
 /**
+ * What activation does about a duplicate `ms-sql` entry in ~/.cursor/mcp.json: warn while it exists unless the user
+ * chose "Don't show again", and clear that choice once the entry is gone (so a new duplicate warns again).
+ */
+export function duplicateEntryAction(hasEntry: boolean, dismissed: boolean): 'warn' | 'clear' | 'none' {
+  if (!hasEntry) return dismissed ? 'clear' : 'none';
+  return dismissed ? 'none' : 'warn';
+}
+
+/**
  * True when a Cursor mcp.json already has an `ms-sql` entry. Read-only: a missing file, invalid JSON or an unexpected
  * shape counts as "no entry" and is skipped silently.
  */
 export function hasMsSqlEntry(configPath: string, fsApi: Pick<typeof fs, 'readFileSync'> = fs): boolean {
   try {
-    const json: unknown = JSON.parse(fsApi.readFileSync(configPath, 'utf8').replace(/^﻿/, ''));
+    const json: unknown = JSON.parse(fsApi.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
     const servers = (json as { mcpServers?: unknown } | null)?.mcpServers;
     return typeof servers === 'object' && servers !== null && Object.prototype.hasOwnProperty.call(servers, SERVER_KEY);
   } catch {

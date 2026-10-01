@@ -17,6 +17,11 @@ export class RunRegistry {
     return this.runs.has(key);
   }
 
+  /** Keys of every document with a current run (for the per-document Cancel button). */
+  keys(): string[] {
+    return [...this.runs.keys()];
+  }
+
   /** Starts a run of `key`, or returns undefined when one is already running. */
   start(key: string): RunToken | undefined {
     if (this.runs.has(key)) return undefined;

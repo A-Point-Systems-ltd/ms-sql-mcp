@@ -10,7 +10,7 @@ import { ExplorerClient } from './explorer/explorerClient';
 import { ExplorerTreeProvider } from './explorer/explorerTree';
 import { DDL_SCHEME } from './explorer/sqlText';
 import { Logger } from './logger';
-import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, hasMsSqlEntry } from './cursorMcp';
+import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, duplicateEntryAction, hasMsSqlEntry } from './cursorMcp';
 import { resolveExePath } from './exe';
 import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
 import { registerQueryCommands } from './query/queryCommands';
@@ -49,7 +49,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, log);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log);
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);
@@ -87,6 +87,7 @@ function registerMcpProvider(context: vscode.ExtensionContext, store: Connection
 }
 
 const CURSOR_DUPLICATE_FLAG = 'msSqlMcp.cursorMcpJsonDuplicateWarned';
+const DONT_SHOW_AGAIN = "Don't show again";
 const CURSOR_DEBOUNCE_MS = 300;
 
 /** Registers the agent-facing MCP server with Cursor's own `cursor.mcp` API and keeps it in step with the profiles and settings. */
@@ -117,14 +118,21 @@ function registerCursorServer(context: vscode.ExtensionContext, store: Connectio
   warnAboutDuplicateEntry(context, log);
 }
 
-/** One-time warning when ~/.cursor/mcp.json already holds an `ms-sql` entry (the extension never edits that file on its own). */
+/**
+ * Warns on every activation while ~/.cursor/mcp.json holds an `ms-sql` entry (the extension never edits that file on
+ * its own). Only "Don't show again" stops it; the choice is cleared once the entry is gone.
+ */
 function warnAboutDuplicateEntry(context: vscode.ExtensionContext, log: Logger): void {
-  if (context.globalState.get<boolean>(CURSOR_DUPLICATE_FLAG, false)) return;
-  if (!hasMsSqlEntry(cursorConfigPath())) return;
+  const action = duplicateEntryAction(hasMsSqlEntry(cursorConfigPath()), context.globalState.get<boolean>(CURSOR_DUPLICATE_FLAG, false));
+  if (action === 'clear') void context.globalState.update(CURSOR_DUPLICATE_FLAG, undefined);
+  if (action !== 'warn') return;
   log.warn('activate', "~/.cursor/mcp.json has an 'ms-sql' entry that duplicates the server registered by the extension.");
   void vscode.window.showWarningMessage(
-    "An 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two MSSQL-MCP servers.");
-  void context.globalState.update(CURSOR_DUPLICATE_FLAG, true);
+    "An 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two MSSQL-MCP servers.",
+    DONT_SHOW_AGAIN,
+  ).then(choice => {
+    if (choice === DONT_SHOW_AGAIN) void context.globalState.update(CURSOR_DUPLICATE_FLAG, true);
+  });
 }
 
 export function deactivate(): void {}

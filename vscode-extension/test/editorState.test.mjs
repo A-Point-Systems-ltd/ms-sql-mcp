@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { editorRunState, findProfile } from '../out/query/editorState.js';
+import { editorRunState, findProfile, runContextDocs } from '../out/query/editorState.js';
 
 const profile = (over = {}) => ({ name: 'dev', server: 'DC\\DEV', database: 'db1', auth: 'windows', readOnly: false, insights: false, open: true, encrypt: 'mandatory', trustServerCertificate: true, ...over });
 const query = (connection = 'dev') => ({ connection, kind: 'query' });
@@ -90,4 +90,21 @@ test('findProfile matches names case-insensitively', () => {
   assert.equal(findProfile(list, 'PROD').name, 'prod');
   assert.equal(findProfile(list, 'nope'), undefined);
   assert.equal(findProfile(list, undefined), undefined);
+});
+
+test('runContextDocs lists runnable and read-only-blocked documents per uri', () => {
+  const entries = [
+    ['untitled:q', query()],
+    ['file:///o.sql', object()],
+    ['file:///ro.sql', object('ro')],
+    ['untitled:closed', query('closed')],
+    ['untitled:gone', query('gone')],
+    ['untitled:qro', query('ro')],
+  ];
+  const profiles = [profile(), profile({ name: 'ro', readOnly: true }), profile({ name: 'closed', open: false })];
+  assert.deepEqual(runContextDocs(entries, profiles), {
+    runnable: ['untitled:q', 'file:///o.sql', 'untitled:qro'],
+    blocked: ['file:///ro.sql'],
+  });
+  assert.deepEqual(runContextDocs([], profiles), { runnable: [], blocked: [] });
 });

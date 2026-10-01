@@ -50,3 +50,52 @@ export function parseDdlUri(uri: string): ObjectRef {
   if (params.has('p')) ref.parent = params.get('p')!;
   return ref;
 }
+
+/** A line that is only an SSMS batch separator (`GO`, `GO n`, optionally a trailing `--` comment). */
+const GO_LINE = /^[ \t]*go(?:[ \t]+\d+)?[ \t]*(?:--.*)?$/i;
+
+/**
+ * True when `sql` holds anything besides whitespace, comments (`--`, nested `/* *\/`) and `GO` separator lines,
+ * i.e. running it would send at least one statement. A quote or bracket outside a comment counts as executable.
+ */
+export function hasExecutableSql(sql: string): boolean {
+  let i = 0;
+  let depth = 0;
+  let lineStart = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    const next = sql[i + 1];
+    if (depth > 0) {
+      if (c === '/' && next === '*') { depth++; i += 2; }
+      else if (c === '*' && next === '/') { depth--; i += 2; }
+      else i++;
+      continue;
+    }
+    if (c === '\n') { i++; lineStart = i; continue; }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\f' || c === '\v') { i++; continue; }
+    if (c === '-' && next === '-') {
+      const end = sql.indexOf('\n', i);
+      i = end < 0 ? sql.length : end;
+      continue;
+    }
+    if (c === '/' && next === '*') { depth = 1; i += 2; continue; }
+    if (i === lineStart || sql.slice(lineStart, i).trim() === '') {
+      const end = sql.indexOf('\n', i);
+      const line = sql.slice(lineStart, end < 0 ? sql.length : end).replace(/\r$/, '');
+      if (GO_LINE.test(line)) { i = end < 0 ? sql.length : end; continue; }
+    }
+    return true;
+  }
+  return false;
+}
+
+/** script_object warnings meaning the module has no scriptable definition (CLR, WITH ENCRYPTION). */
+const UNAVAILABLE_WARNING = /has no T-SQL definition|definition not available/i;
+
+/**
+ * True when an editable script would apply nothing: the DDL has no executable statement (only comments, as for a
+ * CLR or encrypted module), or a script_object warning says the definition is unavailable.
+ */
+export function definitionUnavailable(ddl: string, warnings: readonly string[]): boolean {
+  return !hasExecutableSql(ddl) || warnings.some(w => UNAVAILABLE_WARNING.test(w));
+}

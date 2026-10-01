@@ -4,6 +4,8 @@ import { parseReadData, rowsToTable } from '../dataTable';
 import type { ObjectRef } from '../explorer/catalog';
 import { openEditableDdl } from '../explorer/editableDdl';
 import { isEditable } from '../explorer/objectEdit';
+import type { ConnectionStore } from '../connections/store';
+import { findProfile } from '../query/editorState';
 import type { QueryDocuments } from '../query/queryDocuments';
 import type { DdlDocumentProvider } from '../explorer/ddlDocuments';
 import type { ExplorerClient } from '../explorer/explorerClient';
@@ -34,6 +36,7 @@ export function registerExplorerCommands(
   filterView: ObjectFilterViewProvider,
   ddl: DdlDocumentProvider,
   docs: QueryDocuments,
+  store: ConnectionStore,
   log: Logger,
 ): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void> | void) =>
@@ -51,9 +54,11 @@ export function registerExplorerCommands(
       void vscode.window.showInformationMessage('MSSQL-MCP: select an object in the MSSQL-MCP tree.');
       return;
     }
-    // Views, procedures and functions open as editable files bound to their connection; a failure falls back
-    // to the read-only document (which shows the error and offers Refresh).
-    if (isEditable(ref.scriptType) && await openEditableDdl(context, explorer, docs, log, ref)) return;
+    // Views, procedures and functions open as editable files bound to their connection (and to its server/database
+    // at this moment, for the wrong-target guard). A failure, or a module with no definition to apply (CLR,
+    // WITH ENCRYPTION), falls back to the read-only document (which shows the error or warning and offers Refresh).
+    if (isEditable(ref.scriptType)
+      && await openEditableDdl(context, explorer, docs, log, ref, findProfile(store.list(), ref.connection))) return;
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(ddlUri(ref)));
     const sqlDoc = await vscode.languages.setTextDocumentLanguage(doc, 'sql');
     await vscode.window.showTextDocument(sqlDoc, { preview: true });

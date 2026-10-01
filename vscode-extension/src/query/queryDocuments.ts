@@ -2,6 +2,7 @@
 // No 'vscode' import — unit-testable with plain Node; queryCommands.ts wires the document events.
 import type { ObjectRef } from '../explorer/catalog';
 import { DDL_SCHEME } from '../explorer/sqlText';
+import { ScriptTarget, asScriptTarget } from './targetGuard';
 
 export const QUERY_DOCUMENTS_KEY = 'msSqlMcp.queryDocuments';
 
@@ -10,6 +11,10 @@ export interface QueryAssociation {
   connection: string;
   kind: 'query' | 'object';
   object?: ObjectRef;
+  /** Object documents: the server/database the script was generated from (see targetGuard.ts). */
+  target?: ScriptTarget;
+  /** Object documents: set by Change Connection, so the next run asks before applying the script elsewhere. */
+  rebound?: boolean;
 }
 
 /** The part of vscode.Memento this store needs (context.workspaceState). */
@@ -50,6 +55,13 @@ function isAssociation(v: unknown): v is QueryAssociation {
     && (a.object === undefined || (typeof a.object === 'object' && a.object !== null && typeof a.object.name === 'string'));
 }
 
+/** Drops a malformed `target` (the guard then asks before running) and a non-boolean `rebound`. */
+function normalized(a: QueryAssociation): QueryAssociation {
+  const { target, rebound, ...rest } = a;
+  const t = asScriptTarget(target);
+  return { ...rest, ...(t ? { target: t } : {}), ...(rebound === true ? { rebound: true } : {}) };
+}
+
 /** Association `uri.toString() → { connection, kind, object? }`, persisted under {@link QUERY_DOCUMENTS_KEY}. */
 export class QueryDocuments implements Disposable {
   private readonly entries = new Map<string, QueryAssociation>();
@@ -58,7 +70,7 @@ export class QueryDocuments implements Disposable {
   constructor(private readonly memento: AssociationMemento) {
     const saved = memento.get<Record<string, unknown>>(QUERY_DOCUMENTS_KEY, {});
     for (const [key, value] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
-      if (isAssociation(value)) this.entries.set(key, value);
+      if (isAssociation(value)) this.entries.set(key, normalized(value));
     }
   }
 

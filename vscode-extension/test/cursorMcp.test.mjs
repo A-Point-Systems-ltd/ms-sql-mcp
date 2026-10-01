@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { CursorMcpRegistrar, cursorMcpApi, hasMsSqlEntry } from '../out/cursorMcp.js';
+import { cursorMcpApi, CursorMcpRegistrar, duplicateEntryAction, hasMsSqlEntry } from '../out/cursorMcp.js';
 import { cursorServerEnv } from '../out/connections/serverEnv.js';
 
 const p = (name, extra = {}) => ({ name, server: 's', database: 'd', auth: 'windows', readOnly: false, insights: true, open: true, encrypt: 'optional', trustServerCertificate: true, ...extra });
@@ -219,4 +219,11 @@ test('hasMsSqlEntry reads mcp.json read-only and skips missing or invalid files'
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('duplicateEntryAction warns while the entry exists until "Don\'t show again", and clears that once it is gone', () => {
+  assert.equal(duplicateEntryAction(true, false), 'warn');
+  assert.equal(duplicateEntryAction(true, true), 'none');
+  assert.equal(duplicateEntryAction(false, true), 'clear');
+  assert.equal(duplicateEntryAction(false, false), 'none');
 });

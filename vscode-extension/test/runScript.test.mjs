@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRunRequest, clampMaxRows, editorLine, parseRunScriptResult } from '../out/query/runScript.js';
+import { appliedSuccessfully, buildRunRequest, clampMaxRows, editorLine, parseRunScriptResult } from '../out/query/runScript.js';
 
 test('buildRunRequest runs the whole text from line 0 without a selection', () => {
   assert.deepEqual(buildRunRequest('SELECT 1\nGO\nSELECT 2', undefined), { script: 'SELECT 1\nGO\nSELECT 2', lineOffset: 0 });
@@ -73,4 +73,13 @@ test('clampMaxRows defaults to 1000 and clamps to 1..10000', () => {
   assert.equal(clampMaxRows(0), 1);
   assert.equal(clampMaxRows(50_000), 10000);
   assert.equal(clampMaxRows(250.7), 250);
+});
+
+test('appliedSuccessfully needs at least one batch and no error message', () => {
+  const r = (over = {}) => ({ resultSets: [], messages: [], hadErrors: false, batches: 1, elapsedMs: 0, ...over });
+  assert.equal(appliedSuccessfully(r()), true);
+  assert.equal(appliedSuccessfully(r({ messages: [{ kind: 'info', text: 'ok', line: null }] })), true);
+  assert.equal(appliedSuccessfully(r({ batches: 0 })), false);
+  assert.equal(appliedSuccessfully(r({ hadErrors: true })), false);
+  assert.equal(appliedSuccessfully(r({ messages: [{ kind: 'error', text: 'Msg 102', line: 1 }] })), false);
 });

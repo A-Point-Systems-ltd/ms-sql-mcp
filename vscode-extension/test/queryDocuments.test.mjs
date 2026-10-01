@@ -94,3 +94,18 @@ test('activation pruning: files must exist, other documents must be open, mssql-
   assert.equal(keepOnActivation('vscode-remote', false, () => true), false);
   assert.equal(keepOnActivation('mssql-ddl', true, () => true), false);
 });
+
+test('object associations keep a well-formed target and rebound flag; malformed ones are dropped on load', async () => {
+  const good = { connection: 'dev', kind: 'object', object: { connection: 'dev', scriptType: 'View', name: 'v' }, target: { server: 'S', database: 'D' }, rebound: true };
+  const m = memento({ [QUERY_DOCUMENTS_KEY]: {
+    'file:///a.sql': good,
+    'file:///b.sql': { ...good, target: { server: 'S' }, rebound: 'yes' },
+    'file:///c.sql': { ...good, target: { raw: true }, rebound: false },
+  } });
+  const docs = new QueryDocuments(m);
+  assert.deepEqual(docs.get('file:///a.sql'), good);
+  assert.deepEqual(docs.get('file:///b.sql'), { connection: 'dev', kind: 'object', object: good.object });
+  assert.deepEqual(docs.get('file:///c.sql'), { connection: 'dev', kind: 'object', object: good.object, target: { raw: true } });
+  await docs.set('untitled:x', good);
+  assert.deepEqual(m.data[QUERY_DOCUMENTS_KEY]['untitled:x'], good);
+});

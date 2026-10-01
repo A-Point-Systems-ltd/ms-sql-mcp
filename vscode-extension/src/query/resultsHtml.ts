@@ -13,8 +13,15 @@ export type ResultsState =
 
 export const EMPTY_TEXT = 'Run a query with F5 or the Run button.';
 
-/** SQL Server types shown right-aligned (decimal / money arrive as strings). */
+/**
+ * SQL Server types shown right-aligned. The server sends decimal / numeric / money / smallmoney, and bigint values
+ * beyond +/-2^53, as exact strings (a JSON number would be rounded to a double), so alignment follows the column type
+ * from `columns[].type`, not the JavaScript type of the value. Binary values arrive as SSMS-style `0x...` hex text.
+ */
 const NUMERIC_TYPES = new Set(['bigint', 'int', 'smallint', 'tinyint', 'decimal', 'numeric', 'money', 'smallmoney', 'float', 'real']);
+
+/** The suffix the server appends to a string or binary value it cut at its cell cap (65536 chars / 32768 bytes). */
+const TRUNCATED_SUFFIX = /\u2026 \(truncated, (\d+) (chars|bytes)\)$/;
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
@@ -83,7 +90,11 @@ function cell(value: unknown, numericColumn: boolean): string {
   if (value === null || value === undefined) return '<td class="null">NULL</td>';
   const isNumber = typeof value === 'number' || typeof value === 'bigint';
   const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-  return `<td${isNumber || numericColumn ? ' class="num"' : ''}>${escapeHtml(text)}</td>`;
+  const cut = typeof value === 'string' ? TRUNCATED_SUFFIX.exec(value) : null;
+  const classes = [...(isNumber || numericColumn ? ['num'] : []), ...(cut ? ['trunc'] : [])];
+  const cls = classes.length ? ` class="${classes.join(' ')}"` : '';
+  const title = cut ? ` title="${escapeHtml(`Truncated by the server: the full value has ${cut[1]} ${cut[2]}.`)}"` : '';
+  return `<td${cls}${title}>${escapeHtml(text)}</td>`;
 }
 
 function message(m: RunScriptMessage): string {
@@ -143,6 +154,7 @@ function page(nonce: string, headerHtml: string, bodyHtml: string): string {
   tbody tr:hover { background: var(--vscode-list-hoverBackground); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.null { color: var(--vscode-descriptionForeground); font-style: italic; }
+  td.trunc { text-decoration: underline dotted var(--vscode-descriptionForeground); }
   .msg { padding: 2px 0; white-space: pre-wrap; font-family: var(--vscode-editor-font-family), monospace;
          font-size: var(--vscode-editor-font-size, 12px); user-select: text; }
   .msg.error, .msg.error a { color: var(--vscode-errorForeground); }

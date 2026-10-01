@@ -103,3 +103,8 @@ export function parseRunScriptResult(payload: unknown): RunScriptResult {
     elapsedMs: num(pick(data, 'elapsedMs'), 0),
   };
 }
+
+/** An object script counts as applied only when at least one batch ran and no message is an error. */
+export function appliedSuccessfully(result: RunScriptResult): boolean {
+  return !result.hadErrors && result.batches > 0 && !result.messages.some(m => m.kind === 'error');
+}

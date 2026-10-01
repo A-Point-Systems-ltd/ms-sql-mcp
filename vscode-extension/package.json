@@ -273,17 +273,17 @@
         },
         {
           "command": "msSqlMcp.runQuery",
-          "when": "msSqlMcp.editorCanRun",
+          "when": "resource in msSqlMcp.runnableDocs",
           "group": "navigation@1"
         },
         {
           "command": "msSqlMcp.runQueryReadOnly",
-          "when": "msSqlMcp.editorRunBlockedReadOnly",
+          "when": "resource in msSqlMcp.blockedDocs",
           "group": "navigation@1"
         },
         {
           "command": "msSqlMcp.cancelQuery",
-          "when": "msSqlMcp.queryRunning",
+          "when": "resource in msSqlMcp.runningDocs",
           "group": "navigation@2"
         }
       ]
@@ -338,7 +338,7 @@
       {
         "command": "msSqlMcp.runQuery",
         "key": "f5",
-        "when": "editorTextFocus && msSqlMcp.editorConnected"
+        "when": "editorTextFocus && msSqlMcp.editorConnected && !inDebugMode"
       }
     ]
   },

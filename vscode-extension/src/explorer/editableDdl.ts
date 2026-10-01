@@ -2,11 +2,14 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { pick } from '../client/parse';
+import type { ConnectionProfile } from '../connections/profile';
 import { Logger } from '../logger';
-import type { QueryDocuments } from '../query/queryDocuments';
+import type { QueryAssociation, QueryDocuments } from '../query/queryDocuments';
+import { ScriptTarget, targetOf } from '../query/targetGuard';
 import type { ObjectRef } from './catalog';
 import type { ExplorerClient } from './explorerClient';
 import { editFilePath } from './objectEdit';
+import { definitionUnavailable } from './sqlText';
 import { scriptArgs } from './treeModel';
 
 const MAX_WARNING_CHARS = 600;
@@ -15,10 +18,16 @@ const DIRTY_MESSAGE = 'MSSQL-MCP: Unsaved edits kept - close the editor to reloa
 const sameRef = (a: ObjectRef | undefined, b: ObjectRef): boolean =>
   !!a && a.connection === b.connection && a.scriptType === b.scriptType && (a.schema ?? '') === (b.schema ?? '') && a.name === b.name;
 
+/** The binding of an object document scripted from `target` (undefined when the profile is gone: Run then asks). */
+const objectBinding = (ref: ObjectRef, target: ScriptTarget | undefined): QueryAssociation =>
+  ({ connection: ref.connection, kind: 'object', object: ref, ...(target ? { target } : {}) });
+
 /**
  * Opens a view / procedure / function as an editable file bound to its connection, so Run / F5 applies it.
  * The script comes from the read-only explorer process (form 'alter': CREATE OR ALTER or ALTER by server version).
- * Returns false when scripting or writing failed; the caller then shows the read-only error document.
+ * The binding records `profile`'s server/database now, so Run can warn when the connection later points elsewhere.
+ * Returns false when scripting or writing failed, or when there is no definition to apply (CLR, WITH ENCRYPTION:
+ * a comment-only script); the caller then shows the read-only document with its error or warning.
  */
 export async function openEditableDdl(
   context: vscode.ExtensionContext,
@@ -26,7 +35,9 @@ export async function openEditableDdl(
   docs: QueryDocuments,
   log: Logger,
   ref: ObjectRef,
+  profile: ConnectionProfile | undefined,
 ): Promise<boolean> {
+  const scriptedFrom = profile ? targetOf(profile) : undefined;
   const label = `${ref.scriptType} ${ref.schema ? `${ref.schema}.` : ''}${ref.name} from ${ref.connection}`;
   const uri = vscode.Uri.file(editFilePath(context.globalStorageUri.fsPath, ref));
   const key = uri.toString();
@@ -41,7 +52,8 @@ export async function openEditableDdl(
   }
 
   const keepDirty = async (doc: vscode.TextDocument): Promise<true> => {
-    await docs.set(uri, { connection: ref.connection, kind: 'object', object: ref });
+    // The unsaved text was scripted earlier: keep the target recorded then.
+    await docs.set(uri, objectBinding(ref, docs.get(uri)?.target ?? scriptedFrom));
     await vscode.window.showTextDocument(doc, { preview: false });
     void vscode.window.showInformationMessage(DIRTY_MESSAGE);
     return true;
@@ -58,6 +70,10 @@ export async function openEditableDdl(
     if (!ddl.trim()) throw new Error('The server returned an empty script.');
     const raw = pick(result, 'warnings');
     warnings = (Array.isArray(raw) ? raw : []).map(w => String(w)).filter(w => w.length);
+    if (definitionUnavailable(ddl, warnings)) {
+      log.info('ddl', `${label}: no definition to edit (${warnings.join(' | ') || 'comment-only script'}); opening it read-only.`);
+      return false;
+    }
 
     // The user may have started typing while the server call ran: re-check before touching the document.
     const open = findOpen();
@@ -81,7 +97,7 @@ export async function openEditableDdl(
   }
 
   // Bind before showing, so the Run button and status bar are right on the first paint.
-  await docs.set(uri, { connection: ref.connection, kind: 'object', object: ref });
+  await docs.set(uri, objectBinding(ref, scriptedFrom));
   const doc = await vscode.workspace.openTextDocument(uri);
   const sqlDoc = doc.languageId === 'sql' ? doc : await vscode.languages.setTextDocumentLanguage(doc, 'sql');
   await vscode.window.showTextDocument(sqlDoc, { preview: false });
