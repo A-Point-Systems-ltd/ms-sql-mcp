@@ -9,7 +9,10 @@ import { ExplorerClient } from './explorer/explorerClient';
 import { ExplorerTreeProvider } from './explorer/explorerTree';
 import { DDL_SCHEME } from './explorer/sqlText';
 import { Logger } from './logger';
-import { MssqlMcpServerProvider } from './mcpProvider';
+import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, hasMsSqlEntry } from './cursorMcp';
+import { resolveExePath } from './exe';
+import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
+import { cursorConfigPath } from './register/clientPaths';
 import { registerClientCommand } from './register/registerClients';
 import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
 
@@ -48,7 +51,10 @@ export function activate(context: vscode.ExtensionContext): void {
     if (e.affectsConfiguration('msSqlMcp.serverPath')) explorer.reset();
   }));
 
-  registerMcpProvider(context, store, log);
+  // Cursor ignores vscode.lm MCP providers and has its own API, so it gets the registrar instead (never both).
+  const cursorApi = cursorMcpApi(vscode);
+  if (cursorApi) registerCursorServer(context, store, log, cursorApi);
+  else registerMcpProvider(context, store, log);
   log.info('activate', 'MSSQL-MCP activated');
 }
 
@@ -68,6 +74,47 @@ function registerMcpProvider(context: vscode.ExtensionContext, store: Connection
       if (e.affectsConfiguration('msSqlMcp.insights') || e.affectsConfiguration('msSqlMcp.allowAdhocConnections') || e.affectsConfiguration('msSqlMcp.serverPath')) provider.refresh();
     }),
   );
+}
+
+const CURSOR_DUPLICATE_FLAG = 'msSqlMcp.cursorMcpJsonDuplicateWarned';
+const CURSOR_DEBOUNCE_MS = 300;
+
+/** Registers the agent-facing MCP server with Cursor's own `cursor.mcp` API and keeps it in step with the profiles and settings. */
+function registerCursorServer(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger, api: CursorMcpApi): void {
+  log.info('activate', `Cursor MCP API found (${vscode.env.appName}); registering the agent server with Cursor instead of the vscode.lm provider.`);
+  const registrar = new CursorMcpRegistrar(api, {
+    exePath: () => (process.platform === 'win32' ? resolveExePath(context.extensionUri) : undefined),
+    profiles: () => store.list(),
+    passwords: () => store.passwords(),
+    settings: agentSettings,
+    log,
+    warn: message => void vscode.window.showWarningMessage(message),
+  });
+  const sync = () => void registrar.sync();
+  let timer: NodeJS.Timeout | undefined;
+  context.subscriptions.push(
+    registrar,
+    store.onDidChange(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(sync, CURSOR_DEBOUNCE_MS);
+    }),
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('msSqlMcp.insights') || e.affectsConfiguration('msSqlMcp.allowAdhocConnections') || e.affectsConfiguration('msSqlMcp.serverPath')) sync();
+    }),
+    { dispose: () => { if (timer) clearTimeout(timer); } },
+  );
+  sync();
+  warnAboutDuplicateEntry(context, log);
+}
+
+/** One-time warning when ~/.cursor/mcp.json already holds an `ms-sql` entry (the extension never edits that file on its own). */
+function warnAboutDuplicateEntry(context: vscode.ExtensionContext, log: Logger): void {
+  if (context.globalState.get<boolean>(CURSOR_DUPLICATE_FLAG, false)) return;
+  if (!hasMsSqlEntry(cursorConfigPath())) return;
+  log.warn('activate', "~/.cursor/mcp.json has an 'ms-sql' entry that duplicates the server registered by the extension.");
+  void vscode.window.showWarningMessage(
+    "An 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two MSSQL-MCP servers.");
+  void context.globalState.update(CURSOR_DUPLICATE_FLAG, true);
 }
 
 export function deactivate(): void {}

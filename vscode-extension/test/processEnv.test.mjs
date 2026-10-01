@@ -10,7 +10,8 @@ test('agent provider env removes inherited connection sources with null', () => 
   assert.equal(env.MSSQL_CONNECTIONS, '[]');
   assert.equal(env.CONNECTION_STRING, null);
   assert.equal(env.MSSQL_CONNECTIONS_FILE, null);
-  assert.ok('CONNECTION_STRING' in env && 'MSSQL_CONNECTIONS_FILE' in env);
+  assert.equal(env.MSSQL_SCRIPT_RUNNER, null);
+  assert.ok('CONNECTION_STRING' in env && 'MSSQL_CONNECTIONS_FILE' in env && 'MSSQL_SCRIPT_RUNNER' in env);
   assert.equal(env.USE_INSIGHTS_LAYER, 'true');
   assert.equal(env.MSSQL_ALLOW_ADHOC_CONNECTIONS, 'false');
   assert.equal(agentProviderEnv('[]', { ...settings, insights: false, allowAdhocConnections: true }).MSSQL_ALLOW_ADHOC_CONNECTIONS, 'true');
@@ -25,6 +26,7 @@ test('explorer / probe env blanks inherited connection sources and forces safe f
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
   });
+  assert.ok(!('MSSQL_SCRIPT_RUNNER' in env), 'the explorer process never sets the script-runner flag');
   assert.equal(explorerProcessEnv('[]', { LOG_FILE_PATH: 'x' }).LOG_FILE_PATH, 'x');
 });
 
@@ -44,6 +46,7 @@ test('external client env points at the file and blanks the other sources', () =
     MSSQL_CONNECTIONS: '',
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
+    MSSQL_SCRIPT_RUNNER: '',
   });
 });
 

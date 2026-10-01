@@ -6,7 +6,8 @@ import { resolveExePath } from './exe';
 
 export { PROVIDER_ID };
 
-function agentSettings(): AgentServerSettings {
+/** Reads the `msSqlMcp.*` settings that shape the agent-facing server. */
+export function agentSettings(): AgentServerSettings {
   const cfg = vscode.workspace.getConfiguration('msSqlMcp');
   return {
     insights: cfg.get<boolean>('insights', true),

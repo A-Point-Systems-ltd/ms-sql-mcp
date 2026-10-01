@@ -68,6 +68,14 @@ The text `${env:` is not accepted in any field, because the server would expand 
 
 ## Using it from Cursor, Claude Desktop and Claude Code
 
+### Cursor (automatic)
+
+In Cursor the extension registers the MSSQL-MCP server for you, through Cursor's own MCP extension API (`cursor.mcp.registerServer`); Cursor does not show servers offered through VS Code's `vscode.lm` MCP provider. The registration is named `ms-sql`, is created when at least one connection is open and usable, and follows your connections and the `msSqlMcp.insights`, `msSqlMcp.allowAdhocConnections` and `msSqlMcp.serverPath` settings. It is removed when no usable connection is left or the extension is disabled. No `~/.cursor/mcp.json` entry is needed.
+
+If `~/.cursor/mcp.json` already has an `ms-sql` entry (from an earlier **Register with Cursor / Claude...**), the extension warns once that it duplicates the automatic registration. Remove that entry to avoid two MSSQL-MCP servers; the extension never edits the file on its own. Choose **Cursor** in the command below only for the `cursor-agent` CLI.
+
+### Cursor CLI, Claude Desktop and Claude Code
+
 Run **Register with Cursor / Claude...** (the view's title bar, or the Command Palette) and pick the clients. The extension:
 
 - copies the server exe to a per-user folder, so the registration survives extension upgrades;

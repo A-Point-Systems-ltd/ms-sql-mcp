@@ -12,4 +12,6 @@
 - Automatic `connections.json` refresh always applies close / remove / read-only; a new connection that needs a new `${env:}` variable is left out until re-registration (warning with Re-register), and the file is deleted when no connection is left.
 - Commands are registered even when the editor has no MCP server definition API.
 - Connection fields reject `${env:`; trace logging records only the row count of `read_data` results.
+- Cursor: the agent server is registered with Cursor's own `cursor.mcp.registerServer` API (Cursor ignores VS Code's MCP server definition provider), so it appears in Cursor without any manual registration. A one-time warning flags an existing `ms-sql` entry in `~/.cursor/mcp.json`; the "Register with Cursor / Claude..." Cursor option is then only needed for the cursor-agent CLI.
+- The extension-only `MSSQL_SCRIPT_RUNNER` switch is never inherited by the agent server or by servers registered with external clients.
 - Windows x64 only.

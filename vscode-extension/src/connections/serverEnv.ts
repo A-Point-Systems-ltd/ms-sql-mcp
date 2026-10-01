@@ -9,6 +9,7 @@ export interface AgentServerSettings { insights: boolean; allowAdhocConnections:
 /**
  * Env for the VS Code MCP server definition. The server also reads CONNECTION_STRING and MSSQL_CONNECTIONS_FILE, which
  * the editor would otherwise pass through from its own environment and silently add connections; `null` removes them.
+ * `MSSQL_SCRIPT_RUNNER` (the extension-only `run_script` switch) is removed the same way.
  */
 export function agentProviderEnv(connectionsJson: string, s: AgentServerSettings): Record<string, string | null> {
   return {
@@ -17,6 +18,23 @@ export function agentProviderEnv(connectionsJson: string, s: AgentServerSettings
     MSSQL_CONNECTIONS_FILE: null,
     USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
+    MSSQL_SCRIPT_RUNNER: null,
+  };
+}
+
+/**
+ * Env for the server the extension registers with Cursor's own API. Cursor's env type has no null, so inherited
+ * sources are blanked with '' (the server treats empty as unset). `MSSQL_SCRIPT_RUNNER` is the extension-only
+ * `run_script` switch; an agent-facing server must never inherit it from the editor's environment.
+ */
+export function cursorServerEnv(connectionsJson: string, s: Pick<AgentServerSettings, 'insights' | 'allowAdhocConnections'>): Record<string, string> {
+  return {
+    MSSQL_CONNECTIONS: connectionsJson,
+    CONNECTION_STRING: '',
+    MSSQL_CONNECTIONS_FILE: '',
+    USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
+    MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
+    MSSQL_SCRIPT_RUNNER: '',
   };
 }
 
@@ -43,6 +61,7 @@ export function externalClientEnv(connectionsFile: string, s: Pick<AgentServerSe
     MSSQL_CONNECTIONS: '',
     USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
+    MSSQL_SCRIPT_RUNNER: '',
   };
 }
 

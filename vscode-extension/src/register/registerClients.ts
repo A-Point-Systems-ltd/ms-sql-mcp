@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ConnectionStore } from '../connections/store';
+import { cursorMcpApi } from '../cursorMcp';
 import { EXE_NAME, resolveExe } from '../exe';
 import { Logger } from '../logger';
 import { registerClaudeCode, powershellCommand } from './claudeCode';
@@ -111,8 +112,12 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
     void vscode.window.showWarningMessage('MSSQL-MCP: open at least one connection before registering.');
     return;
   }
+  // Inside Cursor the extension already registers the server through Cursor's own API, so the mcp.json entry is for the CLI only.
+  const cursorDetail = cursorMcpApi(vscode)
+    ? 'Not needed in this window - the extension registers MSSQL-MCP with Cursor automatically. Use only for the cursor-agent CLI.'
+    : undefined;
   const picks = await vscode.window.showQuickPick(
-    [{ label: 'Cursor' }, { label: 'Claude Desktop' }, { label: 'Claude Code' }],
+    [{ label: 'Cursor', detail: cursorDetail }, { label: 'Claude Desktop' }, { label: 'Claude Code' }],
     { canPickMany: true, title: 'Register MSSQL-MCP with...', placeHolder: 'Select one or more clients' });
   if (!picks?.length) return;
   const chosen = new Set(picks.map(p => p.label));
