@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { URI, Utils } from 'vscode-uri';
 import {
-  SQL_DOC_SCHEME, QueryCounter, backingFile, docTitle, isLegacyEditPath, isSqlDocDirectory, isValidDocId, needsSqlLanguage,
+  SQL_DOC_ROOT, SQL_DOC_SCHEME, QueryCounter, backingFile, docTitle, isLegacyEditPath, isSqlDocDirectory, isValidDocId, needsSqlLanguage,
   newQueryId, objectDisplayName, parseSqlDocPath, profileTarget, queryNumberOf, queryObjectName, sqlDocPath, titlePart,
   writeFileCheck,
 } from '../out/query/sqlDocNames.js';
@@ -47,16 +47,28 @@ test('title parts: "/" becomes U+2215, control characters are dropped, empty par
   assert.equal(docTitle('x/y', { server: 's/t', database: 'd\nb' }), 'x∕y - s∕t - db');
 });
 
-test('path is /<kind>/<id>/<title> (no extension) and parses back', () => {
-  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'Query 1 - S - D' }), '/query/abcd1234/Query 1 - S - D');
-  assert.deepEqual(parseSqlDocPath('/object/0123456789abcdef/dbo.v - S - D'), { kind: 'object', id: '0123456789abcdef', title: 'dbo.v - S - D' });
+test('path is /~sql/<kind>/<id>/<title> (no extension) and parses back', () => {
+  assert.equal(SQL_DOC_ROOT, '~sql');
+  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'Query 1 - S - D' }), '/~sql/query/abcd1234/Query 1 - S - D');
+  assert.deepEqual(parseSqlDocPath('/~sql/object/0123456789abcdef/dbo.v - S - D'), { kind: 'object', id: '0123456789abcdef', title: 'dbo.v - S - D' });
   // Whatever the title ends with belongs to it: no extension is stripped.
-  assert.deepEqual(parseSqlDocPath('/query/abcd1234/x.sql'), { kind: 'query', id: 'abcd1234', title: 'x.sql' });
+  assert.deepEqual(parseSqlDocPath('/~sql/query/abcd1234/x.sql'), { kind: 'query', id: 'abcd1234', title: 'x.sql' });
   // A slash or control character in the title never adds a segment.
-  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'a/b\u0001' }), '/query/abcd1234/a∕b');
-  for (const bad of ['/', '/query', '/query/abcd1234', '/query/abcd1234/', '/other/abcd1234/x', '/query/ABCD1234/x', '/query/abc/x',
-    '/query/abcd1234/a/b', 'query/abcd1234/x', '/query/../x', '/query/abcd1234/.', '/query/abcd1234/..']) {
+  assert.equal(sqlDocPath({ kind: 'query', id: 'abcd1234', title: 'a/b\u0001' }), '/~sql/query/abcd1234/a∕b');
+  for (const bad of ['/', '/~sql', '/~sql/query', '/~sql/query/abcd1234', '/~sql/query/abcd1234/', '/~sql/other/abcd1234/x',
+    '/~sql/query/ABCD1234/x', '/~sql/query/abc/x', '/~sql/query/abcd1234/a/b', '~sql/query/abcd1234/x', '/~sql/query/../x',
+    '/~sql/query/abcd1234/.', '/~sql/query/abcd1234/..',
+    // The round-1 shape (never shipped) and other roots are rejected.
+    '/query/abcd1234/x', '/sql/query/abcd1234/x', '/~SQL/query/abcd1234/x']) {
     assert.equal(parseSqlDocPath(bad), undefined, bad);
+  }
+});
+
+test('the ~sql root makes the sql filenamePatterns "**/~sql/**" match every document path', () => {
+  // A minimal glob check of the contributed pattern against the path, as VS Code matches it for non-file schemes.
+  const matches = p => /(^|\/)~sql\//.test(p);
+  for (const title of ['Query 1 - S - D', 'dbo.v - DC\\DEV - db', 'x.cs - s - d']) {
+    assert.equal(matches(sqlDocPath({ kind: 'query', id: 'abcd1234', title })), true, title);
   }
 });
 
@@ -120,8 +132,12 @@ test('writeFile flags: create / overwrite decide between write, FileNotFound and
 });
 
 test('directory paths: /, /<kind> and /<kind>/<id> only', () => {
-  for (const p of ['/', '/query', '/object', '/query/', '/query/abcd1234', '/object/0123456789abcdef/']) assert.equal(isSqlDocDirectory(p), true, p);
-  for (const p of ['/query/abcd1234/Query 1 - S - D', '/other', '/query/ABCD1234', '/query/abc', '']) assert.equal(isSqlDocDirectory(p), false, p);
+  for (const p of ['/', '/~sql', '/~sql/', '/~sql/query', '/~sql/object', '/~sql/query/', '/~sql/query/abcd1234', '/~sql/object/0123456789abcdef/']) {
+    assert.equal(isSqlDocDirectory(p), true, p);
+  }
+  for (const p of ['/~sql/query/abcd1234/Query 1 - S - D', '/query', '/query/abcd1234', '/~sql/other', '/~sql/query/ABCD1234', '/~sql/query/abc', '']) {
+    assert.equal(isSqlDocDirectory(p), false, p);
+  }
 });
 
 test('language: mssql-sql documents are always sql, other schemes are left alone', () => {

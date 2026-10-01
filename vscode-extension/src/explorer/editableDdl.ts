@@ -93,7 +93,8 @@ export async function openEditableDdl(
   // Bind before showing, so the Run button and status bar are right on the first paint.
   await docs.set(uri, objectBinding(ref, scriptedFrom));
   const doc = await vscode.workspace.openTextDocument(uri);
-  const sqlDoc = doc.languageId === 'sql' ? doc : await vscode.languages.setTextDocumentLanguage(doc, 'sql');
+  // The one language path for mssql-sql documents (shared with the open listener: never changed twice).
+  const sqlDoc = await sqlDocs.sqlDocument(doc);
   await vscode.window.showTextDocument(sqlDoc, { preview: false });
   if (warnings.length) {
     const text = warnings.join(' | ');

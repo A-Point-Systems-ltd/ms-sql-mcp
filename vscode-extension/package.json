@@ -28,6 +28,14 @@
         "label": "APoint-ms-sql"
       }
     ],
+    "languages": [
+      {
+        "id": "sql",
+        "filenamePatterns": [
+          "**/~sql/**"
+        ]
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

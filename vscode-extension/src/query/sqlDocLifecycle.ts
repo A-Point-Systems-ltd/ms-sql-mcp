@@ -7,11 +7,12 @@ import { Logger } from '../logger';
 import { findProfile } from './editorState';
 import { QueryDocuments, afterCloseGrace, keepOnActivation, orphanQueryIds } from './queryDocuments';
 import {
-  QueryIndexEntry, closedQueryAction, isBlank, objectPrunePlan, queryPrunePlan, recentQueries, relativeTime, reopenObjectName,
-  withEntry, withoutIds,
+  BackingRead, QueryIndex, QueryIndexEntry, closedEntry, closedQueryAction, isBlank, mergeRecovered, queryPrunePlan,
+  recentQueries, recoveredEntries, relativeTime, reopenObjectName, withEntry, withoutIds, writtenEntry,
 } from './queryIndex';
-import { QueryIndexFile, SqlDocFileSystem, openDocumentKeys, openSqlDocs } from './sqlDocFs';
-import { QueryCounter, docTitle, needsSqlLanguage, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
+import type { QueryIndexFile } from './queryIndexFile';
+import { SqlDocFileSystem, openDocumentKeys, openSqlDocs } from './sqlDocFs';
+import { QueryCounter, docTitle, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
 
 /** A closed document reopens at once when only its language changed; wait this long before acting on the close. */
 export const REOPEN_GRACE_MS = 200;
@@ -54,10 +55,11 @@ class OwnedQueryIds {
  * The lifecycle of `mssql-sql:` documents and of their associations:
  * - New Query and Open Recent Query (kept query documents, `sqldocs/query-index.json`);
  * - the sql language (the uris have no extension);
- * - closes (after the reopen grace: a blank query document is deleted, any other is kept for Open Recent Query);
+ * - closes (after the reopen grace: a blank query document is deleted, any other is kept and marked closed);
  * - renamed files;
- * - the deferred activation prune: the legacy `edits/` folder, stale associations, query documents not written for
- *   30 days and blank orphans, and unused object backing files older than 30 days.
+ * - the deferred activation prune: the legacy `edits/` folder, stale associations, query documents closed more than
+ *   30 days ago and blank orphans. Object backing files are never pruned (an unapplied edit must not be lost).
+ * A backing file or index that cannot be read (other than "does not exist") is left alone.
  */
 export class SqlDocLifecycle implements vscode.Disposable {
   private readonly subs: vscode.Disposable[] = [];
@@ -65,8 +67,6 @@ export class SqlDocLifecycle implements vscode.Disposable {
   private readonly owned: OwnedQueryIds;
   private readonly index: QueryIndexFile;
   private readonly counter = new QueryCounter();
-  /** Pending setTextDocumentLanguage calls by uri, so the open listener and the open flows do not both change it. */
-  private readonly languageChanges = new Map<string, Thenable<vscode.TextDocument>>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -75,14 +75,14 @@ export class SqlDocLifecycle implements vscode.Disposable {
     private readonly log: Logger,
   ) {
     this.owned = new OwnedQueryIds(context.workspaceState);
-    this.index = new QueryIndexFile(context.globalStorageUri.fsPath, log);
+    this.index = sqlDocs.queryIndex();
     this.subs.push(
-      vscode.workspace.onDidOpenTextDocument(doc => void this.sqlDocument(doc)),
+      vscode.workspace.onDidOpenTextDocument(doc => this.onOpen(doc)),
       vscode.workspace.onDidCloseTextDocument(doc => this.onClose(doc)),
       vscode.workspace.onDidRenameFiles(e => this.onRename(e)),
       sqlDocs.onDidWriteDoc(uri => this.recordWrite(uri)),
     );
-    for (const doc of vscode.workspace.textDocuments) void this.sqlDocument(doc);
+    for (const doc of vscode.workspace.textDocuments) this.onOpen(doc);
     this.later(PRUNE_DELAY_MS, () => void this.prune());
   }
 
@@ -98,16 +98,23 @@ export class SqlDocLifecycle implements vscode.Disposable {
 
   /** Quick pick of the kept query documents (newest first); the picked one reopens with its id, rebound and retitled. */
   async openRecentQuery(store: ConnectionStore): Promise<void> {
-    const index = await this.index.read();
+    let index: QueryIndex;
+    try {
+      index = await this.reconcileIndex();
+    } catch {
+      void vscode.window.showWarningMessage('MSSQL-MCP: the list of recent query windows could not be read. Details are in the APoint-ms-sql Output.');
+      return;
+    }
     const open = openSqlDocs('query');
     const now = Date.now();
     const items: (vscode.QuickPickItem & { entry: QueryIndexEntry & { id: string } })[] = [];
     const missing: string[] = [];
     for (const entry of recentQueries(index)) {
       if (!open.has(entry.id)) {
-        const text = await this.sqlDocs.readBacking('query', entry.id);
-        if (text === undefined) missing.push(entry.id);
-        if (text === undefined || isBlank(text)) continue;
+        const read = await this.sqlDocs.readBacking('query', entry.id);
+        if (read.kind === 'missing') missing.push(entry.id);
+        // Blank, gone or unreadable (left alone) entries are not offered.
+        if (read.kind !== 'text' || isBlank(read.text)) continue;
       }
       items.push({ label: entry.title, description: entry.connection, detail: relativeTime(entry.updatedAt, now), entry });
     }
@@ -145,30 +152,25 @@ export class SqlDocLifecycle implements vscode.Disposable {
       : entry.title;
     const uri = SqlDocFileSystem.uriWithTitle('query', id, title);
     if (connection) await this.docs.set(uri, { connection, kind: 'query' });
-    await this.index.update(i => (i[id] ? withEntry(i, id, { ...i[id], title, connection }) : i));
+    // Open again: closedAt is cleared, so the prune never touches it while it is open.
+    await this.index.update(i => (i[id] ? withEntry(i, id, writtenEntry(i[id], title, connection || undefined, i[id].updatedAt)) : i));
     await this.show(uri);
   }
 
   private async show(uri: vscode.Uri): Promise<void> {
-    const doc = await this.sqlDocument(await vscode.workspace.openTextDocument(uri));
+    const doc = await this.sqlDocs.sqlDocument(await vscode.workspace.openTextDocument(uri));
     await vscode.window.showTextDocument(doc, { preview: false });
   }
 
-  /** `doc` with language sql when it is a `mssql-sql:` document (setTextDocumentLanguage closes and reopens it). */
-  private sqlDocument(doc: vscode.TextDocument): Thenable<vscode.TextDocument> {
-    if (!needsSqlLanguage(doc.uri.scheme, doc.languageId)) return Promise.resolve(doc);
-    const key = doc.uri.toString();
-    const pending = this.languageChanges.get(key);
-    if (pending) return pending;
-    const change = vscode.languages.setTextDocumentLanguage(doc, 'sql').then(
-      d => { this.languageChanges.delete(key); return d; },
-      err => {
-        this.languageChanges.delete(key);
-        this.log.debug('sqldocs', `Setting the sql language failed: ${err instanceof Error ? err.message : String(err)}`);
-        return doc;
-      });
-    this.languageChanges.set(key, change);
-    return change;
+  /** A restored or opened query document is open again: its entry loses closedAt. Every mssql-sql document gets sql. */
+  private onOpen(doc: vscode.TextDocument): void {
+    void this.sqlDocs.sqlDocument(doc);
+    const addr = SqlDocFileSystem.address(doc.uri);
+    if (addr?.kind !== 'query') return;
+    void this.index.update(i => {
+      const e = i[addr.id];
+      return e && e.closedAt !== undefined ? withEntry(i, addr.id, writtenEntry(e, e.title, undefined, e.updatedAt)) : i;
+    });
   }
 
   private openQueryNumbers(): Set<number> {
@@ -180,12 +182,12 @@ export class SqlDocLifecycle implements vscode.Disposable {
     return numbers;
   }
 
-  /** Every write of a query document (save, New Query) refreshes its index entry. */
+  /** Every write of a query document (save, New Query) refreshes its index entry and clears closedAt. */
   private recordWrite(uri: vscode.Uri): void {
     const addr = SqlDocFileSystem.address(uri);
     if (addr?.kind !== 'query') return;
     const connection = this.docs.get(uri)?.connection;
-    void this.index.update(i => withEntry(i, addr.id, { title: addr.title, connection: connection ?? i[addr.id]?.connection ?? '', updatedAt: Date.now() }));
+    void this.index.update(i => withEntry(i, addr.id, writtenEntry(i[addr.id], addr.title, connection, Date.now())));
   }
 
   private onClose(doc: vscode.TextDocument): void {
@@ -207,16 +209,16 @@ export class SqlDocLifecycle implements vscode.Disposable {
     });
   }
 
-  /** A blank closed query document is deleted; any other is kept and recorded for Open Recent Query. */
+  /** A blank closed query document is deleted; any other is kept and marked closed; an unreadable one is left alone. */
   private async closeQuery(id: string, title: string, connection: string | undefined): Promise<void> {
     const action = closedQueryAction(await this.sqlDocs.readBacking('query', id));
+    if (action === 'leave') return;
     if (action === 'keep') {
-      await this.index.update(i => withEntry(i, id, { title, connection: connection ?? i[id]?.connection ?? '', updatedAt: Date.now() }));
+      await this.index.update(i => withEntry(i, id, closedEntry(title, connection, Date.now(), i[id])));
       return;
     }
     if (action === 'delete' && !(await this.sqlDocs.deleteBacking('query', id))) return;
-    await this.index.update(i => withoutIds(i, [id]));
-    await this.owned.remove([id]);
+    if (await this.index.update(i => withoutIds(i, [id]))) await this.owned.remove([id]);
   }
 
   private onRename(e: vscode.FileRenameEvent): void {
@@ -231,6 +233,25 @@ export class SqlDocLifecycle implements vscode.Disposable {
     }
   }
 
+  /**
+   * Re-adds index entries for non-blank query backing files that have none (self-healing after a lost or damaged
+   * index) and returns the index. Throws when the index cannot be read (nothing is written then).
+   */
+  private async reconcileIndex(): Promise<QueryIndex> {
+    const index = await this.index.read();
+    const files: { id: string; mtimeMs: number; read: BackingRead }[] = [];
+    for (const f of await this.sqlDocs.listBacking('query')) {
+      if (!index[f.id]) files.push({ ...f, read: await this.sqlDocs.readBacking('query', f.id) });
+    }
+    const openTitles = new Map<string, string>();
+    for (const [id, uri] of openSqlDocs('query')) openTitles.set(id, SqlDocFileSystem.address(uri)?.title ?? '');
+    const recovered = recoveredEntries(index, files, openTitles);
+    if (!Object.keys(recovered).length) return index;
+    this.log.info('sqldocs', `Re-added ${Object.keys(recovered).length} query window(s) to the recent list.`);
+    await this.index.update(i => mergeRecovered(i, recovered));
+    return this.index.read();
+  }
+
   /** The deferred activation prune. Tabs and documents are read now, not at activation. */
   private async prune(): Promise<void> {
     try {
@@ -242,41 +263,30 @@ export class SqlDocLifecycle implements vscode.Disposable {
         return keepOnActivation(uri.scheme, open.has(key), () => fs.existsSync(uri.fsPath));
       });
       await this.pruneQueries();
-      await this.pruneObjects();
     } catch (err) {
       this.log.error('query', 'Pruning stale query documents failed', err);
     }
   }
 
   private async pruneQueries(): Promise<void> {
+    // An unreadable index throws here: nothing is deleted then.
+    const index = await this.reconcileIndex();
     const open = new Set([...openSqlDocs('query').keys(), ...this.owned.session]);
     const owned = this.owned.all();
     const blank = new Set<string>();
     const missing = new Set<string>();
     for (const id of orphanQueryIds(owned, open)) {
-      const text = await this.sqlDocs.readBacking('query', id);
-      if (text === undefined) missing.add(id);
-      else if (isBlank(text)) blank.add(id);
+      const read = await this.sqlDocs.readBacking('query', id);
+      if (read.kind === 'missing') missing.add(id);
+      else if (read.kind === 'text' && isBlank(read.text)) blank.add(id);
+      // 'unknown': in neither set, so the plan leaves it alone.
     }
-    const plan = queryPrunePlan({ index: await this.index.read(), owned, open, blank, missing, now: Date.now() });
+    const plan = queryPrunePlan({ index, owned, open, blank, missing, now: Date.now() });
     const drop = [...plan.forget];
     // An id leaves the index and the owned list only once its file is really gone.
     for (const id of plan.remove) if (await this.sqlDocs.deleteBacking('query', id)) drop.push(id);
     if (!drop.length) return;
-    await this.index.update(i => withoutIds(i, drop));
-    await this.owned.remove(drop);
-  }
-
-  private async pruneObjects(): Promise<void> {
-    const open = new Set(openSqlDocs('object').keys());
-    const bound = new Set<string>();
-    for (const [key] of this.docs.all()) {
-      const addr = SqlDocFileSystem.address(vscode.Uri.parse(key));
-      if (addr?.kind === 'object') bound.add(addr.id);
-    }
-    for (const id of objectPrunePlan(await this.sqlDocs.listBacking('object'), open, bound, Date.now())) {
-      await this.sqlDocs.deleteBacking('object', id);
-    }
+    if (await this.index.update(i => withoutIds(i, drop))) await this.owned.remove(drop);
   }
 
   private later(ms: number, fn: () => void): void {

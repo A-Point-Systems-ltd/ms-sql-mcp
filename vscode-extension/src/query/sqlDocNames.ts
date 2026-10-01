@@ -102,29 +102,35 @@ export class QueryCounter {
 }
 
 /**
- * `/<kind>/<id>/<title>`: no extension, so the tab reads exactly the title (the language is set to sql on open, see
- * {@link needsSqlLanguage}). The title goes through {@link titlePart}. Use with `Uri.from({ scheme, path })`.
+ * First path segment of every document. package.json contributes a sql `filenamePatterns` glob matching any path with a
+ * `~sql` folder, so the editor opens these documents as sql from the start (no extension needed, no language change).
+ */
+export const SQL_DOC_ROOT = '~sql';
+
+/**
+ * `/~sql/<kind>/<id>/<title>`: no extension, so the tab reads exactly the title. The title goes through
+ * {@link titlePart}. Use with `Uri.from({ scheme, path })`.
  */
 export function sqlDocPath(addr: SqlDocAddress): string {
   if (!isKind(addr.kind) || !isValidDocId(addr.id)) throw new Error(`Invalid SQL document address: ${addr.kind}/${addr.id}`);
-  return `/${addr.kind}/${addr.id}/${titlePart(addr.title)}`;
+  return `/${SQL_DOC_ROOT}/${addr.kind}/${addr.id}/${titlePart(addr.title)}`;
 }
 
-/** The address in a `mssql-sql:` path, or undefined when it is not exactly `/<kind>/<id>/<title>`. */
+/** The address in a `mssql-sql:` path, or undefined when it is not exactly `/~sql/<kind>/<id>/<title>`. */
 export function parseSqlDocPath(p: string): SqlDocAddress | undefined {
   const parts = p.split('/');
-  if (parts.length !== 4 || parts[0] !== '') return undefined;
-  const [, kind, id, title] = parts;
+  if (parts.length !== 5 || parts[0] !== '' || parts[1] !== SQL_DOC_ROOT) return undefined;
+  const [, , kind, id, title] = parts;
   if (!isKind(kind) || !isValidDocId(id) || !title || title === '.' || title === '..') return undefined;
   return { kind, id, title };
 }
 
-/** `/`, `/<kind>` and `/<kind>/<id>` (optionally with a trailing `/`): the virtual directories of the file system. */
+/** `/`, `/~sql`, `/~sql/<kind>` and `/~sql/<kind>/<id>` (optionally with a trailing `/`): the virtual directories. */
 export function isSqlDocDirectory(p: string): boolean {
-  return /^\/(?:(?:query|object)(?:\/[0-9a-f]{8,40})?)?\/?$/.test(p);
+  return /^\/(?:~sql(?:\/(?:query|object)(?:\/[0-9a-f]{8,40})?)?)?\/?$/.test(p);
 }
 
-/** A `mssql-sql:` document whose language is not sql (no file extension to detect it from) gets it set. */
+/** A `mssql-sql:` document that still opened as another language (e.g. another extension's association): the guard. */
 export function needsSqlLanguage(scheme: string, languageId: string): boolean {
   return scheme === SQL_DOC_SCHEME && languageId !== 'sql';
 }

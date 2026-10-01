@@ -2,10 +2,11 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Logger } from '../logger';
-import { QUERY_INDEX_FILE, QueryIndex, parseQueryIndex, serializeQueryIndex } from './queryIndex';
+import { BackingRead, QUERY_INDEX_FILE } from './queryIndex';
+import { QueryIndexFile, nodeIndexFs } from './queryIndexFile';
 import {
   SQL_DOCS_DIR, SQL_DOC_SCHEME, SqlDocAddress, SqlDocKind, TitleTarget, backingFile, docTitle, isSqlDocDirectory,
-  isValidDocId, parseSqlDocPath, sqlDocPath, writeFileCheck,
+  isValidDocId, needsSqlLanguage, parseSqlDocPath, sqlDocPath, writeFileCheck,
 } from './sqlDocNames';
 
 const isNotFound = (err: unknown): boolean => (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
@@ -51,6 +52,12 @@ export class SqlDocFileSystem implements vscode.FileSystemProvider, vscode.Dispo
   /** Fires after every successful write of a document (editor save or {@link writeContent}). */
   readonly onDidWriteDoc = this.writes.event;
 
+  private index: QueryIndexFile | undefined;
+  /** Pending setTextDocumentLanguage calls by uri (see {@link sqlDocument}). */
+  private readonly languageChanges = new Map<string, Thenable<vscode.TextDocument>>();
+  /** Uris whose language the guard already set once this session. */
+  private readonly languageForced = new Set<string>();
+
   /** @param storageRoot the extension's global storage folder (`context.globalStorageUri.fsPath`). */
   constructor(private readonly storageRoot: string, private readonly log: Logger) {}
 
@@ -74,14 +81,49 @@ export class SqlDocFileSystem implements vscode.FileSystemProvider, vscode.Dispo
     await this.write(uri, Buffer.from(content, 'utf8'), { create: true, overwrite: true });
   }
 
-  /** The text of `kind`/`id`'s backing file, or undefined when it does not exist. */
-  async readBacking(kind: SqlDocKind, id: string): Promise<string | undefined> {
+  /**
+   * The text of `kind`/`id`'s backing file; `missing` only when it does not exist (ENOENT). Any other error is
+   * `unknown`, and callers then leave the file and its index entry alone.
+   */
+  async readBacking(kind: SqlDocKind, id: string): Promise<BackingRead> {
     try {
-      return await fs.readFile(backingFile(this.storageRoot, kind, id), 'utf8');
+      return { kind: 'text', text: await fs.readFile(backingFile(this.storageRoot, kind, id), 'utf8') };
     } catch (err) {
-      if (!isNotFound(err)) this.log.debug('sqldocs', `Reading a ${kind} document failed: ${message(err)}`);
-      return undefined;
+      if (isNotFound(err)) return { kind: 'missing' };
+      this.log.warn('sqldocs', `Reading a ${kind} document failed (${(err as NodeJS.ErrnoException).code ?? 'error'}); it was left alone.`);
+      return { kind: 'unknown' };
     }
+  }
+
+  /** The kept query documents index (`sqldocs/query-index.json`). */
+  queryIndex(): QueryIndexFile {
+    this.index ??= new QueryIndexFile(path.join(this.storageRoot, SQL_DOCS_DIR, QUERY_INDEX_FILE), nodeIndexFs,
+      m => this.log.warn('sqldocs', m));
+    return this.index;
+  }
+
+  /**
+   * `doc` with language sql when it is a `mssql-sql:` document. The path normally makes it sql from the start (the
+   * `~sql` filenamePatterns); this is the guard for a document that still opened as another language. The one place
+   * that calls setTextDocumentLanguage for these documents, at most once per uri per session: a change under way is
+   * reused, and a language set again afterwards (by the user or another extension) is left as it is.
+   */
+  sqlDocument(doc: vscode.TextDocument): Thenable<vscode.TextDocument> {
+    if (!needsSqlLanguage(doc.uri.scheme, doc.languageId)) return Promise.resolve(doc);
+    const key = doc.uri.toString();
+    const pending = this.languageChanges.get(key);
+    if (pending) return pending;
+    if (this.languageForced.has(key)) return Promise.resolve(doc);
+    this.languageForced.add(key);
+    const change = vscode.languages.setTextDocumentLanguage(doc, 'sql').then(
+      d => { this.languageChanges.delete(key); return d; },
+      err => {
+        this.languageChanges.delete(key);
+        this.log.debug('sqldocs', `Setting the sql language failed: ${message(err)}`);
+        return doc;
+      });
+    this.languageChanges.set(key, change);
+    return change;
   }
 
   /** Deletes the backing file of `kind`/`id`. True when it is gone afterwards (also when it was already gone). */
@@ -192,45 +234,6 @@ export class SqlDocFileSystem implements vscode.FileSystemProvider, vscode.Dispo
     const addr = SqlDocFileSystem.address(uri);
     if (!addr) throw vscode.FileSystemError.FileNotFound(uri);
     return backingFile(this.storageRoot, addr.kind, addr.id);
-  }
-}
-
-/**
- * `<globalStorage>/sqldocs/query-index.json`: the kept query documents. Every update re-reads the file (another window
- * may have changed it) and replaces it atomically; updates from this window are serialized.
- */
-export class QueryIndexFile {
-  private chain: Promise<unknown> = Promise.resolve();
-  private readonly file: string;
-
-  constructor(storageRoot: string, private readonly log: Logger) {
-    this.file = path.join(storageRoot, SQL_DOCS_DIR, QUERY_INDEX_FILE);
-  }
-
-  async read(): Promise<QueryIndex> {
-    try {
-      return parseQueryIndex(await fs.readFile(this.file, 'utf8'));
-    } catch (err) {
-      if (!isNotFound(err)) this.log.debug('sqldocs', `Reading the query index failed: ${message(err)}`);
-      return {};
-    }
-  }
-
-  /** Applies `change` to the current index and writes it back. Failures are logged (debug) and never thrown. */
-  update(change: (index: QueryIndex) => QueryIndex): Promise<void> {
-    const next = this.chain.then(async () => {
-      try {
-        const updated = change(await this.read());
-        await fs.mkdir(path.dirname(this.file), { recursive: true });
-        const tmp = `${this.file}.${process.pid}.tmp`;
-        await fs.writeFile(tmp, serializeQueryIndex(updated), 'utf8');
-        await fs.rename(tmp, this.file);
-      } catch (err) {
-        this.log.debug('sqldocs', `Updating the query index failed: ${message(err)}`);
-      }
-    });
-    this.chain = next;
-    return next;
   }
 }
 
