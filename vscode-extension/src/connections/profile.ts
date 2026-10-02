@@ -60,7 +60,7 @@ export function buildConnectionString(p: ConnectionProfile, password: string | u
     `Initial Catalog=${quote(p.database)}`,
     `Encrypt=${p.encrypt === 'optional' ? 'False' : p.encrypt === 'strict' ? 'Strict' : 'True'}`,
     `Trust Server Certificate=${p.trustServerCertificate ? 'True' : 'False'}`,
-    'Application Name=MSSQL-MCP',
+    'Application Name=APoint-ms-sql',
   ];
   switch (p.auth) {
     case 'windows': parts.push('Integrated Security=True'); break;
