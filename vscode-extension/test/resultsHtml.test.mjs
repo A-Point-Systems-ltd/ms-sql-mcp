@@ -93,8 +93,8 @@ test('grid: NULL cells, numeric columns right-aligned, name and type as header t
       rows: [[1, null, '12.50', 7]],
     })],
   })));
-  assert.match(html, /<th data-c="0" data-sort="" data-num="1" title="Id \(int\)"><span class="hl">Id<\/span>/);
-  assert.match(html, /<th data-c="1" data-sort="" title="Name \(nvarchar\)"><span class="hl">Name<\/span>/);
+  assert.match(html, /<th data-c="0" data-sort="" data-num="1" draggable="true" title="Id \(int\)"><span class="hl">Id<\/span>/);
+  assert.match(html, /<th data-c="1" data-sort="" draggable="true" title="Name \(nvarchar\)"><span class="hl">Name<\/span>/);
   assert.match(html, /title="\(No column name\) \(int\)"><span class="hl">\(No column name\)<\/span>/);
   assert.match(html, /<td class="null" data-null="1">NULL<\/td>/);
   assert.match(html, /<td>1<\/td>/);

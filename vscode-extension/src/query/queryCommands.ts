@@ -10,6 +10,7 @@ import { QueryAssociation, QueryDocuments, defersRunCleanup, isNeverBound } from
 import { SqlDocFileSystem, openDocumentKeys } from './sqlDocFs';
 import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
 import { resultsToCarry } from './sqlDocTitles';
+import type { CellViewer } from '../grid/cellViewer';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
 import type { ResultsState } from './resultsHtml';
 import { RunRegistry } from './runRegistry';
@@ -140,6 +141,8 @@ export interface QueryRunDeps {
   runner: ServerProcessClient;
   /** Backs New Query documents and object documents. */
   sqlDocs: SqlDocFileSystem;
+  /** Opens grid cell values in read-only mssql-cell: documents. */
+  viewer: CellViewer;
   /** Refreshes the object tree after an object document was applied. */
   refreshTree: () => void;
 }
@@ -164,7 +167,7 @@ export function registerQueryCommands(
   const results = new ResultsViewProvider(() => {
     const active = tracker.active();
     return active ? { key: active.editor.document.uri.toString(), bound: !!active.assoc } : undefined;
-  }, cancel);
+  }, cancel, deps.viewer);
   const setKey = contextSetter();
   // A retitled document keeps its Results / Messages (the old uri's state moves to the new one).
   context.subscriptions.push(lifecycle.onDidRetitle(({ oldKey, newKey }) => {

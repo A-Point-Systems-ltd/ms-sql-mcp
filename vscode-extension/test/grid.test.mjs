@@ -36,9 +36,10 @@ test('grid HTML: render gen, row-number gutter with row handles, resize handles,
   const html = renderGrid({ id: 'g1', columns: cols(['a', 'int'], ['b', 'nvarchar']), rows: [[1, 'x'], [2, null]], sortMode: 'local', set: 1, gen: 7 });
   assert.equal((html.match(/<th class="rn">\d+<span class="rh"><\/span><\/th>/g) ?? []).length, 2);
   assert.equal((html.match(/<span class="rz"><\/span>/g) ?? []).length, 2);
-  assert.equal((html.match(/class="gcopy"/g) ?? []).length, 1);
-  assert.match(html, /<button type="button" class="gcopy" title="Copy to clipboard"[^>]*style="display:none"><svg /);
-  assert.match(html, /class="dgrid" id="g1" data-mode="local" data-set="1" data-gen="7"/);
+  assert.equal((html.match(/class="ghover gcopy"/g) ?? []).length, 1);
+  assert.equal((html.match(/class="ghover gview"/g) ?? []).length, 1);
+  assert.match(html, /<button type="button" class="ghover gcopy" title="Copy to clipboard"[^>]*style="display:none"><svg /);
+  assert.match(html, /class="dgrid" id="g1" data-mode="local" data-set="1" data-gen="7" data-freeze="1" data-wrap="0" data-stripe="1"/);
   assert.match(html, /style="--rn:\d+px;--c0:120px;--c1:120px"/);
   assert.match(html, /<tr data-r="1"><th class="rn">2<span class="rh"><\/span><\/th><td>2<\/td><td class="null" data-null="1">NULL<\/td><\/tr>/);
   assert.throws(() => grid({ id: 'x"><', columns: [], rows: [], sortMode: 'local' }));
@@ -59,8 +60,8 @@ test('server sort mode: indicator on the sorted column, unsortable columns flagg
     id: 'gd', columns: cols(['Id', 'int'], ['Doc', 'xml'], ['Shape', 'geography'], ['Node', 'MyDb.sys.hierarchyid']),
     rows: [], sortMode: 'server', sort: { col: 0, dir: 'desc' },
   });
-  assert.match(html, /<th data-c="0" data-sort="desc" data-num="1" title="Id \(int\)">/);
-  assert.match(html, /<th data-c="1" data-sort="" data-nosort="1" title="Doc \(xml\) - cannot be sorted \(xml\)">/);
+  assert.match(html, /<th data-c="0" data-sort="desc" data-num="1" draggable="true" title="Id \(int\)">/);
+  assert.match(html, /<th data-c="1" data-sort="" data-nosort="1" draggable="true" title="Doc \(xml\) - cannot be sorted \(xml\)">/);
   assert.match(html, /<th data-c="2" data-sort="" data-nosort="1"/);
   assert.match(html, /<th data-c="3" data-sort="" data-nosort="1"/);
   // The indicator glyphs come from the stylesheet.
@@ -68,7 +69,7 @@ test('server sort mode: indicator on the sorted column, unsortable columns flagg
   assert.match(GRID_CSS, /data-sort="desc"\] \.si::after \{ content: "\\25BC"; \}/);
   // One line by default, wrapping only for an auto-fitted row, capped at 400 px.
   assert.match(GRID_CSS, /white-space: nowrap; overflow: hidden; text-overflow: ellipsis;/);
-  assert.match(GRID_CSS, /tr\[data-fit="1"\] > td \{ white-space: pre-wrap;[^}]*max-height: 400px; overflow: auto;/);
+  assert.match(GRID_CSS, /tr\[data-fit="1"\] > td, \.dgrid\[data-wrap="1"\] \.gt tbody tr:not\(\[data-fit="0"\]\) > td \{ white-space: pre-wrap;[^}]*max-height: 400px; overflow: auto;/);
 });
 
 test('client script: valid JavaScript, never builds HTML, posts indexes and gen only', () => {
@@ -78,19 +79,20 @@ test('client script: valid JavaScript, never builds HTML, posts indexes and gen 
   for (const banned of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'exports.', 'eval(', 'fetch(']) {
     assert.ok(!script.includes(banned), banned);
   }
-  assert.match(script, /type: 'copy', row: Number\(button.getAttribute\('data-r'\)\), col: Number\(button.getAttribute\('data-c'\)\), gen: gen/);
+  assert.match(script, /type: type, gen: gen, row: Number\(btn.getAttribute\('data-r'\)\), col: Number\(btn.getAttribute\('data-c'\)\)/);
+  assert.match(script, /hoverPost\(copyBtn, 'copy'\)/);
   assert.match(script, /measureText/);
   // Drags write once per frame; local text sort uses one shared collator.
   assert.match(script, /requestAnimationFrame\(applyDrag\)/);
   assert.match(script, /new Intl\.Collator\(\)/);
   assert.match(script, /gridSortOrder\(values, .*, next, collator\.compare\)/);
   // Auto-fit measures all columns before writing any width.
-  assert.match(script, /widths\.push\([^]*for \(var j = 0; j < cols\.length; j\+\+\) setWidth\(cols\[j\], widths\[j\]\)/);
+  assert.match(script, /result\.push\([^]*for \(var j = 0; j < cols\.length; j\+\+\) setWidth\(cols\[j\], result\[j\]\)/);
 });
 
 test('build guard: the toString-inlined gridModel functions are present by name and run in isolation', () => {
   const script = gridScript();
-  assert.deepEqual([...INLINED_FUNCTIONS], ['compareGridValues', 'gridSortOrder', 'tooltipText']);
+  assert.deepEqual([...INLINED_FUNCTIONS], ['compareGridValues', 'gridSortOrder', 'tooltipText', 'cellMatches', 'countMatches', 'filterMatches', 'numericStats']);
   for (const name of INLINED_FUNCTIONS) assert.match(script, new RegExp(`function ${name}\\(`), name);
   // Only the script's own text is in scope here: a reference to a module helper or constant would throw.
   const inlined = new Function(`${script}\nreturn { ${INLINED_FUNCTIONS.join(', ')} };`)();
@@ -98,6 +100,12 @@ test('build guard: the toString-inlined gridModel functions are present by name 
   assert.deepEqual(inlined.gridSortOrder(['10', '9', null], true, 'desc'), [0, 1, 2]);
   assert.equal(inlined.compareGridValues('1.50', '1.5', true), 0);
   assert.equal(inlined.tooltipText('q'.repeat(3000)).length, TOOLTIP_MAX);
+  assert.equal(inlined.cellMatches('Hello', 'ELL'), true);
+  assert.equal(inlined.countMatches(['ab', 'AB', 'c'], 'b'), 2);
+  assert.equal(inlined.filterMatches('Tel Aviv', 'starts', 'tel'), true);
+  assert.deepEqual(inlined.numericStats(['0.1', '0.2']), { count: 2, sum: '0.3', min: '0.1', max: '0.2', avg: '0.15', exact: true });
+  assert.equal(Object.keys(inlined).length, INLINED_FUNCTIONS.length);
+  for (const name of INLINED_FUNCTIONS) assert.equal(typeof inlined[name], 'function', name);
 });
 
 test('Data View page: nonce CSP, TOP box and Reload, no innerHTML, no network, escaped names, errors and notes', () => {
@@ -112,7 +120,7 @@ test('Data View page: nonce CSP, TOP box and Reload, no innerHTML, no network, e
   assert.ok(!/https?:\/\//.test(html));
   assert.ok(!html.includes('<script>alert(1)'));
   assert.match(html, /<input id="top" type="number" min="1" max="10000" step="1" value="200"/);
-  assert.match(html, /<button type="button" class="act" id="reload"[^>]*>Reload<\/button>/);
+  assert.match(html, /<button type="button" class="tb" id="reload"[^>]*><span>Reload<\/span><\/button>/);
   assert.match(html, /first 1 rows \(truncated\) · 1 column · read-only/);
   assert.match(html, /id="gd" data-mode="server" data-gen="3"/);
   assert.match(html, /data-sort="asc"/);
@@ -241,7 +249,7 @@ test('copy status: says when the server truncated the value', () => {
 
 test('Data View message validation: type allow-list, integer indexes in range, copy gen must be current', () => {
   const dims = { rows: 3, cols: 2 };
-  assert.deepEqual(parseDataViewMessage({ type: 'copy', row: 2, col: 1, gen: 4 }, dims, 4), { type: 'copy', row: 2, col: 1, gen: 4 });
+  assert.deepEqual(parseDataViewMessage({ type: 'copy', row: 2, col: 1, gen: 4 }, dims, 4), { type: 'copy', row: 2, col: 1 });
   assert.deepEqual(parseDataViewMessage({ type: 'sort', col: 0, dir: 'asc' }, dims, 4), { type: 'sort', col: 0, dir: 'asc' });
   assert.deepEqual(parseDataViewMessage({ type: 'sort', col: 1, dir: 'none' }, dims, 4), { type: 'sort', col: 1, dir: 'none' });
   assert.deepEqual(parseDataViewMessage({ type: 'reload', top: 500 }, dims, 4), { type: 'reload', top: 500 });
@@ -259,7 +267,7 @@ test('Data View message validation: type allow-list, integer indexes in range, c
 
 test('Results message validation: copy needs a set, row and column in range and the current gen; reveal and cancel pass', () => {
   const sets = [{ rows: 2, cols: 1 }, { rows: 0, cols: 3 }];
-  assert.deepEqual(parseResultsMessage({ type: 'copy', set: 0, row: 1, col: 0, gen: 9 }, sets, 9), { type: 'copy', set: 0, row: 1, col: 0, gen: 9 });
+  assert.deepEqual(parseResultsMessage({ type: 'copy', set: 0, row: 1, col: 0, gen: 9 }, sets, 9), { type: 'copy', row: 1, col: 0, set: 0 });
   assert.deepEqual(parseResultsMessage({ type: 'reveal', line: 7 }, sets, 9), { type: 'reveal', line: 7 });
   assert.deepEqual(parseResultsMessage({ type: 'cancel' }, [], 9), { type: 'cancel' });
   const bad = [

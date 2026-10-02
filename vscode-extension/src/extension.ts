@@ -8,6 +8,7 @@ import { PROVIDER_ID } from './constants';
 import { DdlDocumentProvider } from './explorer/ddlDocuments';
 import { ExplorerClient } from './explorer/explorerClient';
 import { ExplorerTreeProvider } from './explorer/explorerTree';
+import { CellViewer } from './grid/cellViewer';
 import { DDL_SCHEME } from './explorer/sqlText';
 import { registerHistoryCommands } from './history/historyCommands';
 import { setUpDdlHistory } from './history/historySetup';
@@ -41,11 +42,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Query windows and editable object scripts are mssql-sql: documents (titled tabs, no programmatic text edits),
   // registered before the commands that open them.
+  // Read-only mssql-cell: documents of the grids' cell viewer (in memory only).
+  const viewer = new CellViewer();
+  context.subscriptions.push(viewer);
   const sqlDocs = new SqlDocFileSystem(context.globalStorageUri.fsPath, log);
   context.subscriptions.push(sqlDocs, vscode.workspace.registerFileSystemProvider(SQL_DOC_SCHEME, sqlDocs, { isCaseSensitive: true }));
 
   const tree = new ExplorerTreeProvider(store, explorer, log);
-  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, sqlDocs, refreshTree: () => tree.refresh() });
+  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, sqlDocs, viewer, refreshTree: () => tree.refresh() });
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
@@ -59,7 +63,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs, runner);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs, runner, viewer);
   registerHistoryCommands(context, { store, docs: queryDocs, runner, explorer, log });
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { ServerProcessClient } from '../client/serverProcessClient';
 import { showDataView } from '../dataPanel';
+import type { CellViewer } from '../grid/cellViewer';
 import type { ObjectRef } from '../explorer/catalog';
 import { openEditableDdl } from '../explorer/editableDdl';
 import { isEditable } from '../explorer/objectEdit';
@@ -38,6 +39,7 @@ export function registerExplorerCommands(
   log: Logger,
   sqlDocs: SqlDocFileSystem,
   runner: ServerProcessClient,
+  viewer: CellViewer,
 ): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void> | void) =>
     context.subscriptions.push(vscode.commands.registerCommand(`msSqlMcp.${id}`, async (arg?: unknown) => {
@@ -72,7 +74,7 @@ export function registerExplorerCommands(
     }
     // The runner's run_script (a single generated SELECT, allowed on read-only connections too) returns column
     // names and types even for zero rows, and exact value encodings. Errors show in the panel.
-    await showDataView(ref, dataViewRows(), { runner, log });
+    await showDataView(ref, dataViewRows(), { runner, explorer, viewer, log });
   });
 
   // Refresh: from a DDL editor's title (arg = its Uri) it re-scripts that document; from the tree it clears

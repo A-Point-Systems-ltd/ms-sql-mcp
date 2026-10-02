@@ -3,6 +3,7 @@
 // also switches tabs, posts link / cancel clicks and ticks the timer.
 // Rows can hold client personal data: everything is escaped, nothing is loaded from the network, no export.
 import { GRID_CSS, gridScript, renderGrid } from '../grid/gridHtml';
+import type { GridViewState } from '../grid/gridModel';
 import { escapeHtml } from '../webviewUtil';
 import type { RunScriptMessage, RunScriptResult, RunScriptResultSet } from './runScript';
 
@@ -20,11 +21,11 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
 /**
  * The results webview document for `state`. `cspSource` is accepted for the view contract but deliberately not
  * added to the CSP: the page loads nothing, everything is inline. `gen` is the render counter the grids carry
- * (`data-gen`) and their copy messages echo.
+ * (`data-gen`) and their messages echo; `views` restores each result set's grid view (column order, hidden, ...).
  */
-export function renderResults(state: ResultsState, nonce: string, cspSource: string, gen = 0): string {
+export function renderResults(state: ResultsState, nonce: string, cspSource: string, gen = 0, views: readonly (GridViewState | undefined)[] = []): string {
   void cspSource;
-  return page(nonce, header(state), body(state, gen));
+  return page(nonce, header(state), body(state, gen, views));
 }
 
 function header(state: ResultsState): string {
@@ -45,7 +46,7 @@ function header(state: ResultsState): string {
   }
 }
 
-function body(state: ResultsState, gen: number): string {
+function body(state: ResultsState, gen: number, views: readonly (GridViewState | undefined)[]): string {
   if (state.kind === 'empty') return `<p class="hint">${escapeHtml(EMPTY_TEXT)}</p>`;
   if (state.kind !== 'done') return '';
   const { resultSets, messages } = state.result;
@@ -58,19 +59,19 @@ function body(state: ResultsState, gen: number): string {
   const multi = resultSets.length > 1;
   return `<nav class="tabs" role="tablist">${tab('results', `Results (${resultSets.length})`)}${tab('messages', `Messages (${messages.length})`)}</nav>
 <div class="content">
-${pane('results', resultSets.length ? resultSets.map((set, i) => grid(set, i, multi, gen)).join('\n') : '<p class="none">No result sets.</p>')}
+${pane('results', resultSets.length ? resultSets.map((set, i) => grid(set, i, multi, gen, views[i])).join('\n') : '<p class="none">No result sets.</p>')}
 ${pane('messages', messages.map(message).join('\n'))}
 </div>`;
 }
 
 /** Result set `index` (0-based) as a shared grid with local sort; `set` in its copy messages is that index. */
-function grid(set: RunScriptResultSet, index: number, multi: boolean, gen: number): string {
+function grid(set: RunScriptResultSet, index: number, multi: boolean, gen: number, view: GridViewState | undefined): string {
   let caption = `Result ${index + 1} - ${plural(set.rowCount, 'row')}`;
   if (set.truncated) caption += ` (showing first ${set.rows.length})`;
   const id = `g${index}`;
   return `<div class="set${multi ? ' multi' : ' single'}">
-<div class="caption">${escapeHtml(caption)}<span class="sortnote" data-sortnote="${id}" style="display:none"> · sorted locally (loaded rows only)</span></div>
-<div class="grid ${multi ? 'multi' : 'single'}">${renderGrid({ id, columns: set.columns, rows: set.rows, sortMode: 'local', set: index, gen })}</div>
+<div class="caption">${escapeHtml(caption)}<span class="sortnote" data-sortnote="${id}" style="display:none"> · sorted locally (loaded rows only)</span><span class="filternote" data-filternote="${id}" style="display:none"> · filtered locally</span></div>
+<div class="grid ${multi ? 'multi' : 'single'}">${renderGrid({ id, columns: set.columns, rows: set.rows, sortMode: 'local', set: index, gen, view })}</div>
 </div>`;
 }
 

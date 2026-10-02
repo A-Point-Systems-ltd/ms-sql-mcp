@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
-import { cellAt, copiedMessage, copyText, parseResultsMessage } from '../grid/gridModel';
+import type { CellViewer } from '../grid/cellViewer';
+import { runGridAction } from '../grid/gridActions';
+import { GridViewState, parseResultsMessage } from '../grid/gridModel';
 import { makeNonce } from '../webviewUtil';
 import { ResultsState, renderResults } from './resultsHtml';
 import { editorLine } from './runScript';
@@ -9,8 +11,8 @@ export const RESULTS_VIEW_ID = 'msSqlMcp.results';
 const EMPTY: ResultsState = { kind: 'empty' };
 
 /**
- * The "Results" webview view in the bottom panel. Holds the last run state per document (in memory only, rows never
- * leave the editor) and shows the state of the active bound document.
+ * The "Results" webview view in the bottom panel. Holds the last run state per document (in memory only; rows leave
+ * it only through the user's copy and Export actions) and shows the state of the active bound document.
  */
 export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
@@ -18,8 +20,10 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
   /** Document whose state is on screen, and that state (to skip re-rendering an unchanged view). */
   private shownKey: string | undefined;
   private shownState: ResultsState | undefined;
-  /** Render counter of the page on screen; copy messages from an older page are ignored. */
+  /** Render counter of the page on screen; grid messages from an older page are ignored. */
   private gen = 0;
+  /** Grid view (column order, hidden, frozen, ...) per result set of a state; dropped with the state. */
+  private readonly views = new WeakMap<ResultsState, (GridViewState | undefined)[]>();
   /** Listeners of the current webview; disposed with it. */
   private viewSubs: vscode.Disposable[] = [];
 
@@ -28,6 +32,8 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     private readonly target: () => { key: string; bound: boolean } | undefined,
     /** Called when the webview's Cancel button is pressed for document `key`. */
     private readonly onCancel: (key: string) => void,
+    /** Opens cell values in read-only mssql-cell: documents. */
+    private readonly viewer: CellViewer,
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -72,7 +78,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       : (this.shownKey !== undefined ? this.states.get(this.shownKey) ?? EMPTY : EMPTY);
     if (!this.view || state === this.shownState) return;
     this.shownState = state;
-    this.view.webview.html = renderResults(state, makeNonce(), this.view.webview.cspSource, ++this.gen);
+    this.view.webview.html = renderResults(state, makeNonce(), this.view.webview.cspSource, ++this.gen, this.views.get(state) ?? []);
   }
 
   /**
@@ -109,14 +115,6 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       this.onCancel(key);
       return;
     }
-    if (message.type === 'copy') {
-      // Resolved from the stored result of the shown document; the webview only sent indexes.
-      const text = copyText(cellAt(sets[message.set].rows, message.row, message.col));
-      vscode.env.clipboard.writeText(text).then(
-        () => { vscode.window.setStatusBarMessage(copiedMessage(text), 2000); },
-        err => { void vscode.window.showWarningMessage(`APoint-ms-sql: copy failed: ${err instanceof Error ? err.message : String(err)}`); });
-      return;
-    }
     if (message.type === 'reveal') {
       if (state?.kind !== 'done') return;
       const line = editorLine(message.line, state.lineOffset);
@@ -124,7 +122,21 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       revealLine(key, line).catch(err => {
         void vscode.window.showWarningMessage(`APoint-ms-sql: could not show line ${line + 1}: ${err instanceof Error ? err.message : String(err)}`);
       });
+      return;
     }
+    if (state?.kind !== 'done') return;
+    if (message.type === 'viewState') {
+      const list = this.views.get(state) ?? [];
+      list[message.set] = message.view;
+      this.views.set(state, list);
+      return;
+    }
+    // Copy, copy row, copy selection, viewer and Export: resolved from the stored result of the shown document;
+    // the webview only sent indexes.
+    const set = sets[message.set];
+    runGridAction(message, { columns: set.columns, rows: set.rows, objectName: 'results' }, this.viewer).catch(err => {
+      void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 }
 
