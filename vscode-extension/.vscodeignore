@@ -13,7 +13,7 @@ package-lock.json
 .vscodeignore
 
 # Keep in the package: out/ (compiled JS), bin/ (bundled exe), package.json,
-# README.md, CHANGELOG.md, LICENSE, media/.
+# README.md, CHANGELOG.md, LICENSE, THIRD-PARTY-NOTICES.txt, media/.
 
 # Local secrets — never package into the .vsix
 .env

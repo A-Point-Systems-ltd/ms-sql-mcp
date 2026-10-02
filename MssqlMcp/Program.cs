@@ -158,6 +158,8 @@ internal class Program
 
         if (scriptRunnerEnabled)
         {
+            // One metadata cache for the process: shared by every language_service call, dropped on connection close.
+            _ = builder.Services.AddSingleton<Mssql.McpServer.LanguageService.LanguageServiceCache>();
             _ = mcp.WithTools<ScriptRunnerTools>();
             log.Append("Script runner tool enabled (MSSQL_SCRIPT_RUNNER) - intended for the VS Code extension only.");
         }

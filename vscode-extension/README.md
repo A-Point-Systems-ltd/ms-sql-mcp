@@ -206,3 +206,5 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 ## License
 
 MIT. See `LICENSE`.
+
+The bundled `MssqlMcp.exe` includes Microsoft SqlParser for the server's IntelliSense tool (`language_service`). SqlParser is not open source: it is distributed under the SQL Server Shared Management Objects (SMO) License Terms, reproduced in `THIRD-PARTY-NOTICES.txt`, together with the MIT notices for SMO, SmoMetadataProvider and the code ported from microsoft/sqltoolsservice.

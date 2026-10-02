@@ -36,6 +36,7 @@ public static class ToolNames
     // Extension-only: registered only when MSSQL_SCRIPT_RUNNER=true, never part of the agent tool set.
     public const string RunScript = "run_script";
     public const string DdlHistory = "ddl_history";
+    public const string LanguageService = "language_service";
 
     /// <summary>All 23 tool names, in the order documented in README.md.</summary>
     public static readonly IReadOnlyList<string> All =
@@ -52,7 +53,7 @@ public static class ToolNames
     /// </summary>
     public static readonly IReadOnlySet<string> ExtensionOnlyTools = new HashSet<string>(StringComparer.Ordinal)
     {
-        RunScript, DdlHistory,
+        RunScript, DdlHistory, LanguageService,
     };
 
     /// <summary>Tools refused on a read-only connection profile.</summary>

@@ -141,7 +141,7 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 | `MSSQL_ADHOC_ALLOWED_HOSTS` | No | any host | Comma-separated host names. When set, ad-hoc connections are refused unless the host part of `Data Source` (without `tcp:`, instance or port) matches one of them, case-insensitively. |
 | `USE_INSIGHTS_LAYER` | No | enabled | Opt-**out** switch. Set to `false`, `0`, `no`, `off`, or `disabled` to disable the AI Insights layer. Any other value (including unset) leaves it enabled. |
 | `INSIGHTS_AUTOPOPULATE` | No | enabled | Opt-out. When enabled (and insights layer is on), introspection auto-creates mechanical baseline insights and attaches enrichment directives. Set to a falsey value to disable auto-population only. |
-| `MSSQL_SCRIPT_RUNNER` | No | disabled | Set to `true` to register the extension-only `run_script` and `ddl_history` tools. For the VS Code extension's private runner process only; do not enable it for agent clients. See [Script runner (extension only)](#script-runner-extension-only) and [DDL history (extension only)](#ddl-history-extension-only). |
+| `MSSQL_SCRIPT_RUNNER` | No | disabled | Set to `true` to register the extension-only `run_script`, `ddl_history` and `language_service` tools. For the VS Code extension's private runner process only; do not enable it for agent clients. See [Script runner (extension only)](#script-runner-extension-only), [DDL history (extension only)](#ddl-history-extension-only) and [IntelliSense (extension only)](#intellisense-extension-only). |
 | `MSSQL_CONSOLE_LOG_LEVEL` | No | `Warning` | Minimum level of the console logger, which writes to stderr (stdout carries the MCP protocol). One of `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None` (case-insensitive). Some clients (Cursor) show every stderr line as `[error]`, so the default keeps routine `info:` lines out of their logs. When it is not set, the standard .NET configuration applies if it sets a level for the console: `Logging:Console:LogLevel:Default`, then `Logging:LogLevel:Default` (from `appsettings.json` or env such as `Logging__LogLevel__Default`); otherwise `Warning`. An invalid value writes one warning line to stderr and is ignored (the configuration, or `Warning`, applies). `FATAL:` startup messages are always written. The `LOG_FILE_PATH` log is not affected. |
 | `LOG_FILE_PATH` | No | `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/macOS) | Full file path, or a directory (timestamped log files are created inside it). |
 
@@ -149,7 +149,7 @@ When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the serv
 
 ## MCP tools reference
 
-The server exposes **23 tools** through a single partial `Tools` class (plus the opt-in, extension-only `run_script`; see [Script runner (extension only)](#script-runner-extension-only)). MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
+The server exposes **23 tools** through a single partial `Tools` class (plus the opt-in, extension-only `run_script`, `ddl_history` and `language_service`; see [Script runner (extension only)](#script-runner-extension-only)). MCP wire names are **snake_case** (pinned explicitly in `MssqlMcp/ToolNames.cs`). Legacy per-type list/get helpers (`ListTables`, `GetStoredProc`, etc.) remain as internal C# methods; clients should use the unified tools below.
 
 > **Breaking change (.NET 10 / MCP SDK 2.x upgrade):** tool names changed from PascalCase (`ReadData`, `ExecuteSQL`, …) to snake_case (`read_data`, `execute_sql`, …). Update client tool allow-lists, auto-approve rules and saved prompts that reference the old names.
 
@@ -273,6 +273,26 @@ This keeps destructive operations behind an explicitly flagged tool and prevents
 - `get` (needs `id`) returns one entry with its full command text: `data: { id, postTime, loginName, eventType, objectType, schemaName, objectName, commandText }`. An unknown id is an error.
 - `list` and `get` fail with `DDL history is not installed on this database (dbo.DDL_AuditLog is missing).` when the table is missing.
 - On read-only connections `status`, `list` and `get` are plain `SELECT`s and write nothing.
+
+### IntelliSense (extension only)
+
+`language_service` gives the extension's query windows SSMS-style IntelliSense. Like `run_script`, it is **not** one of the 23 agent tools: it is listed and routed only when `MSSQL_SCRIPT_RUNNER=true` (26 tools then), and is otherwise an unknown tool. It is built on Microsoft's SqlParser (`Microsoft.SqlServer.Management.SqlParser`, the engine behind SSMS and Azure Data Studio IntelliSense) with an SMO metadata provider, through a small completion wrapper ported from [microsoft/sqltoolsservice](https://github.com/microsoft/sqltoolsservice) (MIT; each ported file under `MssqlMcp/LanguageService/` names its source).
+
+- Arguments: `action` (required: `completion`, `hover`, `signatureHelp`, `warm` or `refresh`, case-insensitive), `text` (the document), `line` and `column` (1-based caret position), `connection`.
+- `completion` returns `data: { items: [{ label, kind, detail, insertText, sortText }], isIncomplete, cacheState }`. `kind` is one of `table`, `view`, `column`, `procedure`, `function`, `keyword`, `schema`, `parameter`, `variable`, `database`, `type`, `snippet`, `other`. It covers tables after `FROM` / `JOIN`, `alias.` columns, schema-qualified names, CTE and derived-table columns, variables, built-in functions, and keywords where the parser has nothing else (no list inside comments).
+- **Procedure parameters.** SqlParser offers a procedure's parameters only as signature help, so after `EXEC proc ` / `EXECUTE proc ` the server adds them from `Resolver.FindMethods`: `label` `@x`, `detail` the type (with `OUTPUT` where it applies), `insertText` `@x = `, sorted ahead of the `@@` globals. Parameters already given by name (`@x = 1`), and leading positional arguments, are not offered again. Inside a value (`@x = |`) none are offered. This part is our code, not sqltoolsservice's.
+- `hover` returns `data: { contents, range? }`: `contents` is plain text (for example `column a(int, null)`), so render it as plain text or a code block. `range` is 1-based and end-exclusive. `data` is null when there is nothing to show.
+- `signatureHelp` returns `data: { signatures: [{ label, documentation?, parameters: [{ label, documentation? }] }], activeSignature, activeParameter }` for built-in functions (`DATEADD(`) and user procedures (`EXEC dbo.p 1, `). `activeParameter` is 0-based, -1 when the caret is on none. `data` is null outside a call.
+- `warm` starts building the metadata cache for the connection and returns at once: `data: { cacheState }`. `refresh` drops the cache for the connection and database, then warms it again (use it after DDL in another session).
+- **Metadata cache.** One SMO metadata provider per (connection name, database), built lazily in the background on its own unpooled session and shared by all documents. One lock per entry serialises SqlParser, which is not thread-safe. A request waits for binding at most 2 seconds. After that, `completion` returns the keyword list with `cacheState: "loading"` and `isIncomplete: true`, and the build carries on; `hover` and `signatureHelp` return null. Entries are dropped when the connection is closed or removed (or an ad-hoc connection replaced), on `refresh`, and after 30 minutes unused. A failed build is retried after 30 seconds.
+- **Database context.** The database is the profile's database (`Initial Catalog`; the login's default database when none is set). A leading `USE x` in the text is **not** followed for metadata.
+- **Cancellation.** A cancelled call (`notifications/cancelled`, as the extension sends when the user keeps typing) stops waiting at once, and work that has not started is skipped.
+- **Read-only and logging.** It only reads metadata (SMO catalog queries) and works on read-only profiles. Logs carry counts and timings, never the document text or object definitions. Documents over 2,000,000 characters are refused.
+- **Licence.** SqlParser is not open source: it ships under the *SQL Server Shared Management Objects (SMO) License Terms*, reproduced in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) (SMO itself and SmoMetadataProvider are MIT). The owner approved this dependency. Whoever owns licensing for your distribution should still confirm the flow-down terms; this README is not legal advice.
+- **Limitations.**
+  - SMO 181.37.1 and SmoMetadataProvider 181.37.1 are built against Microsoft.Data.SqlClient 6.1.3; this server runs them on SqlClient 7.0.2 (assembly unification to the higher version). Completion, hover and signature help are verified on LocalDB with that combination, not on every authentication mode (for example Entra ID).
+  - The first bind on a large database can take longer than 2 seconds; the extension should `warm` when a query window connects.
+  - Single-file publish grows by about 5.5 MB (44.9 MB to 50.5 MB).
 
 ## Multiple connections
 
@@ -527,6 +547,7 @@ MS-SQL/
 │   ├── SqlStatementClassifier.cs
 │   ├── TriggerQualifiedName.cs
 │   ├── DbOperationResult.cs
+│   ├── LanguageService/         # language_service: SqlParser IntelliSense, metadata cache
 │   ├── InsightsLayer/           # AI Insights service + embedded SQL
 │   │   ├── InsightsLayerService.cs
 │   │   ├── InsightDdlProcessingQueue.cs

@@ -7,15 +7,17 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using Mssql.McpServer.Connections;
 using Mssql.McpServer.Scripting;
+using LanguageServiceCache = Mssql.McpServer.LanguageService.LanguageServiceCache;
 
 namespace Mssql.McpServer;
 
 /// <summary>
-/// The VS Code extension's private tools: the query-window runner (<c>run_script</c>) and the DDL history
-/// (<c>ddl_history</c>). Deliberately not an <see cref="McpServerToolTypeAttribute"/> class: <c>WithToolsFromAssembly</c>
+/// The VS Code extension's private tools: the query-window runner (<c>run_script</c>), the DDL history
+/// (<c>ddl_history</c>) and IntelliSense (<c>language_service</c>). Deliberately not an <see cref="McpServerToolTypeAttribute"/> class: <c>WithToolsFromAssembly</c>
 /// must not list them to agents; Program registers them only when MSSQL_SCRIPT_RUNNER=true.
 /// </summary>
-public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, ILogger<ScriptRunnerTools> logger)
+public sealed partial class ScriptRunnerTools(
+    ISqlConnectionFactory connectionFactory, ILogger<ScriptRunnerTools> logger, LanguageServiceCache? languageService = null)
 {
     internal const int DefaultMaxRows = 1000;
     internal const int MaxRowsCeiling = 10_000;
