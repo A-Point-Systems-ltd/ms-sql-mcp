@@ -145,7 +145,7 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 | `MSSQL_CONSOLE_LOG_LEVEL` | No | `Warning` | Minimum level of the console logger, which writes to stderr (stdout carries the MCP protocol). One of `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None` (case-insensitive). Some clients (Cursor) show every stderr line as `[error]`, so the default keeps routine `info:` lines out of their logs. When it is not set, the standard .NET configuration applies if it sets a level for the console: `Logging:Console:LogLevel:Default`, then `Logging:LogLevel:Default` (from `appsettings.json` or env such as `Logging__LogLevel__Default`); otherwise `Warning`. An invalid value writes one warning line to stderr and is ignored (the configuration, or `Warning`, applies). `FATAL:` startup messages are always written. The `LOG_FILE_PATH` log is not affected. |
 | `LOG_FILE_PATH` | No | `%LOCALAPPDATA%\MssqlMcp\Logs\` (Windows) or `~/.local/share/MssqlMcp/Logs/` (Linux/macOS) | Full file path, or a directory (timestamped log files are created inside it). |
 
-When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the server also enables baseline row-count probing, baseline refresh during DDL scans, and `insightEnrichment` response directives (all derived from those two flags — there are no separate env vars for them).
+When both `USE_INSIGHTS_LAYER` and `INSIGHTS_AUTOPOPULATE` are enabled, the server also enables baseline row-count probing, baseline refresh during DDL scans, `insightEnrichment` response directives, and the insight-update rule in the server instructions (all derived from those two flags — there are no separate env vars for them).
 
 ## MCP tools reference
 
@@ -446,11 +446,24 @@ flowchart LR
     SI -->|stale / DDL change| IH
 ```
 
-1. **Read path** — `describe_table`, `describe_view`, and `get_object` attach `insight`, `insightFreshness`, and optionally `enrichmentSuggested` / `insightEnrichment` to their responses (best-effort; never fails the parent tool).
-2. **Freshness** — On read, the service compares the cached row’s schema fingerprint and `modify_date` to the live object. Mismatches archive the row to `InsightHistory` and return `insightFreshness: StaleArchived`.
-3. **Auto-population** — When `INSIGHTS_AUTOPOPULATE` is enabled (default), absent or stale insights trigger a mechanical baseline (`LlmModel = "auto-mechanical"`, `Confidence = 0.30`) built from `sys.*` metadata.
-4. **Enrichment contract** — Baseline rows set `enrichmentSuggested: true` and include an `insightEnrichment` block with a pre-filled `upsert_insight` payload. MCP-aware agents should upgrade these rows before answering the user (protocol **MCP-Insight-Enrichment-v1**). See [.cursor/skills/mssql-insights-ops/SKILL.md](.cursor/skills/mssql-insights-ops/SKILL.md) for the full agent workflow.
-5. **Write path** — After successful writes, a background `InsightDdlProcessingQueue` drains DDL audit rows (or falls back to fingerprint scans) and archives affected insights. When auto-population is on, baselines are rebuilt for archived objects.
+1. **Read path** — `describe_table`, `describe_view`, and `get_object` attach `insight` (compact: the authored text, or a few facts for a baseline), `insightFreshness`, `enrichmentSuggested` and, only when an update is needed, `insightEnrichment` (best-effort; never fails the parent tool).
+2. **Freshness** — On read, the service compares the cached row’s schema fingerprint (columns for tables, definition for modules) to the live object. A mismatch, or a dropped object, archives the row to `InsightHistory` and returns `insightFreshness: StaleArchived`. `modify_date` alone (statistics, index rebuild, constraints) does not.
+3. **Auto-population** — When `INSIGHTS_AUTOPOPULATE` is enabled (default), an absent or stale insight is replaced by the newest authored insight in `InsightHistory` with the same fingerprint (drop/re-create keeps its insight), otherwise by a mechanical baseline (`LlmModel = "auto-mechanical"`, `Confidence = 0.30`) built from `sys.*` metadata.
+4. **Enrichment rule** — The agent is asked to call `upsert_insight` only in the cases below. Otherwise `enrichmentSuggested` is `false`, which means the cached insight is current. The rule is stated once in the server instructions, not in every tool description. See [.cursor/skills/mssql-insights-ops/SKILL.md](.cursor/skills/mssql-insights-ops/SKILL.md) for the agent workflow.
+5. **Write path** — After successful writes, a background `InsightDdlProcessingQueue` drains DDL audit rows (or falls back to fingerprint scans). A DDL event archives an insight only when the object is gone or its fingerprint changed; other DDL (constraints, permissions, `ENABLE TRIGGER`) is consumed and the insight kept. When auto-population is on, archived objects are restored or re-baselined.
+
+| `insightEnrichment.trigger` | When | What the agent gets |
+|---|---|---|
+| `InitialBaselineOnly` | Only a baseline exists and no authored insight was ever written for the object. | Placeholders in `nextAction.args`. |
+| `StructureChanged` | A baseline replaced an authored insight because the structure changed. | `previousInsight` (pre-filled into `nextAction.args`) and up to 5 `structuralEvents` from `dbo.DDL_AuditLog` (event type, time, command text cut to 300 characters; no login or host). |
+| `DataPopulated` | The authored insight was written while a table or view held fewer than 100 rows, and it now holds 100 or more. | `previousInsight`, `rowsNow`. Insights written at 100 rows or more are never re-requested for data growth. |
+
+`AIInsights.SchemaInsights.RowCountAtAnalysis` (and the same column in `InsightHistory`) stores the row count at write time, and a restored insight keeps its original count and `LastAnalyzed`. The count is null for other object types and in these cases:
+
+- **Tables:** the count is approximate, read from `sys.dm_db_partition_stats`. That needs VIEW DATABASE STATE (VIEW DATABASE PERFORMANCE STATE on SQL Server 2022+). Without it the count is null and `DataPopulated` never fires.
+- **Views:** counting runs the view, capped at 101 rows, with a 2-second command timeout and a 1-second lock timeout. Baselines never count views. An authored view insight is re-checked at most once every 10 minutes per object.
+- **Read-only connections:** they never get `insightEnrichment`, because they refuse `upsert_insight`.
+- **Older installs:** databases installed before this column existed keep working without it, but with no `DataPopulated` trigger. Running `install_insights_layer` again adds the column, and the server picks it up within a minute.
 
 ### Recommended first-time workflow
 
@@ -460,7 +473,7 @@ flowchart LR
 3. install_insights_layer          (if schema or DDL trigger missing)
 4. list_objects(objectType=Table)
 5. describe_table(name=…)        (inspect insight / enrichmentSuggested)
-6. upsert_insight(…)              (when enrichmentSuggested is true)
+6. upsert_insight(…)              (only when insightEnrichment is present)
 ```
 
 ### `insightFreshness` values
@@ -469,7 +482,7 @@ flowchart LR
 |-------|---------|
 | `Fresh` | Cached insight matches live object definition. |
 | `Absent` | No row in `SchemaInsights` (baseline may be created on next introspection if auto-pop is on). |
-| `StaleArchived` | Row was archived due to DDL or fingerprint drift. On a read-only connection the row is reported stale but not archived. |
+| `StaleArchived` | Row was archived because the object was dropped or its structure changed. On a read-only connection the row is reported stale but not archived. |
 | `LayerDisabled` | `USE_INSIGHTS_LAYER=false`. |
 | `AccessDenied` | Could not read live definition (permissions). |
 | `DefinitionUnavailable` | Object exists but definition could not be resolved. |
@@ -492,7 +505,7 @@ All tools return `DbOperationResult`:
 - `rowsAffected` — for DML tools (`insert_data`, `update_data`, `execute_sql`, …).
 - `data` — tool-specific payload (object metadata, row arrays, insight status, …).
 
-Introspection tools may add top-level keys inside `data` for insights (`insight`, `insightFreshness`, `enrichmentSuggested`, `insightEnrichment`, `_agentDirective`, `pendingEnrichments`).
+Introspection tools may add top-level keys inside `data` for insights (`insight`, `insightFreshness`, `enrichmentSuggested`, `insightEnrichment`).
 
 ## Build, publish, and test
 

@@ -46,6 +46,12 @@ public sealed class SchemaInsight
     public string? SchemaFingerprint { get; init; }
 
     /// <summary>
+    /// Approximate row count (tables) or a count capped at 101 (views) when the insight was written.
+    /// Null for other object types, legacy rows, or when the count could not be read.
+    /// </summary>
+    public long? RowCountAtAnalysis { get; init; }
+
+    /// <summary>
     /// True when <see cref="LastAnalyzed"/> falls before today's date on the database server clock
     /// (computed in SQL). Internal, so it is not serialized into tool responses.
     /// </summary>

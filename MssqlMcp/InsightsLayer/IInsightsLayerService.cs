@@ -38,6 +38,16 @@ public interface IInsightsLayerService
     Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Decides whether the agent should update <paramref name="insight"/>, and returns what it needs to do so:
+    /// the previous authored insight, recent DDL events, or the current row count. Returns null when the cached
+    /// insight is current. Authored insights that cannot trigger the row-count rule cost no database round trip.
+    /// </summary>
+    Task<InsightEnrichmentContext?> GetEnrichmentContextAsync(
+        SchemaInsight insight,
+        InsightFreshness freshness,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Processes new <c>dbo.DDL_AuditLog</c> rows (when present) and archives affected insights; when no audit
     /// rows were processed, runs a rotating fingerprint scan instead. Runs are serialized per database with
     /// <c>sp_getapplock</c>; a run that finds the lock held returns without doing anything.

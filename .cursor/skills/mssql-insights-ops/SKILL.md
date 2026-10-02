@@ -27,46 +27,19 @@ MCP wire tool names are **snake_case** (ModelContextProtocol SDK 2.x default). U
   - Auto-population is enabled by default (`INSIGHTS_AUTOPOPULATE=true`) and controls the full auto flow: baseline creation, baseline refresh during scans, and enrichment directives.
   - Write tools (`create_table`, `drop_table`, `insert_data`, `update_data`, `execute_sql`) queue a background DDL/fingerprint reconciliation.
 
-## STOP — Mandatory enrichment protocol (MCP-Insight-Enrichment-v1)
+## When to call `upsert_insight`
 
-This is the most important section in this skill. Read it before doing anything else.
+After `describe_table`, `describe_view` or `get_object`, look at one key:
 
-After EVERY call to `describe_table`, `describe_view`, or `get_object`, check the response for ANY of these signals:
+- **`insightEnrichment` present** → call `upsert_insight` with `insightEnrichment.nextAction.args` before your final answer. `insightEnrichment.trigger` says why:
+  - `InitialBaselineOnly` — only an auto-generated baseline exists. Fill the `<fill in: ...>` placeholders from the response you just got.
+  - `StructureChanged` — the structure changed since the last authored insight. `previousInsight` (already copied into `nextAction.args`) and `structuralEvents` show what was there and what changed. Edit what the change made wrong; keep the rest. Do not re-investigate from scratch.
+  - `DataPopulated` — the insight was written while the object held fewer than 100 rows and it now holds `rowsNow` or more. Re-check `dataPatterns` / `usageGuidelines` against the real data (a small `read_data` sample is enough) and edit them.
+- **`enrichmentSuggested: false`** (no `insightEnrichment`) → the cached insight is current. Use `insight` as-is and do **not** call `upsert_insight`.
 
-- top-level `_agentDirective` string is present
-- top-level `pendingEnrichments` array is non-empty
-- `insightEnrichment.required` is `true`
-- `enrichmentSuggested` is `true`
+Always replace `llmModel` and `analyzedBy` with your own values. Never pass `llmModel="auto-mechanical"` or `confidence <= 0.30`.
 
-If ANY of those are present, you are under an unfulfilled tool-call obligation. You MUST:
-
-1. **Before writing any user-facing text**, call `upsert_insight` for the introspected object using `insightEnrichment.nextAction.args`. Replace every `<fill in: ...>` placeholder using the metadata that came back in the same response (columns, FKs, indexes, definition, etc.). Do NOT pass `llmModel="auto-mechanical"` and do NOT pass `confidence <= 0.30` — those are placeholder values; the whole point of this call is to upgrade them.
-2. **For each entry in `insightEnrichment.relatedObjectsToIntrospect`**, call the matching introspection tool (`describe_table` / `describe_view` / `get_object` with the appropriate `objectType`) and repeat the loop. Related objects that you never introspect will have no insight row at all — that is a worse outcome than a stale baseline.
-3. Only AFTER step 1 and step 2 have completed for every pending enrichment, write your final answer to the user.
-
-Why this is non-negotiable: auto-mechanical baselines exist solely so the cache has *something* for the next agent. They are confidence 0.30 placeholders with `LlmModel="auto-mechanical"`. If you skip this loop, the cache stays at 0.30 indefinitely, and every future agent re-investigates the same objects from scratch.
-
-### Worked example (Documents + related tables)
-
-User: "describe `Documents` and its related tables".
-
-```
-- [ ] 1. describe_table(name="Documents")
-       → response has _agentDirective + insightEnrichment.required=true
-       → insightEnrichment.relatedObjectsToIntrospect = ["[dbo].[Buildings]","[dbo].[TableMoneySub]","[dbo].[UnitContacts]","[dbo].[Units]"]
-- [ ] 2. upsert_insight(<filled args for dbo.Documents>)   ← REQUIRED, before answering
-- [ ] 3. describe_table(name="dbo.Buildings")              ← because it was in relatedObjectsToIntrospect
-       → if baseline-only: upsert_insight(<filled args>)
-- [ ] 4. describe_table(name="dbo.TableMoneySub")
-       → upsert_insight(<filled args>) if baseline-only
-       → if its relatedObjectsToIntrospect lists dbo.UnitsFeesItems, introspect+upsert that too
-- [ ] 5. describe_table(name="dbo.UnitContacts")           ← Fresh insight already; no upsert needed
-- [ ] 6. describe_table(name="dbo.Units")
-       → upsert_insight(<filled args>) if baseline-only
-- [ ] 7. Now write the final answer to the user.
-```
-
-Failure mode to avoid: introspecting only `Documents` and `TableMoneySub`, leaving `Units` / `UnitsFeesItems` with zero insight rows and `Documents` / `TableMoneySub` stuck at auto-mechanical 0.30.
+Do not introspect other objects only to enrich them. Related objects are listed in `insight.relatedObjects`; describe one only when the user's task needs it, and handle its own `insightEnrichment` then.
 
 ## Tool taxonomy (use this to pick the right tool)
 
@@ -122,8 +95,7 @@ Example: user asks "investigate `SomeTable` and related tables".
 - [ ] 2. read_data: discover inbound + outbound FKs in one query (template below)
 - [ ] 3. For each related table → describe_table(name = "<schema>.<name>")
 - [ ] 4. read_data: row counts + lifecycle/quality probes
-- [ ] 5. If `insightEnrichment.required=true` (or `_agentDirective` / `pendingEnrichments` present), upsert_insight using `insightEnrichment.nextAction.args` BEFORE answering — for the focal table AND for every entry in `insightEnrichment.relatedObjectsToIntrospect`
-- [ ] 6. list_insights(schemaName = "dbo", objectType = "Table") to verify population (no auto-mechanical rows should remain for objects you touched)
+- [ ] 5. For each describe response that carried `insightEnrichment`, upsert_insight with its `nextAction.args` before answering
 ```
 
 Bidirectional FK discovery template:
@@ -199,7 +171,7 @@ Rules:
 | `LayerDisabled` | `USE_INSIGHTS_LAYER` was set to `false`/`0`/`off`/`disabled` — do not rely on insights. |
 | `Absent` | No cached insight yet. Consider `upsert_insight` after investigation. |
 | `Fresh` | Insight present and fingerprint matches the live schema. Use it. |
-| `StaleArchived` | Live object missing or fingerprint changed; row was archived. Re-investigate, then upsert. |
+| `StaleArchived` | Live object missing or its structure changed; row was archived. Describe the object: it returns a restored insight or an `insightEnrichment` with the previous text to update. |
 | `AccessDenied` | Cannot verify staleness (permissions). Insight still returned; mark as advisory. |
 | `DefinitionUnavailable` | Live `OBJECT_DEFINITION` returned null; insight still returned; advisory. |
 
@@ -209,7 +181,7 @@ Rules:
 - With more than one connection, confirm WHICH connection a write targets before running it. A missing or unknown `connection` returns an error listing the valid names; retry with one of them, do not guess.
 - Use `read_data` for **every** `SELECT` (including `sys.*`). `execute_sql` rejects SELECT at validation time.
 - Never embed user-provided values directly into `read_data` SQL. Build the literal yourself; do not echo unsanitized inputs.
-- When `describe_table` returns `insightFreshness: "StaleArchived"`, do NOT trust the previous insight; re-investigate.
+- When `insightEnrichment.trigger` is `StructureChanged`, check `previousInsight` against the new structure before relying on it.
 
 ## Anti-patterns
 
@@ -218,9 +190,11 @@ Rules:
 - Calling `refresh_insights` after every `upsert_insight`. Run it once per investigation session or after known DDL.
 - Asking the user for `objectType` when the context already implies it (e.g. you just called `describe_table` → `objectType = "Table"`).
 - Passing `take` larger than what you'll actually inspect — keep responses small.
-- Ignoring `_agentDirective` / `pendingEnrichments` / `insightEnrichment.required=true` and answering without first calling `upsert_insight`. This is a protocol violation, not a style preference.
-- Calling `upsert_insight` with `llmModel="auto-mechanical"` or `confidence<=0.30`. That is what you are supposed to be *replacing*.
-- Skipping `insightEnrichment.relatedObjectsToIntrospect`. Related objects with zero insight rows are worse than baseline-only.
+- Answering without calling `upsert_insight` when the response carried `insightEnrichment`.
+- Calling `upsert_insight` when `enrichmentSuggested` is `false`: the insight is current, and the call only burns tokens.
+- Re-investigating an object from scratch when `insightEnrichment.previousInsight` is given: edit it instead.
+- Describing related objects only to enrich their insights.
+- Calling `upsert_insight` with `llmModel="auto-mechanical"` or `confidence<=0.30`.
 
 ## Verification snippet
 

@@ -29,3 +29,28 @@ public sealed class ServerInstructionsTests
         Assert.Contains("may be omitted until more are opened", ServerInstructions.Build(reg));
     }
 }
+
+[Collection(EnvVarLock.Name)]
+public sealed class ServerInstructionsInsightRuleTests
+{
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("false", false)]
+    public void Insight_rule_follows_auto_population_switch(string? autoPopulate, bool expected)
+    {
+        var previousLayer = Environment.GetEnvironmentVariable("USE_INSIGHTS_LAYER");
+        var previousAuto = Environment.GetEnvironmentVariable("INSIGHTS_AUTOPOPULATE");
+        try
+        {
+            Environment.SetEnvironmentVariable("USE_INSIGHTS_LAYER", null);
+            Environment.SetEnvironmentVariable("INSIGHTS_AUTOPOPULATE", autoPopulate);
+            var text = ServerInstructions.Build(new ConnectionRegistry([new("default", "Server=a", false, true, ConnectionSource.Legacy)]));
+            Assert.Equal(expected, text.Contains(ServerInstructions.InsightEnrichmentRule, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("USE_INSIGHTS_LAYER", previousLayer);
+            Environment.SetEnvironmentVariable("INSIGHTS_AUTOPOPULATE", previousAuto);
+        }
+    }
+}

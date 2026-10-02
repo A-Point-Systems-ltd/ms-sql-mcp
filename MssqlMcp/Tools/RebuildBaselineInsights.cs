@@ -18,7 +18,7 @@ public partial class Tools
         ReadOnly = false,
         Idempotent = true,
         Destructive = false),
-        Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has at least a baseline insight row. Rows authored with llmModel='auto-mechanical' will still require enrichment (see enrichmentSuggested/insightEnrichment in " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " responses)." + MultiConnectionNote)]
+        Description("Bulk warms AIInsights baselines for existing objects. Scans sys.objects by optional schema/objectType filters and ensures each object has an insight row: an earlier authored insight for the same structure is restored, otherwise an auto-mechanical baseline is created. Baselines are enriched later, when " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " returns insightEnrichment for an object the agent actually works on." + MultiConnectionNote)]
     public async Task<DbOperationResult> RebuildBaselineInsights(
         [Description("Optional schema filter. Pass null for all schemas.")] string? schemaName = null,
         [Description("Optional object type filter: 'Table' | 'View' | 'Procedure' | 'Function'. Pass null for all supported types. Triggers are not covered by baseline scans.")] string? objectType = null,
