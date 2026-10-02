@@ -394,10 +394,19 @@ test('paging notes: none with a primary key; the overlap note without one, sorte
 });
 
 test('the primary key is dropped from a retry only when the error names a key column', () => {
-  assert.ok(errorNamesKey("Invalid column name 'Order,Id'.", ['Order', 'Id']));
+  assert.ok(errorNamesKey("Invalid column name 'Id'.", ['Order', 'Id']));
+  // A bare substring is not enough: "Id" occurs inside "Invalid" and "Process ID".
+  assert.ok(!errorNamesKey("Invalid column name 'Name'.", ['Id']));
+  assert.ok(!errorNamesKey('Transaction (Process ID 52) was deadlocked on lock resources.', ['Id']));
   assert.ok(errorNamesKey("Invalid column name 'ORDERID'.", ['OrderId']));
   assert.ok(!errorNamesKey('Arithmetic overflow error converting expression.', ['OrderId']));
   assert.ok(!errorNamesKey('anything', []));
+});
+
+test('CSV formula neutralization covers sql_variant (it can hold strings)', () => {
+  assert.ok(isTextColumn('sql_variant'));
+  const csv = buildCsv([{ name: 'V', type: 'sql_variant' }], [['=HYPERLINK("x")']]);
+  assert.equal(csv.slice(1).split('\r\n')[1], '"\'=HYPERLINK(""x"")"');
 });
 
 test('CSV formula neutralization: text columns only, quoted with a leading quote; others raw', () => {

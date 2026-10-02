@@ -7,7 +7,7 @@ import { copyText } from './gridModel';
 export interface ExportColumn { name: string; type?: string }
 
 /** Text types whose values a spreadsheet could read as a formula. */
-const TEXT_TYPES = new Set(['char', 'varchar', 'nchar', 'nvarchar', 'text', 'ntext', 'sysname', 'xml']);
+const TEXT_TYPES = new Set(['char', 'varchar', 'nchar', 'nvarchar', 'text', 'ntext', 'sysname', 'xml', 'sql_variant']);
 
 export function isTextColumn(type: string | undefined): boolean {
   return TEXT_TYPES.has((type ?? '').trim().toLowerCase());

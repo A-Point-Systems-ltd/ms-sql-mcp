@@ -41,9 +41,12 @@ try {
     $psi = New-Object Diagnostics.ProcessStartInfo $newExe
     $psi.UseShellExecute = $false; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardInput = $true
     foreach ($v in 'CONNECTION_STRING', 'MSSQL_CONNECTIONS', 'MSSQL_CONNECTIONS_FILE') { $psi.EnvironmentVariables[$v] = '' }
+    $psi.EnvironmentVariables['MSSQL_ALLOW_ADHOC_CONNECTIONS'] = 'false'
     $p = [Diagnostics.Process]::Start($psi)
+    # Drain both pipes asynchronously so a chatty start cannot block on a full buffer.
+    $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
     if (-not $p.WaitForExit(20000)) { $p.Kill(); throw "Smoke start: the new exe did not exit within 20 s." }
-    $err = $p.StandardError.ReadToEnd()
+    $null = $outTask.Result; $err = $errTask.Result
     if ($p.ExitCode -ne 1 -or $err -notmatch 'FATAL') { throw "Smoke start: unexpected exit code $($p.ExitCode). stderr: $err" }
     Write-Host "Smoke start OK (exits with the expected 'no connection configured' error)." -ForegroundColor Green
 
@@ -63,20 +66,35 @@ try {
     if (-not (Test-Path -LiteralPath $ReleaseDir)) { New-Item -ItemType Directory -Path $ReleaseDir | Out-Null }
 
     # 3. Rename the live exe (works while it is running), 4. copy the new one, 5. verify; restore on any failure.
-    $renamed = $false
+    # $target is only ever removed when it is (possibly partially) OUR new copy: never the live exe.
+    $hadLive = Test-Path -LiteralPath $target
+    $renamed = $false; $copyStarted = $false
     try {
-        if (Test-Path -LiteralPath $target) {
+        if ($hadLive) {
             Rename-Item -LiteralPath $target -NewName (Split-Path $backup -Leaf)
             $renamed = $true
             Write-Host "Previous exe kept as $backup" -ForegroundColor Cyan
         }
+        $copyStarted = $true
         Copy-Item -LiteralPath $newExe -Destination $target
         if ((Get-Sha256 $target) -ne $newHash) { throw "SHA256 mismatch after copy." }
     }
     catch {
-        Write-Host "Publish failed: $($_.Exception.Message). Restoring the previous exe..." -ForegroundColor Red
-        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }
-        if ($renamed) { Rename-Item -LiteralPath $backup -NewName $exeName }
+        Write-Host "Publish failed: $($_.Exception.Message)" -ForegroundColor Red
+        if ($hadLive -and -not $renamed) {
+            # The rename failed: the live exe is untouched where it was. Do not remove anything.
+            Write-Host "The live exe was not changed." -ForegroundColor Yellow
+        }
+        else {
+            if ($copyStarted -and (Test-Path -LiteralPath $target)) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }
+            if ($renamed) {
+                if (-not (Test-Path -LiteralPath $target)) {
+                    try { Rename-Item -LiteralPath $backup -NewName $exeName; Write-Host "Previous exe restored." -ForegroundColor Yellow }
+                    catch { Write-Host "Restore manually: rename $backup to $exeName ($($_.Exception.Message))" -ForegroundColor Red }
+                }
+                else { Write-Host "Restore manually: delete $target, then rename $backup to $exeName" -ForegroundColor Red }
+            }
+        }
         throw
     }
 

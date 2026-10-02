@@ -251,10 +251,14 @@ export function nextPageRequest(object: { schema?: string; name: string }, loade
   return { script: dataViewPageSql(object, from, to, loadedWith.sort, { pk: loadedWith.pk, filters: loadedWith.filters }), maxRows: size, from, to };
 }
 
-/** Whether a query error names one of the primary-key columns (then it is worth retrying without the key). */
+/**
+ * Whether a query error names one of the primary-key columns (then it is worth retrying without the key).
+ * SQL Server quotes column names in these messages ("Invalid column name 'Id'."), so only a quoted match counts:
+ * a bare substring would match "Id" inside "Invalid" or "Process ID".
+ */
 export function errorNamesKey(error: string, pk: readonly string[]): boolean {
   const e = error.toLowerCase();
-  return pk.some(k => k.length > 0 && e.includes(k.toLowerCase()));
+  return pk.some(k => k.length > 0 && e.includes(`'${k.toLowerCase()}'`));
 }
 
 /** Extra parts of a Data View query: primary-key tie-breakers and filters. */
