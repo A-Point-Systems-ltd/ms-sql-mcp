@@ -1,6 +1,6 @@
 # APoint-ms-sql
 
-SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles the MSSQL-MCP server (a .NET 10 single-file exe) and gives you:
+SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles the APoint-ms-sql server (a .NET 10 single-file exe) and gives you:
 
 - **Connection form**: one form to add or edit a named connection (Windows, SQL login or Microsoft Entra authentication), with **Test connection** and **List databases**. Passwords are kept in VS Code SecretStorage only.
 - **Object explorer**: tables, views, procedures, functions, triggers, types and security objects per connection, with a name filter and a data view.
@@ -83,7 +83,7 @@ The text `${env:` is not accepted in any field, because the server would expand 
 
 ### Cursor (automatic)
 
-In Cursor the extension registers the MSSQL-MCP server for you, through Cursor's own MCP extension API (`cursor.mcp.registerServer`); Cursor does not show servers offered through VS Code's `vscode.lm` MCP provider. The registration is named `APoint-ms-sql` (Cursor's MCP list shows it as `extension-APoint-ms-sql`: Cursor adds the `extension-` prefix itself), is created when at least one connection is open and usable, and follows your connections and the `msSqlMcp.insights`, `msSqlMcp.allowAdhocConnections` and `msSqlMcp.serverPath` settings. It is removed when no usable connection is left or the extension is disabled. No `~/.cursor/mcp.json` entry is needed.
+In Cursor the extension registers the APoint-ms-sql server for you, through Cursor's own MCP extension API (`cursor.mcp.registerServer`); Cursor does not show servers offered through VS Code's `vscode.lm` MCP provider. The registration is named `APoint-ms-sql` (Cursor's MCP list shows it as `extension-APoint-ms-sql`: Cursor adds the `extension-` prefix itself), is created when at least one connection is open and usable, and follows your connections and the `msSqlMcp.insights`, `msSqlMcp.allowAdhocConnections` and `msSqlMcp.serverPath` settings. It is removed when no usable connection is left or the extension is disabled. No `~/.cursor/mcp.json` entry is needed.
 
 If `~/.cursor/mcp.json` already has an `APoint-ms-sql` entry, or the legacy `ms-sql` entry of earlier versions (from **Register with Cursor / Claude...**), the extension warns on every start while that entry exists, because it duplicates the automatic registration. Remove that entry to avoid two APoint-ms-sql servers; the extension never edits the file on its own. **Don't show again** stops the warning; once the entry is gone that choice is forgotten, so a new duplicate warns again. Choose **Cursor** in the command below only for the `cursor-agent` CLI.
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { URI, Utils } from 'vscode-uri';
 import {
-  SQL_DOC_ROOT, SQL_DOC_SCHEME, QueryCounter, backingFile, docTitle, isLegacyEditPath, isSqlDocDirectory, isValidDocId, needsSqlLanguage,
+  SQL_DOC_ROOT, SQL_DOC_SCHEME, QueryCounter, backingFile, displayTitle, docTitle, isLegacyEditPath, isSqlDocDirectory, isValidDocId, needsSqlLanguage,
   newQueryId, objectDisplayName, parseSqlDocPath, profileTarget, queryNumberOf, queryObjectName, sqlDocPath, titlePart,
   writeFileCheck,
 } from '../out/query/sqlDocNames.js';
@@ -106,6 +106,24 @@ test('the title survives vscode-uri: URI.parse(uri.toString()) and Utils.basenam
     assert.deepEqual(parseSqlDocPath(back.path), { kind: 'object', id: '0123456789abcdef', title }, title);
     assert.equal(back.query, '', title);
     assert.equal(back.fragment, '', title);
+  }
+});
+
+test('a raw backslash server name goes docTitle -> sqlDocPath -> URI with the look-alike, and displays with the real backslash', () => {
+  for (const server of ['dc\\dev16', 'DC\\DEV', 'a\\b\\c', 'srv\\inst/x']) {
+    const title = docTitle('Query 1', { server, database: 'EasyHouse' });
+    assert.ok(!title.includes('\\'), `${server}: no raw backslash in the tab title`);
+    assert.ok(!title.includes('/'), `${server}: no slash in the tab title`);
+    const p = sqlDocPath({ kind: 'query', id: '0123456789abcdef', title });
+    const uri = URI.from({ scheme: SQL_DOC_SCHEME, path: p });
+    const back = URI.parse(uri.toString());
+    assert.equal(back.path, p, server);
+    assert.ok(!back.path.includes('\\'), `${server}: no backslash anywhere in the URI path`);
+    assert.equal(Utils.basename(back), title, `${server}: the tab label is the whole title`);
+    assert.equal(back.path.slice(Math.max(back.path.lastIndexOf('/'), back.path.lastIndexOf('\\')) + 1), title, server);
+    assert.deepEqual(parseSqlDocPath(back.path), { kind: 'query', id: '0123456789abcdef', title }, server);
+    // Outside the tab (Open Recent Query) the real backslash is shown again.
+    assert.equal(displayTitle(Utils.basename(back)), `Query 1 - ${server.replace(/\//g, '∕')} - EasyHouse`, server);
   }
 });
 

@@ -143,7 +143,7 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
     try {
       const r = writeClientConfig(p, SERVER_KEY, entry, new Date(), LEGACY_SERVER_KEY);
       if (r.removedLegacy) log.info('registerClients', `${label}: removed the legacy '${LEGACY_SERVER_KEY}' entry from ${r.path}`);
-      report.push(`${label}: updated ${r.path}${r.backup ? ` (backup ${path.basename(r.backup)})` : ''}. ${r.removedLegacy ? ` Removed the old '${LEGACY_SERVER_KEY}' entry.` : ''} Restart it to load the server.`);
+      report.push(`${label}: updated ${r.path}${r.backup ? ` (backup ${path.basename(r.backup)})` : ''}.${r.removedLegacy ? ` Removed the old '${LEGACY_SERVER_KEY}' entry.` : ''} Restart it to load the server.`);
     } catch (err) {
       log.error('registerClients', `${label} failed`, err);
       report.push(`${label}: FAILED - ${err instanceof Error ? err.message : String(err)}`);

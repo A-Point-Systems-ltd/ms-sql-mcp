@@ -12,7 +12,7 @@ import {
 } from './queryIndex';
 import type { QueryIndexFile } from './queryIndexFile';
 import { SqlDocFileSystem, openDocumentKeys, openSqlDocs } from './sqlDocFs';
-import { QueryCounter, SqlDocAddress, docTitle, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
+import { QueryCounter, SqlDocAddress, displayTitle, docTitle, newQueryId, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
 import { TITLE_AFTER_SAVE_MESSAGE, titleAction } from './sqlDocTitles';
 
 /** A closed document reopens at once when only its language changed; wait this long before acting on the close. */
@@ -138,7 +138,7 @@ export class SqlDocLifecycle implements vscode.Disposable {
         // Blank, gone or unreadable (left alone) entries are not offered.
         if (read.kind !== 'text' || isBlank(read.text)) continue;
       }
-      items.push({ label: entry.title, description: entry.connection, detail: relativeTime(entry.updatedAt, now), entry });
+      items.push({ label: displayTitle(entry.title), description: entry.connection, detail: relativeTime(entry.updatedAt, now), entry });
     }
     if (missing.length) void this.index.update(i => withoutIds(i, missing));
     if (!items.length) {

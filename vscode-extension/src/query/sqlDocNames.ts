@@ -47,6 +47,15 @@ export function titlePart(value: string): string {
   return s || '_';
 }
 
+/**
+ * A tab title as the UI shows it outside the tab (Open Recent Query, tooltips): the `∖` (U+2216) look-alike that
+ * {@link titlePart} put in place of a backslash is shown as the real `\` again. `∕` stays (a `/` in a name is rare
+ * and the look-alike is harmless there).
+ */
+export function displayTitle(title: string): string {
+  return title.replace(/∖/g, '\\');
+}
+
 /** The server / database shown in a tab title. */
 export interface TitleTarget {
   server: string;
