@@ -188,6 +188,12 @@
         "category": "APoint-ms-sql",
         "icon": "$(play)",
         "enablement": "false"
+      },
+      {
+        "command": "msSqlMcp.refreshIntelliSense",
+        "title": "Refresh IntelliSense Cache",
+        "category": "APoint-ms-sql",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -298,6 +304,10 @@
         {
           "command": "msSqlMcp.runQueryReadOnly",
           "when": "false"
+        },
+        {
+          "command": "msSqlMcp.refreshIntelliSense",
+          "when": "msSqlMcp.editorConnected"
         }
       ],
       "editor/title": [
@@ -325,6 +335,18 @@
           "command": "msSqlMcp.showHistory",
           "when": "resource in msSqlMcp.historyDocs",
           "group": "navigation@3"
+        },
+        {
+          "command": "msSqlMcp.refreshIntelliSense",
+          "when": "msSqlMcp.editorConnected && resource in msSqlMcp.intellisenseDocs",
+          "group": "navigation@4"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "msSqlMcp.refreshIntelliSense",
+          "when": "msSqlMcp.editorConnected",
+          "group": "msSqlMcp@1"
         }
       ]
     },
@@ -365,6 +387,11 @@
           "maximum": 10000,
           "description": "Rows kept per result set when a query window runs (F5). Further rows are counted but not shown."
         },
+        "msSqlMcp.intellisense.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "SQL IntelliSense (completion, hover, signature help) in editors bound to an open connection, from the bundled server (Microsoft SqlParser). Other SQL extensions keep their own suggestions."
+        },
         "msSqlMcp.logLevel": {
           "type": "string",
           "enum": [
@@ -384,6 +411,11 @@
         "command": "msSqlMcp.runQuery",
         "key": "f5",
         "when": "editorTextFocus && msSqlMcp.editorConnected && !inDebugMode"
+      },
+      {
+        "command": "msSqlMcp.refreshIntelliSense",
+        "key": "ctrl+shift+r",
+        "when": "editorTextFocus && msSqlMcp.editorConnected"
       }
     ]
   },

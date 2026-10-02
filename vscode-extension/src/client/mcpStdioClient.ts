@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { CallToolOptions, McpClient } from './mcpClient';
-import { McpToolError, traceablePayload, unwrapToolResult } from './parse';
+import { McpToolError, traceableArguments, traceablePayload, unwrapToolResult } from './parse';
 import type { Logger } from '../logger';
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -78,7 +78,7 @@ export class McpStdioClient implements McpClient {
    */
   async callTool(name: string, args: Record<string, unknown> = {}, opts: CallToolOptions = {}): Promise<unknown> {
     this.log.debug('tool', `→ ${name}`);
-    this.log.trace('tool', `${name} arguments`, args);
+    this.log.trace('tool', `${name} arguments`, traceableArguments(name, args));
     const startedAt = Date.now();
     try {
       const result = await this.request('tools/call', { name, arguments: args }, opts);
@@ -88,7 +88,10 @@ export class McpStdioClient implements McpClient {
       return payload;
     } catch (err) {
       if (err instanceof McpToolError && err.cancelled) {
-        this.log.info('tool', `← ${name} cancelled (${Date.now() - startedAt} ms)`);
+        // IntelliSense requests are cancelled on almost every keystroke: debug, not info.
+        const message = `← ${name} cancelled (${Date.now() - startedAt} ms)`;
+        if (name === 'language_service') this.log.debug('tool', message);
+        else this.log.info('tool', message);
       } else {
         this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`, err);
       }

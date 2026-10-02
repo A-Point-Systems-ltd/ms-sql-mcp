@@ -34,7 +34,7 @@ const DOC_KEYS = {
 } as const;
 
 /** setContext only when the value changed (compared as JSON). */
-function contextSetter(): (key: string, value: boolean | string[]) => void {
+export function contextSetter(): (key: string, value: boolean | string[]) => void {
   const last = new Map<string, string>();
   return (key, value) => {
     const json = JSON.stringify(value);

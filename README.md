@@ -292,7 +292,7 @@ This keeps destructive operations behind an explicitly flagged tool and prevents
 - **Limitations.**
   - SMO 181.37.1 and SmoMetadataProvider 181.37.1 are built against Microsoft.Data.SqlClient 6.1.3; this server runs them on SqlClient 7.0.2 (assembly unification to the higher version). Verified on LocalDB with Windows authentication and with a SQL login that has only `db_datareader` (which also sees no procedures, since catalog views hide them without `VIEW DEFINITION` or `EXECUTE`). **Entra ID (Azure AD) authentication is untested** with the language service.
   - SqlParser 180.9.0 throws inside `Resolver.FindMethods` for some scalar function calls; procedure parameter lookup runs only in an EXEC argument position and treats such an exception as "no parameters", and hover and signature help return nothing there (logged once per cache entry at Debug).
-  - The first bind on a large database can take longer than 2 seconds; the extension should `warm` when a query window connects.
+  - The first bind on a large database can take longer than 2 seconds; the extension sends `warm` when a query window is bound or a bound tab becomes active (at most once per connection every 5 minutes), and its **Refresh IntelliSense Cache** command (Ctrl+Shift+R) sends `refresh`. See the extension README, "IntelliSense".
   - Single-file publish grows by about 5.5 MB (44.9 MB to 50.5 MB).
 
 ## Multiple connections
