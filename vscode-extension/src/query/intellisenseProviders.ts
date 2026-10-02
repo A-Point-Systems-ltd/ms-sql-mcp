@@ -116,11 +116,10 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
       const lineText = document.lineAt(position.line).text;
       const start = replaceStart(lineText, position.character);
       const end = replaceEnd(lineText, position.character, start);
-      // Inserting ends at the caret; replacing also covers an auto-closed `]` after it.
-      const range = {
-        inserting: new vscode.Range(position.line, start, position.line, position.character),
-        replacing: new vscode.Range(position.line, start, position.line, end),
-      };
+      // One plain range for both suggest insert modes: with an {inserting, replacing} pair VS Code's default
+      // insertMode "insert" would use the caret-ending range and leave an auto-closed `]` behind ([T]]).
+      // replaceEnd only extends over the `]` that closes the name being typed, so replacing it is always safe.
+      const range = new vscode.Range(position.line, start, position.line, end);
       const items = list.items.map(i => {
         const item = new vscode.CompletionItem(i.label, vscode.CompletionItemKind[completionKindName(i.kind)]);
         item.detail = i.detail;
