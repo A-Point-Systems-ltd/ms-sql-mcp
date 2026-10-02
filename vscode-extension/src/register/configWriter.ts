@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { McpEntry, mergeMcpServer } from './jsonMerge';
+import { McpEntry, hasServerKey, mergeMcpServer } from './jsonMerge';
 import { backupPath } from './naming';
 
 /** Write `text` through a sibling temp file and a rename, so readers never see a half-written file. */
@@ -16,15 +16,17 @@ export function atomicWriteFile(target: string, text: string): void {
   }
 }
 
-export interface ClientWriteResult { path: string; backup?: string }
+export interface ClientWriteResult { path: string; backup?: string; removedLegacy?: boolean }
 
 /**
  * Merge `entry` into the client config at `configPath`. The merge runs first, so invalid existing JSON
  * throws before anything is written. An existing file is copied to `<path>.<yyyyMMddHHmmss>.bak` (kept) first.
+ * `legacyKey` (the pre-rename server key) is dropped in the same atomic write; `removedLegacy` reports that it was there.
  */
-export function writeClientConfig(configPath: string, key: string, entry: McpEntry, now: Date = new Date()): ClientWriteResult {
+export function writeClientConfig(configPath: string, key: string, entry: McpEntry, now: Date = new Date(), legacyKey?: string): ClientWriteResult {
   const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : undefined;
-  const merged = mergeMcpServer(existing, key, entry);
+  const merged = mergeMcpServer(existing, key, entry, legacyKey);
+  const removedLegacy = !!legacyKey && legacyKey !== key && hasServerKey(existing, legacyKey);
   let backup: string | undefined;
   if (existing !== undefined) {
     for (let attempt = 0; backup === undefined; attempt++) {
@@ -38,5 +40,5 @@ export function writeClientConfig(configPath: string, key: string, entry: McpEnt
     }
   }
   atomicWriteFile(configPath, merged);
-  return { path: configPath, backup };
+  return { path: configPath, backup, removedLegacy };
 }

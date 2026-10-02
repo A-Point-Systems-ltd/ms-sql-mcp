@@ -1,128 +1,329 @@
 import * as vscode from 'vscode';
-import { GridTable, rowCountLabel } from './dataTable';
-import { escapeHtml, makeNonce } from './webviewUtil';
+import type { ServerProcessClient } from './client/serverProcessClient';
+import type { ObjectRef } from './explorer/catalog';
+import type { ExplorerClient } from './explorer/explorerClient';
+import { qualified } from './explorer/sqlText';
+import type { CellViewer } from './grid/cellViewer';
+import { runGridAction } from './grid/gridActions';
+import { renderDataView } from './grid/gridHtml';
+import {
+  DataViewFilter, DataViewOrder, GridColumn, GridViewState, LOAD_CAP_NOTE, LoadedWith, MAX_LOADED_ROWS, dataViewSql, displayedParams,
+  errorNamesKey, isSortableType, nextPageRequest, pagingNote, parseDataViewMessage, parsePrimaryKey, reconcileFilters, reconcileSort,
+  sortIndicator, stripRowNumber, usablePrimaryKey,
+} from './grid/gridModel';
+import type { Logger } from './logger';
+import { RunScriptResultSet, parseRunScriptResult } from './query/runScript';
+import { makeNonce } from './webviewUtil';
+
+/** The loaded rows of a Data View (first page plus Load more pages). */
+interface Loaded { columns: GridColumn[]; rows: unknown[][]; truncated: boolean }
+
+/** What the open Data View shows; kept until the panel is reused for another object (or closed). */
+interface DataViewSession {
+  ref: ObjectRef;
+  title: string;
+  /** Rows per query (first page and each Load more page). */
+  top: number;
+  /** Server-side sort as set by the user: column name and type (from the result it was clicked on) and direction. */
+  sort?: DataViewOrder;
+  filters: DataViewFilter[];
+  /** Primary-key columns (tie-breakers for ORDER BY and paging); [] when unknown or not usable. */
+  pk: string[];
+  result?: Loaded;
+  /** The parameters `result` was queried with; Load more pages only with these, and a failed query restores them. */
+  loadedWith?: LoadedWith;
+  /** More rows exist beyond the loaded ones (and the load cap is not reached). */
+  more: boolean;
+  capped: boolean;
+  notes: string[];
+  error?: string;
+  /** The grid view (column order, hidden, frozen, ...) and the column names it belongs to. */
+  view?: GridViewState;
+  viewKey?: string;
+  /** One-shot for the next render: the filter input to refocus, and the scroll position to restore. */
+  focus?: number;
+  scroll?: [number, number];
+  /** Number of the latest query; an older query's answer is dropped. */
+  seq: number;
+}
+
+interface Deps { runner: ServerProcessClient; explorer: ExplorerClient; viewer: CellViewer; log: Logger }
+
+/** One run_script of a Data View query: the result set without the paging column, or the error text. */
+interface QueryOutcome { result?: RunScriptResultSet; notes: string[]; error?: string }
 
 let panel: vscode.WebviewPanel | undefined;
+let session: DataViewSession | undefined;
+let deps: Deps | undefined;
+/** Render counter of the page on screen (`data-gen`); grid messages from an older page are ignored. */
+let gen = 0;
+/** Primary keys per object (connection, schema, name), fetched once through the read-only explorer. */
+const pkCache = new Map<string, string[]>();
+
+const columnsKey = (columns: readonly GridColumn[]): string => JSON.stringify(columns.map(c => c.name));
 
 /**
- * Show rows in a reusable, read-only webview grid. Local only: rows can hold client personal data,
- * so the panel never sends them anywhere (no export, no network - see the CSP).
+ * Opens (or reuses) the Data View panel for a table or view and loads TOP `top` rows through the runner's
+ * run_script. Rows can hold client personal data: they stay in this panel, except what the user copies or exports
+ * (Export asks first, every time). Copy, selection, the viewer and Export resolve values here from the loaded rows.
  */
-export function showDataPreview(objectName: string, connection: string, table: GridTable, truncated: boolean): void {
+export async function showDataView(ref: ObjectRef, top: number, d: Deps): Promise<void> {
+  deps = d;
+  const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
+  session = { ref, title, top, filters: [], pk: [], more: false, capped: false, notes: [], seq: 0 };
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'msSqlMcp.dataView',
-      `Data: ${objectName} (${connection})`,
+      panelTitle(session),
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
-      { enableScripts: true, retainContextWhenHidden: true },
+      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
     panel.onDidDispose(() => {
       panel = undefined;
+      session = undefined;
     });
+    panel.webview.onDidReceiveMessage(onMessage);
   }
-  panel.title = `Data: ${objectName} (${connection})`;
-  panel.webview.html = renderHtml(objectName, table, truncated);
+  panel.title = panelTitle(session);
+  render(true);
   panel.reveal(panel.viewColumn ?? vscode.ViewColumn.Active);
+  const s = session;
+  await vscode.window.withProgress({ location: { viewId: 'msSqlMcp.explorer' }, title: `Loading ${title}` }, async () => {
+    s.pk = await primaryKey(ref);
+    await load('first');
+  });
 }
 
 export function disposeDataPanel(): void {
   panel?.dispose();
   panel = undefined;
+  session = undefined;
 }
 
-function renderHtml(objectName: string, table: GridTable, truncated: boolean): string {
-  const nonce = makeNonce();
-  const { columns, data } = table;
+const panelTitle = (s: DataViewSession): string => `Data: ${s.title} (${s.ref.connection})`;
 
-  const head = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
-  const body = data
-    .map((row) => {
-      const cells = row
-        .map((value) => {
-          if (value === null || value === undefined) {
-            return '<td class="null">NULL</td>';
-          }
-          const numeric = typeof value === 'number' || typeof value === 'bigint';
-          const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-          return `<td class="${numeric ? 'num' : ''}">${escapeHtml(text)}</td>`;
-        })
-        .join('');
-      return `<tr>${cells}</tr>`;
-    })
-    .join('');
+/**
+ * The table's primary-key columns (describe_table through the read-only explorer), cached per object. `refresh`
+ * (Reload) reads it again.
+ */
+async function primaryKey(ref: ObjectRef, refresh = false): Promise<string[]> {
+  if (ref.scriptType !== 'Table' || !deps) return [];
+  const key = JSON.stringify([ref.connection, ref.schema ?? '', ref.name]);
+  if (refresh) pkCache.delete(key);
+  const cached = pkCache.get(key);
+  if (cached) return cached;
+  try {
+    const pk = parsePrimaryKey(await deps.explorer.call(ref.connection, 'describe_table', { name: qualified(ref.schema, ref.name) }));
+    pkCache.set(key, pk);
+    return pk;
+  } catch (err) {
+    deps.log.warn('dataView', `describe_table for the primary key failed: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
 
-  const countLabel = rowCountLabel(data.length, truncated);
-  // Zero rows: no header (read_data returns no column names without rows; they are in the DDL).
-  const grid = data.length === 0 ? '' : `<table>
-      <thead><tr>${head}</tr></thead>
-      <tbody id="body">${body}</tbody>
-    </table>`;
-  const columnsLabel = data.length === 0 ? '' : ` · ${columns.length} column${columns.length === 1 ? '' : 's'}`;
+function render(loading = false): void {
+  if (!panel || !session) return;
+  const s = session;
+  const columns = s.result?.columns ?? [];
+  const indicator = sortIndicator(s.sort, columns);
+  const filters = s.filters.flatMap(f => {
+    const i = columns.findIndex(c => c.name === f.column);
+    return i >= 0 ? [{ col: i, op: f.op, value: f.value }] : [];
+  });
+  const notes = [...s.notes];
+  // Paging without a primary key may repeat or skip rows: say so whenever more pages can be (or were) loaded.
+  const paging = s.loadedWith && (s.more || s.capped || (s.result && s.result.rows.length > s.loadedWith.top))
+    ? pagingNote(s.loadedWith.sort, s.loadedWith.pk) : undefined;
+  if (paging) notes.push(paging);
+  if (s.capped) notes.push(LOAD_CAP_NOTE);
+  const view = s.view && s.viewKey === columnsKey(columns) ? s.view : undefined;
+  panel.webview.html = renderDataView({
+    objectName: s.title,
+    connection: s.ref.connection,
+    top: s.top,
+    loading,
+    ...(s.error !== undefined ? { error: s.error } : {}),
+    ...(s.result ? { result: s.result } : {}),
+    ...(indicator ? { sort: indicator } : {}),
+    filters,
+    canLoadMore: s.more,
+    notes,
+    gen: ++gen,
+    ...(view ? { view } : {}),
+    ...(s.focus !== undefined ? { focus: s.focus } : {}),
+    ...(s.scroll ? { scroll: s.scroll } : {}),
+  }, makeNonce());
+  s.focus = undefined;
+  s.scroll = undefined;
+}
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>
-  body{margin:0;padding:0;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);
-       color:var(--vscode-foreground);background:var(--vscode-editor-background)}
-  .bar{position:sticky;top:0;z-index:3;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
-       padding:10px 14px;background:var(--vscode-editor-background);
-       border-bottom:1px solid var(--vscode-panel-border)}
-  .name{font-weight:600}
-  .meta{color:var(--vscode-descriptionForeground);font-size:12px}
-  input{flex:1;min-width:160px;max-width:320px;padding:4px 8px;
-        color:var(--vscode-input-foreground);background:var(--vscode-input-background);
-        border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:3px;
-        font-family:inherit;font-size:12px;outline:none}
-  input:focus{border-color:var(--vscode-focusBorder)}
-  .scroll{overflow:auto;max-height:calc(100vh - 46px)}
-  table{border-collapse:collapse;width:max-content;min-width:100%}
-  th,td{padding:4px 10px;border-bottom:1px solid var(--vscode-panel-border);
-        border-right:1px solid var(--vscode-panel-border);text-align:left;white-space:pre;
-        font-family:var(--vscode-editor-font-family),monospace;font-size:12px;max-width:420px;
-        overflow:hidden;text-overflow:ellipsis}
-  th{position:sticky;top:0;z-index:2;background:var(--vscode-editorWidget-background,#2224);
-     font-weight:600;font-family:var(--vscode-font-family)}
-  tbody tr:nth-child(even){background:var(--vscode-list-hoverBackground)}
-  tbody tr:hover{background:var(--vscode-list-activeSelectionBackground);
-                 color:var(--vscode-list-activeSelectionForeground)}
-  td.num{text-align:right;font-variant-numeric:tabular-nums}
-  td.null{color:var(--vscode-descriptionForeground);font-style:italic}
-  .hidden{display:none}
-</style>
-</head>
-<body>
-  <div class="bar">
-    <span class="name">${escapeHtml(objectName)}</span>
-    <span class="meta">${escapeHtml(countLabel)}${columnsLabel} · read-only</span>
-    <input id="filter" type="text" placeholder="Filter rows…" aria-label="Filter rows">
-    <span class="meta" id="shown"></span>
-  </div>
-  <div class="scroll">
-    ${grid}
-  </div>
-<script nonce="${nonce}">
-  (function () {
-    var input = document.getElementById('filter');
-    var rows = Array.prototype.slice.call(document.querySelectorAll('#body tr'));
-    var shown = document.getElementById('shown');
-    var total = rows.length;
-    function apply() {
-      var q = input.value.toLowerCase();
-      var count = 0;
-      for (var i = 0; i < rows.length; i++) {
-        var match = q === '' || rows[i].textContent.toLowerCase().indexOf(q) !== -1;
-        rows[i].classList.toggle('hidden', !match);
-        if (match) count++;
-      }
-      shown.textContent = q === '' ? '' : count + ' of ' + total + ' match';
+async function query(ref: ObjectRef, script: string, maxRows: number): Promise<QueryOutcome> {
+  try {
+    const parsed = parseRunScriptResult(await deps!.runner.callResult(ref.connection, 'run_script', { script, maxRows }));
+    const errors = parsed.messages.filter(m => m.kind === 'error').map(m => m.text);
+    const notes = parsed.messages.filter(m => m.kind === 'warning').map(m => m.text);
+    const set = parsed.resultSets[0];
+    const result = set ? stripRowNumber(set) : undefined;
+    deps!.log.info('dataView', `run_script on '${ref.connection}': ${result ? `${result.rows.length} row(s), ${result.columns.length} column(s)` : 'no result set'}`
+      + `${result?.truncated ? ' (more)' : ''}, ${errors.length} error(s)`);
+    if (errors.length || !result) return { notes: [], error: errors.join('\n') || 'The query returned no result set.' };
+    return { result, notes };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    deps!.log.warn('dataView', `run_script on '${ref.connection}' failed: ${error}`);
+    return { notes: [], error };
+  }
+}
+
+/**
+ * Runs the Data View query for the current session state and shows its result or error.
+ * - 'first': TOP (n) with the filters, ORDER BY the stored sort and the primary key. A failure whose message names a
+ *   primary-key column is retried without the key (e.g. a column name holding ','); a failure with a sort is retried
+ *   without it: if that result no longer has the sorted column, the sort is cleared with a note.
+ * - 'more': the next n rows of the loaded rows' own parameters (loadedWith), appended; at most MAX_LOADED_ROWS.
+ * On an error the previously loaded rows stay on screen under the error text, and the sort, filters and TOP shown
+ * go back to the ones those rows were queried with.
+ */
+async function load(kind: 'first' | 'more'): Promise<void> {
+  const s = session;
+  if (!s || !deps) return;
+  const seq = ++s.seq;
+  if (kind === 'more') {
+    await loadMore(s, seq);
+    return;
+  }
+  const run = (order: DataViewOrder | undefined, pk: string[]) => query(s.ref, dataViewSql(s.ref, s.top, order, { pk, filters: s.filters }), s.top);
+  let pk = s.pk;
+  let sort = s.sort;
+  let outcome = await run(sort, pk);
+  if (outcome.error !== undefined && pk.length && errorNamesKey(outcome.error, pk)) {
+    const withoutPk = await run(sort, []);
+    if (withoutPk.error === undefined) { outcome = withoutPk; pk = []; }
+  }
+  if (outcome.error !== undefined && sort) {
+    const unsorted = await run(undefined, pk);
+    if (unsorted.result && reconcileSort(sort, unsorted.result.columns).note) outcome = unsorted;
+  }
+  if (session !== s || seq !== s.seq) return;
+  if (outcome.result) {
+    const { columns, rows, truncated } = outcome.result;
+    const reconciled = reconcileSort(sort, columns);
+    sort = reconciled.sort;
+    s.sort = sort;
+    s.pk = usablePrimaryKey(pk, columns);
+    s.filters = reconcileFilters(s.filters, columns);
+    s.result = { columns, rows, truncated };
+    s.loadedWith = { ...(sort ? { sort } : {}), filters: [...s.filters], pk: [...s.pk], top: s.top };
+    s.more = truncated && rows.length < MAX_LOADED_ROWS;
+    s.capped = truncated && rows.length >= MAX_LOADED_ROWS;
+    s.notes = reconciled.note ? [reconciled.note, ...outcome.notes] : outcome.notes;
+    s.error = undefined;
+  } else {
+    s.error = outcome.error;
+    if (s.result && s.loadedWith) {
+      // The old rows stay: show the sort, filters and TOP they were queried with.
+      const shown = displayedParams({ sort: s.sort, filters: s.filters }, s.loadedWith, true);
+      s.sort = shown.sort;
+      s.filters = shown.filters;
+      s.top = s.loadedWith.top;
+    } else {
+      s.notes = [];
     }
-    input.addEventListener('input', apply);
-  })();
-</script>
-</body>
-</html>`;
+  }
+  render();
+}
+
+async function loadMore(s: DataViewSession, seq: number): Promise<void> {
+  const loaded = s.result;
+  const lw = s.loadedWith;
+  if (!loaded || !lw || !s.more) return;
+  // Only the parameters the loaded rows were queried with (never a sort / filter whose query failed).
+  const page = nextPageRequest(s.ref, lw, loaded.rows.length);
+  if (!page) {
+    s.more = false;
+    s.capped = true;
+    render();
+    return;
+  }
+  const outcome = await query(s.ref, page.script, page.maxRows);
+  if (session !== s || seq !== s.seq) return;
+  if (outcome.result && columnsKey(outcome.result.columns) !== columnsKey(loaded.columns)) {
+    outcome.error = 'The columns of the object changed. Reload the view.';
+  }
+  if (outcome.error !== undefined || !outcome.result) {
+    s.error = outcome.error;
+  } else {
+    const rows = loaded.rows.concat(outcome.result.rows);
+    const truncated = outcome.result.truncated;
+    s.result = { columns: loaded.columns, rows, truncated };
+    s.more = truncated && rows.length < MAX_LOADED_ROWS;
+    s.capped = truncated && rows.length >= MAX_LOADED_ROWS;
+    s.notes = outcome.notes;
+    s.error = undefined;
+  }
+  render();
+}
+
+/** Widths reset when new data loads (reload, sort, filter); Load more keeps them. */
+function dropWidths(s: DataViewSession): void {
+  if (s.view?.widths) {
+    const { widths: _w, ...rest } = s.view;
+    void _w;
+    s.view = rest;
+  }
+}
+
+function onMessage(raw: unknown): void {
+  const s = session;
+  if (!s || !deps) return;
+  const columns = s.result?.columns ?? [];
+  const message = parseDataViewMessage(raw, { rows: s.result?.rows.length ?? 0, cols: columns.length }, gen, columns.map(c => c.type));
+  if (!message) return;
+  switch (message.type) {
+    case 'copy':
+    case 'copyRow':
+    case 'copySelection':
+    case 'openCell':
+    case 'export':
+      runGridAction(message, { columns, rows: s.result!.rows, objectName: s.title }, deps.viewer).catch(err => {
+        void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      return;
+    case 'viewState':
+      s.view = message.view;
+      s.viewKey = columnsKey(columns);
+      return;
+    case 'sort': {
+      const column = columns[message.col];
+      if (!isSortableType(column.type)) return;
+      s.sort = message.dir === 'none' ? undefined : { column: column.name, type: column.type, dir: message.dir };
+      dropWidths(s);
+      void requery('first');
+      return;
+    }
+    case 'filter':
+      s.filters = message.filters.map(f => ({ column: columns[f.col].name, type: columns[f.col].type, op: f.op, value: f.value }));
+      s.focus = message.focus;
+      dropWidths(s);
+      void requery('first');
+      return;
+    case 'reload':
+      s.top = message.top;
+      dropWidths(s);
+      // Reload also reads the primary key again (it may have changed since the view opened).
+      void vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, async () => {
+        s.pk = await primaryKey(s.ref, true);
+        await load('first');
+      });
+      return;
+    case 'loadMore':
+      s.scroll = message.scroll;
+      void requery('more');
+      return;
+  }
+}
+
+function requery(kind: 'first' | 'more'): Thenable<void> {
+  return vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, () => load(kind));
 }

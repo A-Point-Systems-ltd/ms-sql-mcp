@@ -1,6 +1,10 @@
 // HTML of the query results panel. No 'vscode' import (unit-testable).
-// Grids are built here; the client script only switches tabs, posts link / cancel clicks and ticks the timer.
-// Rows can hold client personal data: everything is escaped, nothing is loaded from the network, no export.
+// Each result set renders with the shared data grid (grid/gridHtml: resize, copy button, local sort); the page script
+// also switches tabs, posts link / cancel clicks and ticks the timer.
+// Rows can hold client personal data: everything is escaped and nothing is loaded from the network. Rows leave the
+// panel only through the user's copy actions and Export CSV (modal confirmation), resolved on the extension side.
+import { GRID_CSS, gridScript, renderGrid } from '../grid/gridHtml';
+import type { GridViewState } from '../grid/gridModel';
 import { escapeHtml } from '../webviewUtil';
 import type { RunScriptMessage, RunScriptResult, RunScriptResultSet } from './runScript';
 
@@ -13,25 +17,16 @@ export type ResultsState =
 
 export const EMPTY_TEXT = 'Run a query with F5 or the Run button.';
 
-/**
- * SQL Server types shown right-aligned. The server sends decimal / numeric / money / smallmoney, and bigint values
- * beyond +/-2^53, as exact strings (a JSON number would be rounded to a double), so alignment follows the column type
- * from `columns[].type`, not the JavaScript type of the value. Binary values arrive as SSMS-style `0x...` hex text.
- */
-const NUMERIC_TYPES = new Set(['bigint', 'int', 'smallint', 'tinyint', 'decimal', 'numeric', 'money', 'smallmoney', 'float', 'real']);
-
-/** The suffix the server appends to a string or binary value it cut at its cell cap (65536 chars / 32768 bytes). */
-const TRUNCATED_SUFFIX = /\u2026 \(truncated, (\d+) (chars|bytes)\)$/;
-
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * The results webview document for `state`. `cspSource` is accepted for the view contract but deliberately not
- * added to the CSP: the page loads nothing, everything is inline.
+ * added to the CSP: the page loads nothing, everything is inline. `gen` is the render counter the grids carry
+ * (`data-gen`) and their messages echo; `views` restores each result set's grid view (column order, hidden, ...).
  */
-export function renderResults(state: ResultsState, nonce: string, cspSource: string): string {
+export function renderResults(state: ResultsState, nonce: string, cspSource: string, gen = 0, views: readonly (GridViewState | undefined)[] = []): string {
   void cspSource;
-  return page(nonce, header(state), body(state));
+  return page(nonce, header(state), body(state, gen, views));
 }
 
 function header(state: ResultsState): string {
@@ -52,7 +47,7 @@ function header(state: ResultsState): string {
   }
 }
 
-function body(state: ResultsState): string {
+function body(state: ResultsState, gen: number, views: readonly (GridViewState | undefined)[]): string {
   if (state.kind === 'empty') return `<p class="hint">${escapeHtml(EMPTY_TEXT)}</p>`;
   if (state.kind !== 'done') return '';
   const { resultSets, messages } = state.result;
@@ -65,36 +60,20 @@ function body(state: ResultsState): string {
   const multi = resultSets.length > 1;
   return `<nav class="tabs" role="tablist">${tab('results', `Results (${resultSets.length})`)}${tab('messages', `Messages (${messages.length})`)}</nav>
 <div class="content">
-${pane('results', resultSets.length ? resultSets.map((set, i) => grid(set, i + 1, multi)).join('\n') : '<p class="none">No result sets.</p>')}
+${pane('results', resultSets.length ? resultSets.map((set, i) => grid(set, i, multi, gen, views[i])).join('\n') : '<p class="none">No result sets.</p>')}
 ${pane('messages', messages.map(message).join('\n'))}
 </div>`;
 }
 
-function grid(set: RunScriptResultSet, index: number, multi: boolean): string {
-  let caption = `Result ${index} - ${plural(set.rowCount, 'row')}`;
+/** Result set `index` (0-based) as a shared grid with local sort; `set` in its copy messages is that index. */
+function grid(set: RunScriptResultSet, index: number, multi: boolean, gen: number, view: GridViewState | undefined): string {
+  let caption = `Result ${index + 1} - ${plural(set.rowCount, 'row')}`;
   if (set.truncated) caption += ` (showing first ${set.rows.length})`;
-  const numeric = set.columns.map(c => NUMERIC_TYPES.has(c.type.toLowerCase()));
-  const head = set.columns
-    .map(c => `<th title="${escapeHtml(c.type)}">${escapeHtml(c.name || '(No column name)')}</th>`)
-    .join('');
-  const rows = set.rows
-    .map(row => `<tr>${set.columns.map((_, i) => cell(row[i], numeric[i])).join('')}</tr>`)
-    .join('');
+  const id = `g${index}`;
   return `<div class="set${multi ? ' multi' : ' single'}">
-<div class="caption">${escapeHtml(caption)}</div>
-<div class="grid ${multi ? 'multi' : 'single'}"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>
+<div class="caption">${escapeHtml(caption)}<span class="sortnote" data-sortnote="${id}" style="display:none"> · sorted locally (loaded rows only)</span><span class="filternote" data-filternote="${id}" style="display:none"> · filtered locally</span></div>
+<div class="grid ${multi ? 'multi' : 'single'}">${renderGrid({ id, columns: set.columns, rows: set.rows, sortMode: 'local', set: index, gen, view })}</div>
 </div>`;
-}
-
-function cell(value: unknown, numericColumn: boolean): string {
-  if (value === null || value === undefined) return '<td class="null">NULL</td>';
-  const isNumber = typeof value === 'number' || typeof value === 'bigint';
-  const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-  const cut = typeof value === 'string' ? TRUNCATED_SUFFIX.exec(value) : null;
-  const classes = [...(isNumber || numericColumn ? ['num'] : []), ...(cut ? ['trunc'] : [])];
-  const cls = classes.length ? ` class="${classes.join(' ')}"` : '';
-  const title = cut ? ` title="${escapeHtml(`Truncated by the server: the full value has ${cut[1]} ${cut[2]}.`)}"` : '';
-  return `<td${cls}${title}>${escapeHtml(text)}</td>`;
 }
 
 function message(m: RunScriptMessage): string {
@@ -141,20 +120,11 @@ function page(nonce: string, headerHtml: string, bodyHtml: string): string {
   #pane-results.hidden { display: none; }
   .set.single { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .caption { color: var(--vscode-descriptionForeground); padding: 2px 0 4px; }
-  .grid { overflow: auto; border: 1px solid var(--vscode-panel-border); }
+  .grid { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--vscode-panel-border); }
   .grid.single { flex: 1; min-height: 0; }
   .grid.multi { max-height: 45vh; }
-  table { border-collapse: collapse; width: max-content; min-width: 100%; user-select: text; }
-  th, td { padding: 2px 8px; border-right: 1px solid var(--vscode-panel-border);
-           border-bottom: 1px solid var(--vscode-panel-border); text-align: left; white-space: pre;
-           font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size, 12px);
-           max-width: 480px; overflow: hidden; text-overflow: ellipsis; }
-  th { position: sticky; top: 0; z-index: 1; font-weight: 600; font-family: var(--vscode-font-family);
-       background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); }
-  tbody tr:hover { background: var(--vscode-list-hoverBackground); }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  td.null { color: var(--vscode-descriptionForeground); font-style: italic; }
-  td.trunc { text-decoration: underline dotted var(--vscode-descriptionForeground); }
+  .grid > .dgrid { flex: 1 1 auto; }
+${GRID_CSS}
   .msg { padding: 2px 0; white-space: pre-wrap; font-family: var(--vscode-editor-font-family), monospace;
          font-size: var(--vscode-editor-font-size, 12px); user-select: text; }
   .msg.error, .msg.error a { color: var(--vscode-errorForeground); }
@@ -169,15 +139,17 @@ function page(nonce: string, headerHtml: string, bodyHtml: string): string {
 <header>${headerHtml}</header>
 ${bodyHtml}
 <script nonce="${nonce}">
+${gridScript()}
   (function () {
     const vscode = acquireVsCodeApi();
+    initGrids(vscode);
     for (const tab of document.querySelectorAll('.tab')) {
       tab.addEventListener('click', () => {
         for (const t of document.querySelectorAll('.tab')) {
           const on = t === tab;
-          t.classList.toggle('selected', on);
+          t.setAttribute('class', on ? 'tab selected' : 'tab');
           t.setAttribute('aria-selected', String(on));
-          document.getElementById('pane-' + t.dataset.tab).classList.toggle('hidden', !on);
+          document.getElementById('pane-' + t.dataset.tab).setAttribute('class', on ? 'pane' : 'pane hidden');
         }
       });
     }
@@ -190,7 +162,7 @@ ${bodyHtml}
     const cancel = document.getElementById('cancel');
     if (cancel) {
       cancel.addEventListener('click', () => {
-        cancel.disabled = true;
+        cancel.setAttribute('disabled', '');
         vscode.postMessage({ type: 'cancel' });
       });
     }

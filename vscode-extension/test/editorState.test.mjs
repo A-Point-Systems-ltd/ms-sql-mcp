@@ -12,7 +12,7 @@ test('unassociated editor: not connected, "Connect" status', () => {
   assert.equal(s.canRun, false);
   assert.equal(s.blockedReadOnly, false);
   assert.equal(s.statusText, '$(database) Connect');
-  assert.match(s.tooltip, /^MSSQL-MCP: /);
+  assert.match(s.tooltip, /^APoint-ms-sql: /);
   // A profile without an association changes nothing.
   assert.deepEqual(editorRunState(undefined, profile()), s);
 });
@@ -21,7 +21,7 @@ test('read-write query document can run', () => {
   const s = editorRunState(query(), profile());
   assert.deepEqual(
     { connected: s.connected, canRun: s.canRun, blockedReadOnly: s.blockedReadOnly, statusText: s.statusText, tooltip: s.tooltip },
-    { connected: true, canRun: true, blockedReadOnly: false, statusText: '$(database) dev', tooltip: 'MSSQL-MCP: dev - DC\\DEV/db1 - read-write. Click to change.' });
+    { connected: true, canRun: true, blockedReadOnly: false, statusText: '$(database) dev', tooltip: 'APoint-ms-sql: dev - DC\\DEV/db1 - read-write. Click to change.' });
   assert.equal(s.reason, undefined);
 });
 
@@ -31,7 +31,7 @@ test('read-only query document can run (read-only SELECT batches only) and shows
   assert.equal(s.canRun, true);
   assert.equal(s.blockedReadOnly, false);
   assert.equal(s.statusText, '$(database) dev $(lock)');
-  assert.equal(s.tooltip, 'MSSQL-MCP: dev - DC\\DEV/db1 - read-only. Click to change.');
+  assert.equal(s.tooltip, 'APoint-ms-sql: dev - DC\\DEV/db1 - read-only. Click to change.');
 });
 
 test('read-write object document can run', () => {
@@ -46,7 +46,7 @@ test('object document on a read-only profile is blocked', () => {
   assert.equal(s.canRun, false);
   assert.equal(s.blockedReadOnly, true);
   assert.equal(s.statusText, '$(database) dev $(lock)');
-  assert.match(s.tooltip, /^MSSQL-MCP: dev - DC\\DEV\/db1 - read-only\. .*read-write connection.* Click to change\.$/);
+  assert.match(s.tooltip, /^APoint-ms-sql: dev - DC\\DEV\/db1 - read-only\. .*read-write connection.* Click to change\.$/);
   assert.match(s.reason, /read-only/);
 });
 
@@ -78,7 +78,7 @@ test('closed connection: connected but cannot run; tooltip says to open it first
 
 test('raw profiles show "connection string" instead of server/database', () => {
   const s = editorRunState(query(), profile({ auth: 'raw', rawConnectionString: 'Server=x', server: '', database: '' }));
-  assert.equal(s.tooltip, 'MSSQL-MCP: dev - connection string - read-write. Click to change.');
+  assert.equal(s.tooltip, 'APoint-ms-sql: dev - connection string - read-write. Click to change.');
 });
 
 test('the profile name wins over the stored association casing', () => {

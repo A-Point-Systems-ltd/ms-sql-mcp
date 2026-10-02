@@ -7,8 +7,8 @@ export const bracket = (id: string): string => `[${id.replace(/]/g, ']]')}]`;
 
 export const qualified = (schema: string | undefined, name: string): string => (schema ? `${bracket(schema)}.${bracket(name)}` : bracket(name));
 
-export const previewSql = (schema: string | undefined, name: string, rows: number): string =>
-  `SELECT TOP (${Math.max(1, Math.floor(rows))}) * FROM ${qualified(schema, name)}`;
+/** A T-SQL Unicode string literal: `N'...'` with every `'` doubled. */
+export const sqlString = (value: string): string => `N'${value.replace(/'/g, "''")}'`;
 
 const enc = encodeURIComponent;
 
@@ -17,8 +17,31 @@ const enc = encodeURIComponent;
  * VS Code's URI class decodes the query once (URI.query) and re-encodes it in toString(); an ordinary
  * percent-encoded '&', '=', '%' or '#' would not survive that round trip.
  */
-const qEnc = (v: string): string => enc(v).replace(/~/g, '%7E').replace(/%/g, '~');
-const qDec = (v: string): string => decodeURIComponent(v.replace(/~/g, '%'));
+export const qEnc = (v: string): string => enc(v).replace(/~/g, '%7E').replace(/%/g, '~');
+export const qDec = (v: string): string => decodeURIComponent(v.replace(/~/g, '%'));
+
+/**
+ * The `key=value` pairs of a URI built with {@link qEnc} values. Accepts the built string, URI.toString(),
+ * URI.toString(true), or a bare URI.query. A value that does not decode makes the whole query unreadable (undefined).
+ */
+export function parseUriQuery(uri: string): Map<string, string> | undefined {
+  const qStart = uri.indexOf('?');
+  let query = qStart >= 0 ? uri.slice(qStart + 1) : uri;
+  const hash = query.indexOf('#');
+  if (hash >= 0) query = query.slice(0, hash);
+  try {
+    // URI.toString() escapes the separators themselves ("c%3D...%26t%3D..."): undo that one layer.
+    if (!query.includes('=')) query = decodeURIComponent(query);
+    const params = new Map<string, string>();
+    for (const part of query.split('&')) {
+      const eq = part.indexOf('=');
+      if (eq > 0) params.set(part.slice(0, eq), qDec(part.slice(eq + 1)));
+    }
+    return params;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * mssql-ddl:/<conn>/<type>/<schema.name>.sql?c=..&t=..&n=..[&s=..][&p=..]
@@ -34,17 +57,8 @@ export function ddlUri(ref: ObjectRef): string {
 
 /** Accepts the ddlUri() string, URI.toString(), URI.toString(true), or a bare URI.query. */
 export function parseDdlUri(uri: string): ObjectRef {
-  const qStart = uri.indexOf('?');
-  let query = qStart >= 0 ? uri.slice(qStart + 1) : uri;
-  const hash = query.indexOf('#');
-  if (hash >= 0) query = query.slice(0, hash);
-  // URI.toString() escapes the separators themselves ("c%3D...%26t%3D..."): undo that one layer.
-  if (!query.includes('=')) query = decodeURIComponent(query);
-  const params = new Map<string, string>();
-  for (const part of query.split('&')) {
-    const eq = part.indexOf('=');
-    if (eq > 0) params.set(part.slice(0, eq), qDec(part.slice(eq + 1)));
-  }
+  const params = parseUriQuery(uri);
+  if (!params) throw new URIError('Malformed mssql-ddl URI.');
   const ref: ObjectRef = { connection: params.get('c') ?? '', scriptType: params.get('t') ?? '', name: params.get('n') ?? '' };
   if (params.has('s')) ref.schema = params.get('s')!;
   if (params.has('p')) ref.parent = params.get('p')!;

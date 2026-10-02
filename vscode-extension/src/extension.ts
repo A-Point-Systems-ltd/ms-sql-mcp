@@ -8,12 +8,17 @@ import { PROVIDER_ID } from './constants';
 import { DdlDocumentProvider } from './explorer/ddlDocuments';
 import { ExplorerClient } from './explorer/explorerClient';
 import { ExplorerTreeProvider } from './explorer/explorerTree';
+import { CellViewer } from './grid/cellViewer';
 import { DDL_SCHEME } from './explorer/sqlText';
+import { registerHistoryCommands } from './history/historyCommands';
+import { setUpDdlHistory } from './history/historySetup';
 import { Logger } from './logger';
 import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, duplicateEntryAction, hasMsSqlEntry } from './cursorMcp';
 import { resolveExePath } from './exe';
 import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
 import { registerQueryCommands } from './query/queryCommands';
+import { SqlDocFileSystem } from './query/sqlDocFs';
+import { SQL_DOC_SCHEME } from './query/sqlDocNames';
 import { cursorConfigPath } from './register/clientPaths';
 import { registerClientCommand } from './register/registerClients';
 import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
@@ -29,13 +34,22 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new ConnectionStore(context.globalState, context.secrets);
   const explorer = new ExplorerClient(context, store, log);
   context.subscriptions.push(explorer);
-  registerConnectionCommands(context, store, log, explorer);
-  // Query windows run scripts in a third private process that keeps each profile's own read-only flag.
+  // Query windows run scripts in a third private process that keeps each profile's own read-only flag. It also serves
+  // the extension-only ddl_history tool (the connection form's DDL history set-up, Show DDL History).
   const runner = new ServerProcessClient(context, store, log, RUNNER_OPTIONS);
   context.subscriptions.push(runner);
+  registerConnectionCommands(context, store, log, explorer, profile => setUpDdlHistory(runner, profile, log));
+
+  // Query windows and editable object scripts are mssql-sql: documents (titled tabs, no programmatic text edits),
+  // registered before the commands that open them.
+  // Read-only mssql-cell: documents of the grids' cell viewer (in memory only).
+  const viewer = new CellViewer();
+  context.subscriptions.push(viewer);
+  const sqlDocs = new SqlDocFileSystem(context.globalStorageUri.fsPath, log);
+  context.subscriptions.push(sqlDocs, vscode.workspace.registerFileSystemProvider(SQL_DOC_SCHEME, sqlDocs, { isCaseSensitive: true }));
 
   const tree = new ExplorerTreeProvider(store, explorer, log);
-  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, refreshTree: () => tree.refresh() });
+  const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, sqlDocs, viewer, refreshTree: () => tree.refresh() });
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
@@ -49,7 +63,8 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs, runner, viewer);
+  registerHistoryCommands(context, { store, docs: queryDocs, runner, explorer, log });
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);
@@ -65,7 +80,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const cursorApi = cursorMcpApi(vscode);
   if (cursorApi) registerCursorServer(context, store, log, cursorApi);
   else registerMcpProvider(context, store, log);
-  log.info('activate', 'MSSQL-MCP activated');
+  log.info('activate', 'APoint-ms-sql activated');
 }
 
 /** Registers the agent-facing MCP server definition provider when the host supports it (VS Code 1.101+, Cursor). */
@@ -119,16 +134,16 @@ function registerCursorServer(context: vscode.ExtensionContext, store: Connectio
 }
 
 /**
- * Warns on every activation while ~/.cursor/mcp.json holds an `ms-sql` entry (the extension never edits that file on
+ * Warns on every activation while ~/.cursor/mcp.json holds an `APoint-ms-sql` or legacy `ms-sql` entry (the extension never edits that file on
  * its own). Only "Don't show again" stops it; the choice is cleared once the entry is gone.
  */
 function warnAboutDuplicateEntry(context: vscode.ExtensionContext, log: Logger): void {
   const action = duplicateEntryAction(hasMsSqlEntry(cursorConfigPath()), context.globalState.get<boolean>(CURSOR_DUPLICATE_FLAG, false));
   if (action === 'clear') void context.globalState.update(CURSOR_DUPLICATE_FLAG, undefined);
   if (action !== 'warn') return;
-  log.warn('activate', "~/.cursor/mcp.json has an 'ms-sql' entry that duplicates the server registered by the extension.");
+  log.warn('activate', "~/.cursor/mcp.json has an 'APoint-ms-sql' or 'ms-sql' entry that duplicates the server registered by the extension.");
   void vscode.window.showWarningMessage(
-    "An 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two MSSQL-MCP servers.",
+    "An 'APoint-ms-sql' or 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two APoint-ms-sql servers.",
     DONT_SHOW_AGAIN,
   ).then(choice => {
     if (choice === DONT_SHOW_AGAIN) void context.globalState.update(CURSOR_DUPLICATE_FLAG, true);

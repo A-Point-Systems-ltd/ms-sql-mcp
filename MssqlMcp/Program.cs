@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using Mssql.McpServer.Connections;
 using Mssql.McpServer.InsightsLayer;
 using System.Diagnostics;
@@ -47,6 +48,22 @@ internal class Program
         {
             consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
         });
+
+        // Clients such as Cursor show every stderr line as "[error]", so the console stays at Warning unless asked:
+        // MSSQL_CONSOLE_LOG_LEVEL first, then the standard Logging configuration (appsettings / Logging__* env).
+        var consoleLevel = ConsoleLogLevel.Resolve(
+            Environment.GetEnvironmentVariable(ConsoleLogLevel.Variable),
+            builder.Configuration[ConsoleLogLevel.ConsoleDefaultKey],
+            builder.Configuration[ConsoleLogLevel.LoggingDefaultKey],
+            out var consoleLevelWarning);
+        if (consoleLevelWarning is not null)
+        {
+            Console.Error.WriteLine(consoleLevelWarning);
+            log.Append(consoleLevelWarning);
+        }
+
+        // A provider-wide rule (no category) wins over the default minimum level for the console provider only.
+        _ = builder.Logging.AddFilter<ConsoleLoggerProvider>(category: null, level: consoleLevel);
 
         IReadOnlyList<ConnectionProfile> profiles;
         try
@@ -287,4 +304,53 @@ internal sealed class StartupLog(string filePath)
             Console.Error.WriteLine($"[log unavailable: {ex.Message}] {line}");
         }
     }
+}
+
+/// <summary>
+/// Minimum level of the stderr console logger. Some clients (Cursor) show every stderr line as an error, so the
+/// default is <see cref="LogLevel.Warning"/>. Precedence: <c>MSSQL_CONSOLE_LOG_LEVEL</c> when set, then the standard
+/// configuration (<c>Logging:Console:LogLevel:Default</c>, then <c>Logging:LogLevel:Default</c>, from appsettings or
+/// env such as <c>Logging__LogLevel__Default</c>), then Warning.
+/// </summary>
+internal static class ConsoleLogLevel
+{
+    public const string Variable = "MSSQL_CONSOLE_LOG_LEVEL";
+    public const string ConsoleDefaultKey = "Logging:Console:LogLevel:Default";
+    public const string LoggingDefaultKey = "Logging:LogLevel:Default";
+
+    /// <summary>
+    /// <paramref name="value"/> (the variable) accepts a <see cref="LogLevel"/> name, case-insensitive and not a number;
+    /// an invalid one gives a one-line <paramref name="warning"/> and is skipped. Configuration values are read the way
+    /// Microsoft.Extensions.Logging reads them (names or defined numbers); an invalid one is skipped silently.
+    /// </summary>
+    public static LogLevel Resolve(string? value, string? consoleDefault, string? loggingDefault, out string? warning)
+    {
+        warning = null;
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            var trimmed = value.Trim();
+            var name = Enum.GetNames<LogLevel>().FirstOrDefault(n => string.Equals(n, trimmed, StringComparison.OrdinalIgnoreCase));
+            if (name is not null)
+            {
+                return Enum.Parse<LogLevel>(name);
+            }
+
+            warning = $"Warning: invalid {Variable} '{trimmed}'; expected Trace, Debug, Information, Warning, Error, Critical or None. Ignoring it.";
+        }
+
+        foreach (var configured in new[] { consoleDefault, loggingDefault })
+        {
+            if (!string.IsNullOrWhiteSpace(configured)
+                && Enum.TryParse<LogLevel>(configured.Trim(), ignoreCase: true, out var level)
+                && Enum.IsDefined(level))
+            {
+                return level;
+            }
+        }
+
+        return LogLevel.Warning;
+    }
+
+    /// <summary>The variable alone, with no configuration: the level it names, or Warning.</summary>
+    public static LogLevel Resolve(string? value, out string? warning) => Resolve(value, null, null, out warning);
 }

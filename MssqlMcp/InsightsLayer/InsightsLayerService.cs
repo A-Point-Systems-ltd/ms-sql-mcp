@@ -19,7 +19,7 @@ public sealed class InsightsLayerService(
     ILogger<InsightsLayerService> logger) : IInsightsLayerService
 {
     private const string SchemaScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateInsightsSchema.sql";
-    private const string TriggerScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditTrigger.sql";
+    internal const string TriggerScriptResource = "Mssql.McpServer.InsightsLayer.SqlScripts.CreateDdlAuditTrigger.sql";
     internal const string AutoMechanicalModel = "auto-mechanical";
 
     private readonly ISqlConnectionFactory _connectionFactory = connectionFactory;
@@ -168,8 +168,8 @@ public sealed class InsightsLayerService(
                 if (await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false)
                     && !(await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false)).TriggerExists)
                 {
-                    var triggerSql = await ReadEmbeddedResourceAsync(assembly, TriggerScriptResource, cancellationToken).ConfigureAwait(false);
-                    await ExecuteScriptBatchesAsync(triggerSql, cancellationToken).ConfigureAwait(false);
+                    // The shared install: the DDL_Audit_Writer user and its grant, the pre-flight, then the trigger.
+                    await Mssql.McpServer.Scripting.DdlAudit.InstallTriggerAsync(conn, cancellationToken).ConfigureAwait(false);
                 }
 
                 state = await ReadInstallStateAsync(conn, cancellationToken).ConfigureAwait(false);
@@ -209,7 +209,7 @@ public sealed class InsightsLayerService(
     }
 
     private const string InstallPermissionHint =
-        "Hint: installing the database DDL trigger requires ALTER ANY DATABASE DDL TRIGGER (or membership in ddl_admin / sysadmin).";
+        "Hint: installing the DDL_Audit database trigger (it runs as the loginless user DDL_Audit_Writer, which the install creates) requires db_owner, or ALTER ANY USER, GRANT on dbo.DDL_AuditLog and ALTER ANY DATABASE DDL TRIGGER.";
 
     /// <summary>Existence of every object the install creates.</summary>
     internal sealed record InstallState(
@@ -1124,9 +1124,18 @@ public sealed class InsightsLayerService(
 
     private async Task ExecuteScriptBatchesAsync(string script, CancellationToken cancellationToken)
     {
+        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await ExecuteBatchesAsync(conn, script, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the <c>GO</c>-separated batches of <paramref name="script"/> one by one on <paramref name="conn"/>, with no
+    /// transaction around them. The first failing batch throws and later batches do not run.
+    /// </summary>
+    internal static async Task ExecuteBatchesAsync(SqlConnection conn, string script, CancellationToken cancellationToken)
+    {
         // Errors must surface as SqlException: FireInfoMessageEventOnUserErrors would turn severity <= 16
         // errors (for example permission denied on CREATE TRIGGER) into dropped info messages.
-        await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         foreach (var batch in SqlBatchSplitter.SplitBatches(script))
         {
             if (string.IsNullOrWhiteSpace(batch))
@@ -1139,7 +1148,7 @@ public sealed class InsightsLayerService(
         }
     }
 
-    private static async Task<string> ReadEmbeddedResourceAsync(Assembly assembly, string resourceName, CancellationToken cancellationToken)
+    internal static async Task<string> ReadEmbeddedResourceAsync(Assembly assembly, string resourceName, CancellationToken cancellationToken)
     {
         var stream = assembly.GetManifestResourceStream(resourceName)
             ?? throw new InvalidOperationException($"Embedded resource not found: {resourceName}. Available: {string.Join(", ", assembly.GetManifestResourceNames())}");

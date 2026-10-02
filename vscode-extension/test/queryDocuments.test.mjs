@@ -82,6 +82,45 @@ test('closing a document drops its association unless it is a file', async () =>
   assert.equal(dropOnClose('untitled'), true);
   assert.equal(dropOnClose('vscode-userdata'), true);
   assert.equal(dropOnClose('mssql-ddl'), true);
+  // mssql-sql documents (query windows, object scripts) are dropped when closed clean; a dirty one keeps its binding
+  // (the activation prune drops it later when no tab shows it).
+  assert.equal(dropOnClose('mssql-sql'), true);
+  assert.equal(dropOnClose('mssql-sql', false), true);
+  assert.equal(dropOnClose('mssql-sql', true), false);
+  assert.equal(dropOnClose('untitled', true), true);
+  assert.equal(dropOnClose('file', false), false);
+});
+
+test('mssql-sql documents are bindable and survive activation only while a tab shows them', async () => {
+  const { isNeverBound, keepOnActivation } = await import('../out/query/queryDocuments.js');
+  assert.equal(isNeverBound('mssql-sql'), false);
+  assert.equal(keepOnActivation('mssql-sql', true, () => false), true);
+  assert.equal(keepOnActivation('mssql-sql', false, () => true), false);
+});
+
+test('close grace: a document open again (language change close/reopen) is a reopen; nothing is dropped or cancelled', async () => {
+  const { afterCloseGrace, defersRunCleanup } = await import('../out/query/queryDocuments.js');
+  // setTextDocumentLanguage closes and reopens the same uri: still open after the grace means reopen, whatever else.
+  for (const scheme of ['mssql-sql', 'untitled', 'file']) {
+    for (const isDirty of [false, true]) assert.equal(afterCloseGrace({ scheme, isDirty, reopened: true }), 'reopened', `${scheme} ${isDirty}`);
+  }
+  assert.equal(afterCloseGrace({ scheme: 'mssql-sql', isDirty: false, reopened: false }), 'drop');
+  assert.equal(afterCloseGrace({ scheme: 'mssql-sql', isDirty: true, reopened: false }), 'keep');
+  assert.equal(afterCloseGrace({ scheme: 'untitled', isDirty: true, reopened: false }), 'drop');
+  assert.equal(afterCloseGrace({ scheme: 'file', isDirty: false, reopened: false }), 'keep');
+  // The run / results cleanup of an mssql-sql document waits for the same grace (its uri is never reused by another
+  // document); untitled ones stay immediate, because a new untitled document may reuse the uri at once.
+  assert.equal(defersRunCleanup('mssql-sql'), true);
+  assert.equal(defersRunCleanup('untitled'), false);
+  assert.equal(defersRunCleanup('file'), false);
+});
+
+test('orphanQueryIds: only ids this workspace created and no tab shows', async () => {
+  const { orphanQueryIds } = await import('../out/query/queryDocuments.js');
+  assert.deepEqual(orphanQueryIds(['aaaa0001', 'aaaa0002', 'aaaa0003'], new Set(['aaaa0002'])), ['aaaa0001', 'aaaa0003']);
+  assert.deepEqual(orphanQueryIds([], new Set(['aaaa0002'])), []);
+  // Malformed ids from workspace state are dropped (never used as a path).
+  assert.deepEqual(orphanQueryIds(['../x', 'AAAA0001', 'aaaa0004'], new Set()), ['aaaa0004']);
 });
 
 test('activation pruning: files must exist, other documents must be open, mssql-ddl never stays', async () => {

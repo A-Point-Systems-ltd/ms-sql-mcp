@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { addJsonArgs, cmdQuote, findClaude, powershellCommand, registerClaudeCode } from '../out/register/claudeCode.js';
+import { addJsonArgs, cmdQuote, findClaude, powershellCommand, registerClaudeCode, removeArgs } from '../out/register/claudeCode.js';
 
 const p = (name, extra = {}) => ({ name, server: 's', database: 'd', auth: 'windows', readOnly: false, insights: true, open: true, encrypt: 'optional', trustServerCertificate: true, ...extra });
 const sql = (name, extra = {}) => p(name, { auth: 'sql', user: 'u', ...extra });
@@ -65,7 +65,7 @@ const entry = { command: 'C:\\Users\\u\\gs\\MssqlMcp.exe', args: [], env: { MSSQ
 
 test('add-json args carry a stdio entry', () => {
   const a = addJsonArgs(entry);
-  assert.deepEqual(a.slice(0, 5), ['mcp', 'add-json', '--scope', 'user', 'ms-sql']);
+  assert.deepEqual(a.slice(0, 5), ['mcp', 'add-json', '--scope', 'user', 'APoint-ms-sql']);
   assert.deepEqual(JSON.parse(a[5]), { type: 'stdio', ...entry });
 });
 
@@ -89,10 +89,22 @@ test('findClaude scans PATH with PATHEXT', () => {
   assert.equal(findClaude(env, () => false), undefined);
 });
 
-test('claude exe: remove then add, shell:false', async () => {
+test('claude exe: remove, remove legacy, then add, shell:false', async () => {
   const r = recorder(() => 0);
   assert.deepEqual(await registerClaudeCode(entry, r.run, exe), { status: 'registered' });
-  assert.deepEqual(r.calls.map(c => [c.file, c.shell, c.args[1]]), [['C:\\bin\\claude.exe', false, 'remove'], ['C:\\bin\\claude.exe', false, 'add-json']]);
+  assert.deepEqual(r.calls.map(c => [c.file, c.shell, c.args[1], c.args[4]]), [
+    ['C:\\bin\\claude.exe', false, 'remove', 'APoint-ms-sql'], ['C:\\bin\\claude.exe', false, 'remove', 'ms-sql'], ['C:\\bin\\claude.exe', false, 'add-json', 'APoint-ms-sql']]);
+});
+
+test('removeArgs: user scope, legacy key by default', () => {
+  assert.deepEqual(removeArgs(), ['mcp', 'remove', '--scope', 'user', 'ms-sql']);
+  assert.deepEqual(removeArgs('APoint-ms-sql'), ['mcp', 'remove', '--scope', 'user', 'APoint-ms-sql']);
+});
+
+test('a failing legacy remove does not stop the add', async () => {
+  const r = recorder((f, a) => (a[1] === 'remove' && a[4] === 'ms-sql' ? { code: 1, stderr: 'No MCP server found with name: ms-sql' } : 0));
+  assert.deepEqual(await registerClaudeCode(entry, r.run, exe), { status: 'registered' });
+  assert.equal(r.calls.at(-1).args[1], 'add-json');
 });
 
 test('remove failure is ignored, add failure is reported', async () => {

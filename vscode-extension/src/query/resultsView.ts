@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import type { CellViewer } from '../grid/cellViewer';
+import { runGridAction } from '../grid/gridActions';
+import { GridViewState, parseResultsMessage } from '../grid/gridModel';
 import { makeNonce } from '../webviewUtil';
 import { ResultsState, renderResults } from './resultsHtml';
 import { editorLine } from './runScript';
@@ -8,8 +11,8 @@ export const RESULTS_VIEW_ID = 'msSqlMcp.results';
 const EMPTY: ResultsState = { kind: 'empty' };
 
 /**
- * The "Results" webview view in the bottom panel. Holds the last run state per document (in memory only, rows never
- * leave the editor) and shows the state of the active bound document.
+ * The "Results" webview view in the bottom panel. Holds the last run state per document (in memory only; rows leave
+ * it only through the user's copy and Export actions) and shows the state of the active bound document.
  */
 export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
@@ -17,6 +20,10 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
   /** Document whose state is on screen, and that state (to skip re-rendering an unchanged view). */
   private shownKey: string | undefined;
   private shownState: ResultsState | undefined;
+  /** Render counter of the page on screen; grid messages from an older page are ignored. */
+  private gen = 0;
+  /** Grid view (column order, hidden, frozen, ...) per result set of a state; dropped with the state. */
+  private readonly views = new WeakMap<ResultsState, (GridViewState | undefined)[]>();
   /** Listeners of the current webview; disposed with it. */
   private viewSubs: vscode.Disposable[] = [];
 
@@ -25,6 +32,8 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     private readonly target: () => { key: string; bound: boolean } | undefined,
     /** Called when the webview's Cancel button is pressed for document `key`. */
     private readonly onCancel: (key: string) => void,
+    /** Opens cell values in read-only mssql-cell: documents. */
+    private readonly viewer: CellViewer,
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -32,7 +41,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     view.webview.options = { enableScripts: true, localResourceRoots: [] };
     this.disposeViewSubs();
     this.viewSubs = [
-      view.webview.onDidReceiveMessage((message: { type?: unknown; line?: unknown }) => this.onMessage(message)),
+      view.webview.onDidReceiveMessage((message: unknown) => this.onMessage(message)),
       view.onDidDispose(() => {
         if (this.view !== view) return;
         this.view = undefined;
@@ -69,7 +78,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       : (this.shownKey !== undefined ? this.states.get(this.shownKey) ?? EMPTY : EMPTY);
     if (!this.view || state === this.shownState) return;
     this.shownState = state;
-    this.view.webview.html = renderResults(state, makeNonce(), this.view.webview.cspSource);
+    this.view.webview.html = renderResults(state, makeNonce(), this.view.webview.cspSource, ++this.gen, this.views.get(state) ?? []);
   }
 
   /**
@@ -95,22 +104,39 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     this.viewSubs = [];
   }
 
-  private onMessage(message: { type?: unknown; line?: unknown }): void {
+  private onMessage(raw: unknown): void {
     const key = this.shownKey;
     if (!key) return;
-    if (message?.type === 'cancel') {
+    const state = this.states.get(key);
+    const sets = state?.kind === 'done' ? state.result.resultSets : [];
+    const message = parseResultsMessage(raw, sets.map(s => ({ rows: s.rows.length, cols: s.columns.length })), this.gen);
+    if (!message) return;
+    if (message.type === 'cancel') {
       this.onCancel(key);
       return;
     }
-    if (message?.type === 'reveal' && typeof message.line === 'number') {
-      const state = this.states.get(key);
+    if (message.type === 'reveal') {
       if (state?.kind !== 'done') return;
       const line = editorLine(message.line, state.lineOffset);
       if (line === undefined) return;
       revealLine(key, line).catch(err => {
-        void vscode.window.showWarningMessage(`MSSQL-MCP: could not show line ${line + 1}: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showWarningMessage(`APoint-ms-sql: could not show line ${line + 1}: ${err instanceof Error ? err.message : String(err)}`);
       });
+      return;
     }
+    if (state?.kind !== 'done') return;
+    if (message.type === 'viewState') {
+      const list = this.views.get(state) ?? [];
+      list[message.set] = message.view;
+      this.views.set(state, list);
+      return;
+    }
+    // Copy, copy row, copy selection, viewer and Export: resolved from the stored result of the shown document;
+    // the webview only sent indexes.
+    const set = sets[message.set];
+    runGridAction(message, { columns: set.columns, rows: set.rows, objectName: 'results' }, this.viewer).catch(err => {
+      void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 }
 
@@ -120,7 +146,7 @@ async function revealLine(key: string, line: number): Promise<void> {
   const visible = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === key);
   const document = visible?.document ?? await vscode.workspace.openTextDocument(uri);
   if (line >= document.lineCount) {
-    void vscode.window.showInformationMessage(`MSSQL-MCP: line ${line + 1} is past the end of the document (it changed after the run).`);
+    void vscode.window.showInformationMessage(`APoint-ms-sql: line ${line + 1} is past the end of the document (it changed after the run).`);
     return;
   }
   const range = document.lineAt(line).range;

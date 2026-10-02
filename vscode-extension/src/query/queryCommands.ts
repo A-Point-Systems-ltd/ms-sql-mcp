@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { McpToolError } from '../client/parse';
 import type { ServerProcessClient } from '../client/serverProcessClient';
@@ -7,11 +6,15 @@ import type { ConnectionProfile } from '../connections/profile';
 import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
 import { EditorRunState, editorRunState, findProfile, runContextDocs } from './editorState';
-import { QueryAssociation, QueryDocuments, dropOnClose, isNeverBound, keepOnActivation } from './queryDocuments';
+import { QueryAssociation, QueryDocuments, defersRunCleanup, isNeverBound } from './queryDocuments';
+import { SqlDocFileSystem, openDocumentKeys } from './sqlDocFs';
+import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
+import { resultsToCarry } from './sqlDocTitles';
+import type { CellViewer } from '../grid/cellViewer';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
 import type { ResultsState } from './resultsHtml';
 import { RunRegistry } from './runRegistry';
-import { appliedSuccessfully, buildRunRequest, clampMaxRows, parseRunScriptResult } from './runScript';
+import { appliedSuccessfully, buildRunRequest, clampMaxRows, parseRunScriptResult, updatesObjectBase } from './runScript';
 import { describeTarget, targetOf, wrongTargetPrompt } from './targetGuard';
 
 /** The active editor is bound to a connection (F5 keybinding, command palette). */
@@ -55,9 +58,6 @@ function commandTarget(arg: unknown): { document: vscode.TextDocument; editor: v
   return editor ? { document: editor.document, editor } : undefined;
 }
 
-/** A closed untitled document reopens at once when only its language changed; wait this long before forgetting it. */
-const REOPEN_GRACE_MS = 200;
-
 /** Everything known about one document's binding. */
 export interface DocumentRunContext {
   assoc: QueryAssociation | undefined;
@@ -79,7 +79,7 @@ export class QueryEditorTracker implements vscode.Disposable {
 
   constructor(private readonly store: ConnectionStore, private readonly docs: QueryDocuments) {
     this.item = vscode.window.createStatusBarItem('msSqlMcp.editorConnection', vscode.StatusBarAlignment.Left, 100);
-    this.item.name = 'MSSQL-MCP Connection';
+    this.item.name = 'APoint-ms-sql Connection';
     this.item.command = 'msSqlMcp.changeConnection';
     this.subs.push(
       this.item,
@@ -133,65 +133,24 @@ export class QueryEditorTracker implements vscode.Disposable {
   }
 }
 
-/** Untitled documents whose editor is gone and files that no longer exist lose their association. */
-async function pruneStale(docs: QueryDocuments): Promise<void> {
-  const open = new Set(vscode.workspace.textDocuments.map(d => d.uri.toString()));
-  // Restored editors in background tabs may not have a loaded document yet.
-  for (const group of vscode.window.tabGroups.all) {
-    for (const tab of group.tabs) {
-      if (tab.input instanceof vscode.TabInputText) open.add(tab.input.uri.toString());
-    }
-  }
-  await docs.prune(key => {
-    const uri = vscode.Uri.parse(key);
-    return keepOnActivation(uri.scheme, open.has(key), () => fs.existsSync(uri.fsPath));
-  });
-}
-
 /**
- * Keeps associations in step with document lifecycle: closed documents other than files (untitled and other
- * schemes) and renamed files.
+ * What the query commands need beyond the store: the runner process, the `mssql-sql:` file system and a way to refresh
+ * the object tree.
  */
-function trackDocumentLifecycle(context: vscode.ExtensionContext, docs: QueryDocuments, log: Logger): void {
-  const timers = new Set<NodeJS.Timeout>();
-  context.subscriptions.push(
-    vscode.workspace.onDidCloseTextDocument(doc => {
-      if (!dropOnClose(doc.uri.scheme) || !docs.get(doc.uri)) return;
-      const key = doc.uri.toString();
-      const timer = setTimeout(() => {
-        timers.delete(timer);
-        if (vscode.workspace.textDocuments.some(d => d.uri.toString() === key)) return;
-        void docs.delete(key);
-      }, REOPEN_GRACE_MS);
-      timers.add(timer);
-    }),
-    vscode.workspace.onDidRenameFiles(e => {
-      for (const { oldUri, newUri } of e.files) {
-        const oldKey = oldUri.toString();
-        const newKey = newUri.toString();
-        for (const [key] of docs.all()) {
-          // The file itself, or a file inside a renamed folder.
-          if (key === oldKey) void docs.rename(key, newKey);
-          else if (key.startsWith(`${oldKey}/`)) void docs.rename(key, newKey + key.slice(oldKey.length));
-        }
-      }
-    }),
-    { dispose: () => { for (const t of timers) clearTimeout(t); timers.clear(); } },
-  );
-  void pruneStale(docs).catch(err => log.error('query', 'Pruning stale query document associations failed', err));
-}
-
-/** What the run command needs beyond the store: the runner process and a way to refresh the object tree. */
 export interface QueryRunDeps {
   runner: ServerProcessClient;
+  /** Backs New Query documents and object documents. */
+  sqlDocs: SqlDocFileSystem;
+  /** Opens grid cell values in read-only mssql-cell: documents. */
+  viewer: CellViewer;
   /** Refreshes the object tree after an object document was applied. */
   refreshTree: () => void;
 }
 
 /**
  * Creates the query-document association store, the editor tracker and the results view, and registers
- * `msSqlMcp.newQuery`, `msSqlMcp.changeConnection`, `msSqlMcp.runQuery`, `msSqlMcp.cancelQuery` and
- * `msSqlMcp.runQueryReadOnly`.
+ * `msSqlMcp.newQuery`, `msSqlMcp.openRecentQuery`, `msSqlMcp.changeConnection`, `msSqlMcp.runQuery`,
+ * `msSqlMcp.cancelQuery` and `msSqlMcp.runQueryReadOnly`.
  */
 export function registerQueryCommands(
   context: vscode.ExtensionContext, store: ConnectionStore, log: Logger, deps: QueryRunDeps,
@@ -199,16 +158,23 @@ export function registerQueryCommands(
   const docs = new QueryDocuments(context.workspaceState);
   const tracker = new QueryEditorTracker(store, docs);
   context.subscriptions.push(docs, tracker);
-  trackDocumentLifecycle(context, docs, log);
-
   /** One run per document, each with its own token (see RunRegistry). */
   const running = new RunRegistry();
+  const lifecycle = new SqlDocLifecycle(context, docs, deps.sqlDocs, log, store, key => running.has(key));
+  context.subscriptions.push(lifecycle);
+
   const cancel = (key: string) => running.cancel(key);
   const results = new ResultsViewProvider(() => {
     const active = tracker.active();
     return active ? { key: active.editor.document.uri.toString(), bound: !!active.assoc } : undefined;
-  }, cancel);
+  }, cancel, deps.viewer);
   const setKey = contextSetter();
+  // A retitled document keeps its Results / Messages (the old uri's state moves to the new one).
+  context.subscriptions.push(lifecycle.onDidRetitle(({ oldKey, newKey }) => {
+    const carried = resultsToCarry(results.stateOf(oldKey), results.stateOf(newKey));
+    if (carried) results.set(newKey, carried);
+  }));
+  const closeTimers = new Set<NodeJS.Timeout>();
   const updateRunning = () => {
     const editor = vscode.window.activeTextEditor;
     setKey(RUNNING_KEY, !!editor && running.has(editor.document.uri.toString()));
@@ -221,16 +187,29 @@ export function registerQueryCommands(
       updateRunning();
       results.update();
     }),
-    // Results are kept in memory per document. Closing a document aborts its run and drops its results and guard at
-    // once, so a new document reusing the uri (untitled) starts clean; the old run no longer updates anything.
+    // Results are kept in memory per document. Closing a document aborts its run and drops its results and guard: at
+    // once for untitled documents, so a new document reusing the uri starts clean (the old run no longer updates
+    // anything); after the reopen grace for mssql-sql documents, whose language change closes and reopens them.
     vscode.workspace.onDidCloseTextDocument(doc => {
       const key = doc.uri.toString();
-      if (running.close(key)) {
-        log.info('query', 'The document of a running query was closed: the run was cancelled.');
-        updateRunning();
+      const cleanUp = () => {
+        if (running.close(key)) {
+          log.info('query', 'The document of a running query was closed: the run was cancelled.');
+          updateRunning();
+        }
+        results.forget(key);
+      };
+      if (!defersRunCleanup(doc.uri.scheme)) {
+        cleanUp();
+        return;
       }
-      results.forget(key);
+      const timer = setTimeout(() => {
+        closeTimers.delete(timer);
+        if (!openDocumentKeys().has(key)) cleanUp();
+      }, REOPEN_GRACE_MS);
+      closeTimers.add(timer);
     }),
+    { dispose: () => { for (const t of closeTimers) clearTimeout(t); closeTimers.clear(); } },
     running,
   );
   updateRunning();
@@ -240,7 +219,7 @@ export function registerQueryCommands(
       try { await fn(arg); }
       catch (err) {
         log.error(id, 'Command failed', err);
-        void vscode.window.showErrorMessage(`MSSQL-MCP: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
       }
     }));
 
@@ -249,24 +228,26 @@ export function registerQueryCommands(
     const p = await pickProfile(store, arg, 'Connection for the new query', x => x.open);
     if (!p) return;
     if (!p.open) {
-      void vscode.window.showWarningMessage(`MSSQL-MCP: open the connection '${p.name}' first.`);
+      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${p.name}' first.`);
       return;
     }
-    const doc = await vscode.workspace.openTextDocument({ language: 'sql', content: '' });
-    await docs.set(doc.uri, { connection: p.name, kind: 'query' });
-    await vscode.window.showTextDocument(doc);
+    // An empty mssql-sql: document titled "Query N - <server> - <database>" (not untitled: its tab shows the target).
+    await lifecycle.createQuery(p);
   });
+
+  // Palette and the explorer title: kept query windows (closed with text), newest first.
+  reg('openRecentQuery', () => lifecycle.openRecentQuery(store));
 
   // The status bar item calls this without arguments (the active editor).
   reg('changeConnection', async () => {
     const editor = vscode.window.activeTextEditor;
     if (editor && isNeverBound(editor.document.uri.scheme)) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: a DDL view is read-only and is not bound to a connection. Use New Query to run SQL.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: a DDL view is read-only and is not bound to a connection. Use New Query to run SQL.');
       return;
     }
     const current = editor ? docs.get(editor.document.uri) : undefined;
     if (!editor || (editor.document.languageId !== 'sql' && !current)) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: open a SQL editor first.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: open a SQL editor first.');
       return;
     }
     const placeHolder = current ? `Connection for this editor (now '${current.connection}')` : 'Connection for this editor';
@@ -282,7 +263,7 @@ export function registerQueryCommands(
       : { connection: p.name, kind: 'query' };
     await docs.set(editor.document.uri, next);
     if (current?.kind === 'object' && changed) {
-      void vscode.window.showInformationMessage(`MSSQL-MCP: this script was generated from ${describeTarget(current.target)}. `
+      void vscode.window.showInformationMessage(`APoint-ms-sql: this script was generated from ${describeTarget(current.target)}. `
         + `The next run asks you to confirm before it is applied through '${p.name}' (${describeTarget(targetOf(p))}).`);
     }
   });
@@ -292,13 +273,13 @@ export function registerQueryCommands(
     const target = commandTarget(arg);
     const run = target ? tracker.contextOf(target.document) : undefined;
     if (!target || !run?.assoc) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: open a SQL editor bound to a connection first (New Query or Change Connection).');
+      void vscode.window.showInformationMessage('APoint-ms-sql: open a SQL editor bound to a connection first (New Query or Change Connection).');
       return;
     }
     const { document, editor } = target;
     const { assoc, profile, state } = run;
     if (!state.canRun || !profile) {
-      void vscode.window.showWarningMessage(`MSSQL-MCP: ${state.reason ?? 'this editor cannot run now.'}`);
+      void vscode.window.showWarningMessage(`APoint-ms-sql: ${state.reason ?? 'this editor cannot run now.'}`);
       return;
     }
     const key = document.uri.toString();
@@ -323,15 +304,17 @@ export function registerQueryCommands(
     };
     try {
       if (assoc.kind === 'object' && document.isDirty && !(await document.save())) {
-        void vscode.window.showWarningMessage('MSSQL-MCP: the document was not saved, so it was not run.');
+        void vscode.window.showWarningMessage('APoint-ms-sql: the document was not saved, so it was not run.');
         return;
       }
       const selection = editor?.selection;
-      const request = buildRunRequest(document.getText(), !selection || selection.isEmpty
+      const wholeDocument = !selection || selection.isEmpty;
+      const fullText = document.getText();
+      const request = buildRunRequest(fullText, wholeDocument
         ? undefined
         : { text: document.getText(selection), startLine: selection.start.line });
       if (!request.script.trim()) {
-        void vscode.window.showInformationMessage('MSSQL-MCP: nothing to run.');
+        void vscode.window.showInformationMessage('APoint-ms-sql: nothing to run.');
         return;
       }
       const maxRows = clampMaxRows(vscode.workspace.getConfiguration('msSqlMcp').get('query.maxRows'));
@@ -349,6 +332,13 @@ export function registerQueryCommands(
         if (assoc.kind === 'object' && appliedSuccessfully(result)) {
           void vscode.window.showInformationMessage(`Applied to '${connection}'.`);
           deps.refreshTree();
+          // The applied text is the new base, so a reopen from the tree no longer asks about it. Only a whole-document
+          // run without any error: after a selection run, or a batch that failed, part of it may still be unapplied.
+          const addr = SqlDocFileSystem.address(document.uri);
+          if (addr?.kind === 'object' && updatesObjectBase(result, wholeDocument)) {
+            void deps.sqlDocs.writeBase(addr.id, fullText)
+              .catch(err => log.warn('query', `Updating the base copy failed: ${err instanceof Error ? err.message : String(err)}`));
+          }
         }
       } catch (err) {
         if (token.controller.signal.aborted || (err instanceof McpToolError && err.cancelled)) {
@@ -360,8 +350,12 @@ export function registerQueryCommands(
       }
     } finally {
       running.finish(token);
+      // A title change waits while the document runs: check it again now.
+      lifecycle.refreshTitleOf(document);
       // Closed while running: its results must not outlive it (close() already dropped the guard).
-      if (document.isClosed && shown !== undefined && results.stateOf(key) === shown) results.forget(key);
+      if (document.isClosed && !openDocumentKeys().has(key) && shown !== undefined && results.stateOf(key) === shown) {
+        results.forget(key);
+      }
       updateRunning();
     }
   });
@@ -377,7 +371,7 @@ export function registerQueryCommands(
   reg('runQueryReadOnly', async arg => {
     const target = commandTarget(arg);
     const reason = target ? tracker.contextOf(target.document).state.reason : undefined;
-    void vscode.window.showWarningMessage(`MSSQL-MCP: ${reason ?? 'apply changes on a read-write connection.'}`);
+    void vscode.window.showWarningMessage(`APoint-ms-sql: ${reason ?? 'apply changes on a read-write connection.'}`);
   });
 
   return { docs, tracker, results };

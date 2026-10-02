@@ -11,8 +11,9 @@ using Mssql.McpServer.Scripting;
 namespace Mssql.McpServer;
 
 /// <summary>
-/// The VS Code extension's query-window runner. Deliberately not an <see cref="McpServerToolTypeAttribute"/> class:
-/// <c>WithToolsFromAssembly</c> must not list it to agents; Program registers it only when MSSQL_SCRIPT_RUNNER=true.
+/// The VS Code extension's private tools: the query-window runner (<c>run_script</c>) and the DDL history
+/// (<c>ddl_history</c>). Deliberately not an <see cref="McpServerToolTypeAttribute"/> class: <c>WithToolsFromAssembly</c>
+/// must not list them to agents; Program registers them only when MSSQL_SCRIPT_RUNNER=true.
 /// </summary>
 public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, ILogger<ScriptRunnerTools> logger)
 {
@@ -70,6 +71,88 @@ public sealed class ScriptRunnerTools(ISqlConnectionFactory connectionFactory, I
                 logger.LogError(ex, "{Tool} failed: {Message}", ToolNames.RunScript, ex.Message);
                 return new DbOperationResult(success: false, error: ex.Message);
             }
+        }
+    }
+
+    [McpServerTool(
+        Name = ToolNames.DdlHistory,
+        Title = "DDL History",
+        ReadOnly = false,
+        Idempotent = true,
+        Destructive = false),
+        Description("Internal tool of the MSSQL-MCP editor extension: per-database DDL history from dbo.DDL_AuditLog (filled by the DDL_Audit database trigger). action: status | install | list | get. install creates only the missing table and trigger, never changes existing ones, and is refused on read-only connections.")]
+    public async Task<DbOperationResult> DdlHistory(
+        [Description("status, install, list (needs name) or get (needs id).")] string action,
+        [Description("list: schema of the object; entries without a schema are included too.")] string? schema = null,
+        [Description("list: object name.")] string? name = null,
+        [Description("get: the audit entry ID.")] long? id = null,
+        [Description("list: maximum entries, newest first (default 100, clamped to 1..500).")] int top = DdlAudit.DefaultTop,
+        [Description(Tools.ConnectionParamDescription)] string? connection = null,
+        CancellationToken cancellationToken = default)
+    {
+        var verb = action?.Trim().ToLowerInvariant();
+        if (verb is not ("status" or "install" or "list" or "get"))
+        {
+            return new DbOperationResult(success: false, error: "action must be status, install, list or get.");
+        }
+
+        name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        schema = string.IsNullOrWhiteSpace(schema) ? null : schema.Trim();
+        if (verb == "list" && name is null)
+        {
+            return new DbOperationResult(success: false, error: "list requires name.");
+        }
+
+        if (verb == "get" && id is null)
+        {
+            return new DbOperationResult(success: false, error: "get requires id.");
+        }
+
+        // Unrouted calls (no profile) are treated as read-only, like run_script.
+        var profile = CurrentConnection.Value;
+        var readOnly = profile?.ReadOnly ?? true;
+        if (verb == "install" && readOnly)
+        {
+            return new DbOperationResult(
+                success: false,
+                error: $"Connection '{profile?.Name}' is read-only; the DDL history table and trigger can only be created on a read/write connection.");
+        }
+
+        try
+        {
+            var conn = await connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using (conn.ConfigureAwait(false))
+            {
+                switch (verb)
+                {
+                    case "status":
+                        return new DbOperationResult(success: true, data: await DdlAudit.GetStatusAsync(conn, readOnly, cancellationToken).ConfigureAwait(false));
+                    case "install":
+                        return new DbOperationResult(success: true, data: await DdlAudit.InstallAsync(conn, cancellationToken).ConfigureAwait(false));
+                    case "list":
+                        var entries = await DdlAudit
+                            .ListAsync(conn, schema, name!, top, cancellationToken)
+                            .ConfigureAwait(false);
+                        return entries is null
+                            ? new DbOperationResult(success: false, error: DdlAudit.NotInstalledError)
+                            : new DbOperationResult(success: true, data: entries);
+                    default:
+                        var (tableExists, command) = await DdlAudit.GetAsync(conn, id!.Value, cancellationToken).ConfigureAwait(false);
+                        if (!tableExists)
+                        {
+                            return new DbOperationResult(success: false, error: DdlAudit.NotInstalledError);
+                        }
+
+                        return command is null
+                            ? new DbOperationResult(success: false, error: $"No DDL history entry with id {id}.")
+                            : new DbOperationResult(success: true, data: command);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "{Tool} {Action} failed: {Message}", ToolNames.DdlHistory, verb, ex.Message);
+            return new DbOperationResult(success: false, error: ex.Message);
         }
     }
 }

@@ -33,7 +33,7 @@ export function editorRunState(assoc: QueryAssociation | undefined, profile: Con
     return {
       connected: false, canRun: false, blockedReadOnly: false,
       statusText: '$(database) Connect',
-      tooltip: 'MSSQL-MCP: no connection. Click to choose one.',
+      tooltip: 'APoint-ms-sql: no connection. Click to choose one.',
     };
   }
   if (!profile) {
@@ -41,14 +41,14 @@ export function editorRunState(assoc: QueryAssociation | undefined, profile: Con
     return {
       connected: true, canRun: false, blockedReadOnly: false,
       statusText: `$(database) ${assoc.connection}`,
-      tooltip: `MSSQL-MCP: ${assoc.connection} - connection was removed. ${CLICK}`,
+      tooltip: `APoint-ms-sql: ${assoc.connection} - connection was removed. ${CLICK}`,
       reason,
     };
   }
   const target = profile.auth === 'raw' ? 'connection string' : `${profile.server}/${profile.database}`;
   const mode = profile.readOnly ? 'read-only' : 'read-write';
   const statusText = `$(database) ${profile.name}${profile.readOnly ? ' $(lock)' : ''}`;
-  const head = `MSSQL-MCP: ${profile.name} - ${target} - ${mode}`;
+  const head = `APoint-ms-sql: ${profile.name} - ${target} - ${mode}`;
   if (!profile.open) {
     return {
       connected: true, canRun: false, blockedReadOnly: false, statusText,

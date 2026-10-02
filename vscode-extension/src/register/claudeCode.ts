@@ -2,7 +2,7 @@ import { exec, execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { McpEntry } from './jsonMerge';
-import { SERVER_KEY } from './naming';
+import { LEGACY_SERVER_KEY, SERVER_KEY } from './naming';
 
 export interface ExecResult { code: number | 'ENOENT' | 'EINVAL' | 'ERROR'; stderr: string }
 export type Runner = (file: string, args: string[], opts: { shell: boolean }) => Promise<ExecResult>;
@@ -18,6 +18,11 @@ const CMD_UNSAFE = /[%^&|<>!\r\n\0]/;
 
 export function addJsonArgs(entry: McpEntry): string[] {
   return ['mcp', 'add-json', '--scope', 'user', SERVER_KEY, JSON.stringify({ type: 'stdio', ...entry })];
+}
+
+/** `claude mcp remove --scope user <key>`; defaults to the key earlier versions registered. */
+export function removeArgs(key: string = LEGACY_SERVER_KEY): string[] {
+  return ['mcp', 'remove', '--scope', 'user', key];
 }
 
 /**
@@ -75,7 +80,8 @@ const NOT_FOUND = (r: ExecResult) => r.code === 'ENOENT' || r.code === 'EINVAL' 
  */
 export async function registerClaudeCode(entry: McpEntry, run: Runner = defaultRunner, find: () => string | undefined = findClaude): Promise<ClaudeCodeOutcome> {
   const add = addJsonArgs(entry);
-  const remove = ['mcp', 'remove', '--scope', 'user', SERVER_KEY];
+  const remove = removeArgs(SERVER_KEY);
+  const removeLegacy = removeArgs(LEGACY_SERVER_KEY);
   const file = find();
   if (!file) return { status: 'unavailable', reason: 'the claude CLI was not found on PATH' };
   const shell = /\.(cmd|bat)$/i.test(file);
@@ -86,7 +92,8 @@ export async function registerClaudeCode(entry: McpEntry, run: Runner = defaultR
 
   const probe = await attempt(remove);
   if (NOT_FOUND(probe)) return { status: 'unavailable', reason: 'the claude CLI could not be started' };
-  // `remove` failing (server not registered yet) is expected and ignored.
+  // `remove` failing (server not registered yet) is expected and ignored, for the legacy key too.
+  await attempt(removeLegacy);
   const res = await attempt(add);
   if (NOT_FOUND(res)) return { status: 'unavailable', reason: 'the claude CLI could not be started' };
   return res.code === 0 ? { status: 'registered' } : { status: 'failed', message: res.stderr.trim() || `claude exited with ${String(res.code)}` };

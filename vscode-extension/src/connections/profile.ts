@@ -12,6 +12,11 @@ export interface ConnectionProfile {
   encrypt: 'mandatory' | 'optional' | 'strict';
   trustServerCertificate: boolean;
   rawConnectionString?: string;
+  /**
+   * Offer the DDL history (dbo.DDL_AuditLog + the DDL_Audit database trigger) for this connection's objects; a profile
+   * without it is treated as false. Extension-only: not part of the agent server env nor of its definition version.
+   */
+  ddlHistory?: boolean;
 }
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -55,7 +60,7 @@ export function buildConnectionString(p: ConnectionProfile, password: string | u
     `Initial Catalog=${quote(p.database)}`,
     `Encrypt=${p.encrypt === 'optional' ? 'False' : p.encrypt === 'strict' ? 'Strict' : 'True'}`,
     `Trust Server Certificate=${p.trustServerCertificate ? 'True' : 'False'}`,
-    'Application Name=MSSQL-MCP',
+    'Application Name=APoint-ms-sql',
   ];
   switch (p.auth) {
     case 'windows': parts.push('Integrated Security=True'); break;
