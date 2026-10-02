@@ -18,7 +18,9 @@ public interface ISqlConnectionFactory
     /// <summary>
     /// Opens a connection outside the pool (<c>Pooling=false</c>), so it is a new session that no earlier caller's
     /// session state (isolation level, application role, EXECUTE AS) can reach, and closing it ends the session.
-    /// Only for <c>run_script</c>, which runs arbitrary session-level statements. The caller owns and disposes it.
+    /// Used by <c>run_script</c>, which runs arbitrary session-level statements. The language service does not use it:
+    /// <see cref="LanguageService.LanguageServiceCache"/> opens its own unpooled SMO session from the routed profile.
+    /// The caller owns and disposes it.
     /// </summary>
     Task<SqlConnection> GetOpenUnpooledConnectionAsync(CancellationToken cancellationToken);
 }

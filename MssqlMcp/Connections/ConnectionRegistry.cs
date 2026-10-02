@@ -6,6 +6,16 @@ public sealed class ConnectionResolutionException(string message) : InvalidOpera
 
 public enum CloseResult { NotFound, NotOpen, LastOpen, Closed }
 
+/// <summary>What happened to a connection: closed (configured profile), removed (ad-hoc closed), or replaced (ad-hoc re-registered).</summary>
+public enum ConnectionChangeKind { Closed, Removed, Replaced }
+
+public sealed class ConnectionChangedEventArgs(string name, ConnectionChangeKind kind) : EventArgs
+{
+    public string Name { get; } = name;
+
+    public ConnectionChangeKind Kind { get; } = kind;
+}
+
 public sealed record ConnectionStatus(
     string Name, bool IsOpen, bool ReadOnly, bool InsightsEnabled,
     ConnectionSource Source, string DataSource, string? Database);
@@ -27,6 +37,12 @@ public sealed class ConnectionRegistry
             _entries[p.Name] = (p, true);
         }
     }
+
+    /// <summary>
+    /// Raised after a connection is closed, removed, or (ad-hoc) replaced, outside the registry lock. Used to drop caches
+    /// keyed by connection name. Handler exceptions are swallowed so they cannot undo or break the state change.
+    /// </summary>
+    public event EventHandler<ConnectionChangedEventArgs>? Changed;
 
     public int Count
     {
@@ -179,6 +195,7 @@ public sealed class ConnectionRegistry
         if (replaced is not null)
         {
             ClearPoolQuietly(replaced.ConnectionString);
+            RaiseChanged(replaced.Name, ConnectionChangeKind.Replaced);
         }
 
         return ToStatus(stored, open: true);
@@ -228,7 +245,30 @@ public sealed class ConnectionRegistry
         }
 
         ClearPoolQuietly(profile.ConnectionString);
+        RaiseChanged(profile.Name, profile.Source == ConnectionSource.Adhoc ? ConnectionChangeKind.Removed : ConnectionChangeKind.Closed);
         return CloseResult.Closed;
+    }
+
+    private void RaiseChanged(string name, ConnectionChangeKind kind)
+    {
+        var handlers = Changed;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        var args = new ConnectionChangedEventArgs(name, kind);
+        foreach (var handler in handlers.GetInvocationList().Cast<EventHandler<ConnectionChangedEventArgs>>())
+        {
+            try
+            {
+                handler(this, args);
+            }
+            catch (Exception)
+            {
+                // A subscriber (a cache) must not turn a successful close into a failed tool call.
+            }
+        }
     }
 
     private static void ClearPoolQuietly(string connectionString)

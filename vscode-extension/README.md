@@ -7,6 +7,7 @@ SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles th
 - **DDL scripts**: SSMS-style scripts for every object. Tables, indexes, foreign keys, triggers, types and security objects open read-only.
 - **Editing views, procedures and functions**: their DDL opens as an editable document bound to its connection; **Run** (F5) applies it to the database.
 - **Query windows**: New Query on a connection, run with F5 (the selection or the whole document) and cancel.
+- **IntelliSense**: SSMS-style completion, hover and signature help in SQL editors bound to a connection (Microsoft SqlParser, in the bundled server); **Ctrl+Shift+R** refreshes its cache.
 - **Results panel**: one grid per result set and a Messages tab, kept on your machine.
 - **Data grid** (Data View and Results): one-line rows, resizable and auto-fitting columns and rows, a copy button on every cell, and column sort.
 - **Agent server and registration**: VS Code agent mode and Cursor get the MCP server automatically; Cursor CLI, Claude Desktop and Claude Code with one command.
@@ -147,6 +148,20 @@ The object explorer never uses the agent's server process. It starts its own pri
 - A running query is never killed by a connection change: the runner process is restarted for new runs, and the old one ends when its last run finishes.
 - DDL views (`mssql-ddl:` documents) are never bound to a connection.
 
+## IntelliSense
+
+SQL editors bound to an open connection (query windows, editable object scripts, and any SQL file after **Change Connection**) get completion, hover and signature help from the bundled server, which uses Microsoft SqlParser, the engine behind SSMS and Azure Data Studio IntelliSense. Unbound SQL editors get nothing from this extension.
+
+- **What works**: tables and views after `FROM` / `JOIN`, `alias.` columns, schema-qualified names, CTE and derived-table columns, variables, built-in functions, procedure parameters after `EXEC proc ` (`@x = `), and keywords. Completion opens on `.`, space, `(`, `,`, `@` and `[`, or with **Ctrl+Space**. Hover shows an object's type (for example `column a(int, null)`). Signature help opens on `(` and `,` for built-in functions and procedures.
+- **First load**: the server reads the database's metadata the first time it is needed, and the extension starts that in the background as soon as a window is bound (New Query, an editable script, Change Connection) or a bound tab becomes active, at most once per connection every 5 minutes. A request waits for it at most 2 seconds: until it is ready, the list has keywords only and the status bar says "APoint-ms-sql: loading IntelliSense for <database>…". The list then fills in as you keep typing.
+- **Refresh IntelliSense Cache**: after DDL in another session or tool, use the refresh button in the editor title, the editor's right-click menu, the command palette, or **Ctrl+Shift+R**. It drops the cache for that connection and database and reloads it, and says "IntelliSense cache refreshed for <server>/<database>". In an editor bound to a connection, Ctrl+Shift+R replaces VS Code's **Refactor…** (the SSMS shortcut); everywhere else, Ctrl+Shift+R keeps its usual meaning. **Refactor…** stays available from the command palette.
+- **Typing**: requests while typing wait 150 ms and are cancelled on the server when you keep typing; Ctrl+Space asks at once.
+- **Database context**: suggestions come from the connection's database. A `USE other_db` in the script is **not** followed.
+- **Other SQL extensions**: this extension does not turn other SQL completion providers off (for example the mssql extension). VS Code merges every provider's suggestions into one list, so you may see an item twice. Cursor Tab (AI suggestions) is not affected.
+- **Turn it off** with the setting `msSqlMcp.intellisense.enabled` (`false`): no requests and no background loading.
+- It only reads metadata and works on read-only connections. The document text is sent to the bundled server process on your machine only, and the Output channel never logs it.
+- **Licence**: SqlParser is not open source. It is distributed under the SQL Server Shared Management Objects (SMO) License Terms (see `THIRD-PARTY-NOTICES.txt` and [License](#license)).
+
 ## Editing views, procedures and functions
 
 Show DDL on a view, stored procedure, table-valued function or scalar function opens its script as an editable `mssql-sql:` document bound to that connection (the status bar shows it), instead of a read-only document. Its tab is titled `<schema>.<name> - <server> - <database>` (see Query window).
@@ -191,6 +206,7 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 | `msSqlMcp.dataViewRows` | `200` | Data View's initial TOP (1-10000); the panel's TOP box changes it per view. |
 | `msSqlMcp.export.neutralizeFormulas` | `true` | Export CSV prefixes text values that start with `=` `+` `-` `@` (or a tab / CR) with `'` so spreadsheets do not run them as formulas. |
 | `msSqlMcp.query.maxRows` | `1000` | Rows kept per result set when a query window runs (1-10000); further rows are only counted. |
+| `msSqlMcp.intellisense.enabled` | `true` | SQL IntelliSense in editors bound to an open connection (see [IntelliSense](#intellisense)). |
 | `msSqlMcp.serverPath` | bundled | Path to a different `MssqlMcp.exe`. |
 | `msSqlMcp.logLevel` | `error` (installed) | Output channel verbosity: `off`, `error`, `warn`, `info`, `debug`, `trace`. |
 
@@ -200,9 +216,11 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 - **The data view and query results stay on your machine.** Rows are shown in the editor and in the Results panel and are never sent anywhere automatically. They leave the grid only when you copy them (a cell, a row, a selection, or Ctrl+A) or export them to a CSV file, which asks for confirmation every time. The Output channel logs only row counts, never values.
 - **Cell viewer tabs are normal editor tabs**; AI assistants in your editor may read open tabs as context. Close viewer tabs holding client personal data before using AI chat.
 - **Agents see what they query.** Data returned by `read_data` goes to the AI model the agent uses. Use read-only connections and least-privilege logins for databases with personal data.
-- **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged). Use `trace` only for troubleshooting and clear the channel afterwards.
+- **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged; for IntelliSense only the document length and item counts). Use `trace` only for troubleshooting and clear the channel afterwards.
 - Passwords are never written to settings, logs, the Output channel, tree labels or DDL documents.
 
 ## License
 
 MIT. See `LICENSE`.
+
+The bundled `MssqlMcp.exe` includes Microsoft SqlParser for the server's IntelliSense tool (`language_service`). SqlParser is not open source: it is distributed under the SQL Server Shared Management Objects (SMO) License Terms, reproduced in `THIRD-PARTY-NOTICES.txt`, together with the MIT notices for SMO, SmoMetadataProvider and the code ported from microsoft/sqltoolsservice.

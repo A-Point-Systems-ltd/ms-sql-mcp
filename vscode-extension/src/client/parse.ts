@@ -101,10 +101,22 @@ export function errorText(payload: unknown): string | undefined {
 /**
  * What trace logging may record for a tool result. read_data and run_script rows can hold client personal data, so
  * only counts are kept for them (read_data: row count and truncation flag; run_script: result sets, returned rows,
- * messages and the error flag; ddl_history list / get: the entry count, or the id and command text length). Other
+ * messages and the error flag; ddl_history list / get: the entry count, or the id and command text length;
+ * language_service: item counts and the cache state). Other
  * results are returned unchanged.
  */
 export function traceablePayload(tool: string, payload: unknown): unknown {
+  if (tool === 'language_service') {
+    // Completion items, hover text and signatures name the client's objects: counts and the cache state only.
+    const data = pick(payload, 'data');
+    const items = pick(data, 'items');
+    if (Array.isArray(items)) {
+      return { items: items.length, isIncomplete: pick(data, 'isIncomplete') === true, cacheState: pick(data, 'cacheState') };
+    }
+    const cacheState = pick(data, 'cacheState');
+    if (cacheState !== undefined) return { cacheState };
+    return { data: data === null || data === undefined ? null : 'present' };
+  }
   if (tool === 'run_script') {
     const data = pick(payload, 'data');
     const sets = asArray(pick(data, 'resultSets'));
@@ -131,6 +143,16 @@ export function traceablePayload(tool: string, payload: unknown): unknown {
   }
   const rows = pick(payload, 'data');
   return { rowCount: Array.isArray(rows) ? rows.length : 0, truncated: pick(payload, 'truncated') === true };
+}
+
+/**
+ * What trace logging may record for a tool call's arguments. language_service sends the whole document on every
+ * keystroke: only its length is kept. Other arguments are returned unchanged.
+ */
+export function traceableArguments(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (tool !== 'language_service' || !('text' in args)) return args;
+  const { text, ...rest } = args;
+  return { action: rest.action, textLength: typeof text === 'string' ? text.length : 0, ...rest };
 }
 
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);

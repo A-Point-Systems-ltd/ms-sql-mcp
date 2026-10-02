@@ -34,6 +34,7 @@ public sealed class McpProtocolTests
         Assert.Equal(23, tools.Count);
         Assert.DoesNotContain(tools, t => t.Name == ToolNames.RunScript);
         Assert.DoesNotContain(tools, t => t.Name == ToolNames.DdlHistory);
+        Assert.DoesNotContain(tools, t => t.Name == ToolNames.LanguageService);
         Assert.Equal(ToolNames.All.OrderBy(n => n, StringComparer.Ordinal), tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
         foreach (var tool in tools)
         {
@@ -255,7 +256,7 @@ public sealed class McpProtocolTests
     }
 
     /// <summary>
-    /// MSSQL_SCRIPT_RUNNER=true adds run_script and ddl_history (25 tools); run_script runs batches on a read/write profile and refuses writes
+    /// MSSQL_SCRIPT_RUNNER=true adds run_script, ddl_history and language_service (26 tools); run_script runs batches on a read/write profile and refuses writes
     /// on a read-only one. A scratch database stands in for CONNECTION_STRING so a regression cannot leave a table behind.
     /// </summary>
     [SkippableFact]
@@ -266,7 +267,7 @@ public sealed class McpProtocolTests
         await using var client = await StartClientAsync(TwoProfiles(cs), insights: false, scriptRunner: true);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(25, tools.Count);
+        Assert.Equal(26, tools.Count);
         var runScript = Assert.Single(tools, t => t.Name == ToolNames.RunScript);
         Assert.True(runScript.ProtocolTool.Annotations?.DestructiveHint);
         Assert.Single(tools, t => t.Name == ToolNames.DdlHistory);
@@ -319,6 +320,47 @@ public sealed class McpProtocolTests
             Assert.False(string.IsNullOrWhiteSpace(data.GetProperty("serverName").GetString()));
             Assert.False(string.IsNullOrWhiteSpace(data.GetProperty("databaseName").GetString()));
             Assert.False(data.TryGetProperty("warnings", out _));
+        }
+    }
+
+    /// <summary>
+    /// language_service over stdio, on a read-only profile: SqlParser and SMO load inside the server exe and a completion
+    /// returns the scratch table's columns. Set MSSQL_MCP_TEST_EXE to run this against a single-file publish.
+    /// </summary>
+    [SkippableFact]
+    public async Task Language_service_completion_works_through_the_server_exe()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+        await ScratchDatabases.ExecAsync(cs, "CREATE TABLE dbo.T (a int, b nvarchar(10));");
+        await using var client = await StartClientAsync(TwoProfiles(cs), insights: false, scriptRunner: true);
+
+        var tool = Assert.Single(await client.ListToolsAsync(), t => t.Name == ToolNames.LanguageService);
+        Assert.True(tool.ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.DoesNotContain("cache", tool.ProtocolTool.InputSchema.GetRawText(), StringComparison.OrdinalIgnoreCase);
+
+        // The first call may hit the 2 s binding timeout on a cold cache; warm, then poll until the cache is ready.
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (true)
+        {
+            var result = await client.CallToolAsync(
+                ToolNames.LanguageService,
+                new Dictionary<string, object?> { ["action"] = "completion", ["text"] = "SELECT t. FROM dbo.T t", ["line"] = 1, ["column"] = 10, ["connection"] = "ro" });
+            using var doc = System.Text.Json.JsonDocument.Parse(Text(result));
+            var root = doc.RootElement;
+            Assert.True(root.GetProperty("success").GetBoolean(), Text(result));
+            var data = root.GetProperty("data");
+            if (data.GetProperty("cacheState").GetString() == "warm")
+            {
+                var items = data.GetProperty("items").EnumerateArray().ToList();
+                Assert.Contains(items, i => i.GetProperty("label").GetString() == "a" && i.GetProperty("kind").GetString() == "column");
+                Assert.Contains(items, i => i.GetProperty("label").GetString() == "b");
+                Assert.False(data.GetProperty("isIncomplete").GetBoolean());
+                break;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline, "language_service never became warm: " + Text(result));
+            await Task.Delay(250);
         }
     }
 
@@ -473,6 +515,13 @@ public sealed class McpProtocolTests
 
     private static string? FindServerExe()
     {
+        // Lets a run target a published single-file exe instead of the build output.
+        var overridePath = Environment.GetEnvironmentVariable("MSSQL_MCP_TEST_EXE");
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            return File.Exists(overridePath) ? overridePath : null;
+        }
+
         // Tests run from MssqlMcp.Tests/bin/<Configuration>/net10.0/; the server builds next door.
         var testBin = new DirectoryInfo(AppContext.BaseDirectory);
         var configuration = testBin.Parent?.Name ?? "Debug";

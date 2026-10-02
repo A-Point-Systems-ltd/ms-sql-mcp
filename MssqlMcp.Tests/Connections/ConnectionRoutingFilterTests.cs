@@ -56,6 +56,7 @@ public sealed class ConnectionRoutingFilterTests
     [InlineData(ToolNames.ExecuteSql, true)]
     [InlineData(ToolNames.RunScript, false)]
     [InlineData(ToolNames.DdlHistory, false)]
+    [InlineData(ToolNames.LanguageService, false)]
     public void Only_known_data_tools_are_routed(string tool, bool routed) =>
         Assert.Equal(routed, ConnectionRoutingFilter.IsRouted(tool));
 
@@ -66,6 +67,8 @@ public sealed class ConnectionRoutingFilterTests
         Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.RunScript, scriptRunnerEnabled: true));
         Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.DdlHistory, scriptRunnerEnabled: false));
         Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.DdlHistory, scriptRunnerEnabled: true));
+        Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.LanguageService, scriptRunnerEnabled: false));
+        Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.LanguageService, scriptRunnerEnabled: true));
         Assert.True(ConnectionRoutingFilter.IsRouted(ToolNames.ReadData, scriptRunnerEnabled: true));
         Assert.False(ConnectionRoutingFilter.IsRouted(ToolNames.ListConnections, scriptRunnerEnabled: true));
     }
@@ -91,6 +94,16 @@ public sealed class ConnectionRoutingFilterTests
         Assert.DoesNotContain(ToolNames.DdlHistory, ToolNames.All);
         Assert.DoesNotContain(ToolNames.DdlHistory, ToolNames.WriteTools);
         Assert.Null(ConnectionRoutingFilter.Route(Multi(), ToolNames.DdlHistory, "ro", out var p));
+        Assert.True(p!.ReadOnly);
+    }
+
+    [Fact]
+    public void Language_service_is_an_extension_only_tool_allowed_on_read_only_profiles()
+    {
+        Assert.Contains(ToolNames.LanguageService, ToolNames.ExtensionOnlyTools);
+        Assert.DoesNotContain(ToolNames.LanguageService, ToolNames.All);
+        Assert.DoesNotContain(ToolNames.LanguageService, ToolNames.WriteTools);
+        Assert.Null(ConnectionRoutingFilter.Route(Multi(), ToolNames.LanguageService, "ro", out var p));
         Assert.True(p!.ReadOnly);
     }
 
