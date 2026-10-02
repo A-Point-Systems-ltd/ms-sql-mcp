@@ -348,10 +348,10 @@
         },
         "msSqlMcp.dataViewRows": {
           "type": "number",
-          "default": 500,
+          "default": 200,
           "minimum": 1,
           "maximum": 10000,
-          "description": "Rows loaded by Data View."
+          "description": "Rows Data View loads first (its TOP; the panel's TOP box changes it per view)."
         },
         "msSqlMcp.query.maxRows": {
           "type": "number",

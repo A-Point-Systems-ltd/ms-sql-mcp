@@ -137,9 +137,11 @@ test('key and id components are escaped: "|" and "." inside names cannot collide
   assert.equal(id('a|b', 'c').split('|').length, id('dbo', 'T').split('|').length);
 });
 
-test('data view request asks for one extra row so the server can report truncation', () => {
-  assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'Table', schema: 'dbo', name: 'T' }, 500),
-    { sql: 'SELECT TOP (501) * FROM [dbo].[T]', maxRows: 500 });
+test('data view request: one run_script SELECT with one extra row so the server can report truncation', () => {
+  assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'Table', schema: 'dbo', name: 'T' }, 200),
+    { script: 'SELECT TOP (201) * FROM [dbo].[T]', maxRows: 200 });
   assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'View', schema: 's', name: 'v]' }, 1),
-    { sql: 'SELECT TOP (2) * FROM [s].[v]]]', maxRows: 1 });
+    { script: 'SELECT TOP (2) * FROM [s].[v]]]', maxRows: 1 });
+  assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'Table', schema: 'dbo', name: 'T' }, 10, { column: 'Na]me', type: 'nvarchar', dir: 'desc' }),
+    { script: 'SELECT TOP (11) * FROM [dbo].[T] ORDER BY [Na]]me] DESC', maxRows: 10 });
 });

@@ -8,6 +8,7 @@ SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles th
 - **Editing views, procedures and functions**: their DDL opens as an editable document bound to its connection; **Run** (F5) applies it to the database.
 - **Query windows**: New Query on a connection, run with F5 (the selection or the whole document) and cancel.
 - **Results panel**: one grid per result set and a Messages tab, kept on your machine.
+- **Data grid** (Data View and Results): one-line rows, resizable and auto-fitting columns and rows, a copy button on every cell, and column sort.
 - **Agent server and registration**: VS Code agent mode and Cursor get the MCP server automatically; Cursor CLI, Claude Desktop and Claude Code with one command.
 - **Read-only semantics**: a read-only connection is enforced by the server for agents, the explorer and query windows alike. An optional **AI Insights** layer caches what agents learn about your schema.
 
@@ -38,7 +39,12 @@ The **APoint-ms-sql** view in the activity bar lists your connections. Each open
 ```
 
 - **Show DDL** (inline icon, or a click on the object) opens the object's script. Views, stored procedures and functions open as an editable document (see [Editing views, procedures and functions](#editing-views-procedures-and-functions)); everything else opens in a read-only editor. Scripts are written from the catalog views, SSMS style: `CREATE TABLE` with keys, defaults, checks, indexes, foreign keys and the description; `CREATE OR ALTER` (SQL Server 2016 SP1+) or `ALTER` for programmable objects. Anything the script cannot express is listed as `-- WARNING:` lines at the top. Passwords, password hashes and SIDs are never scripted: SQL logins and application roles get the placeholder `N'<password not scripted - set before running>'`.
-- **Data View** (inline icon on tables and views) shows the first rows in a grid. The row count is the `msSqlMcp.dataViewRows` setting (default 500, max 10000); when there are more rows, the view says it is truncated.
+- **Data View** (inline icon on tables and views) shows the first rows in a grid: `SELECT TOP (n) *` from the object, run through the query runner (`run_script`, a single SELECT, which read-only connections allow too), so the column names and types show even for an empty table. n starts at the `msSqlMcp.dataViewRows` setting (default 200, max 10000); change it in the **TOP** box and press **Reload** or Enter (an invalid value shows an error and runs nothing). When there are more rows, the view says "first n rows (truncated)". Click a column header to sort on the server (ascending, descending, then unsorted; ▲ / ▼ shows the direction); TOP and Reload keep the sort. Columns of type `text`, `ntext`, `image`, `xml`, `geography`, `geometry`, `hierarchyid`, `sql_variant` and CLR types cannot be sorted (their header tooltip says so). The panel is reused: it keeps the object, TOP and sort until you open Data View on another object. Errors (for example a closed connection) show in the panel. The SQL contains only the bracket-quoted object and column names and the TOP number, never typed text.
+- **The data grid** (Data View and the Results panel):
+  - Each row is one line of text; long values end in "…" and the full value (up to 2000 characters) is in the cell's tooltip. NULL is shown in italics, numeric columns are right-aligned.
+  - Drag the right edge of a column header to resize the column (at least 40 px); double-click it to fit the column to its widest value (up to 600 px). On load, columns are fitted to their first 200 rows, up to 300 px.
+  - Drag the bottom edge of a row number to resize the row; double-click it to fit the row to its content (wrapped, up to 400 px; taller cells scroll), and double-click again to return it to one line. Sizes reset when new data loads.
+  - Hover a cell for its **copy** button: it copies that one value to the clipboard (NULL as empty text, binary as its `0x…` text, long values in full as loaded) and the status bar shows "Copied". There is no copy-all or export.
 - **Filter** shows only objects whose name contains the text you type (case-insensitive).
 - Closed connections stay in the list; right-click **Open** to browse them again.
 
@@ -127,6 +133,7 @@ The object explorer never uses the agent's server process. It starts its own pri
 - Values are shown exactly as SQL Server holds them: `decimal`, `numeric`, `money` and large `bigint` values arrive as exact text (not rounded to a JavaScript number) and are right-aligned like other numbers; binary values show SSMS-style as `0x…` hex.
 - Bindings are kept per workspace; a query window or object script loses its binding when its tab is closed (one closed with unsaved edits keeps it until the next start).
 - **Run** with F5 or the play button in the editor title runs the selection, or the whole document when nothing is selected. Results appear in the **APoint-ms-sql Results** panel at the bottom: a **Results** tab with one grid per result set and a **Messages** tab (errors in red; click a message with a line to jump to it). **Cancel** (the stop button in the editor title or in the panel) stops the run.
+- The result grids have the data grid's resize, auto-fit and copy button. A header click sorts that result set locally, over the rows already loaded (ascending, descending, then the original order; stable, NULLs first when ascending, numbers by value); the caption then says "sorted locally (loaded rows only)".
 - **F5 runs SQL** in an editor bound to a connection, instead of starting the debugger. While a debug session is running, F5 keeps its debugger meaning (Continue).
 - With split editors, each editor group's title shows Run / Cancel for its own document, and the buttons act on that document even when another group is active.
 - **Cancel, and closing the tab of a running query, stop the run on the server**: the running statement is cancelled and a transaction the script left open is rolled back. They do not undo work already done: statements that completed outside a transaction, and transactions the script already committed (for example earlier batches of a multi-batch script), stay applied.
@@ -174,7 +181,7 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 |---------|---------|-------------|
 | `msSqlMcp.insights` | `true` | AI Insights layer for the agent server (the explorer never uses it). |
 | `msSqlMcp.allowAdhocConnections` | `false` | Lets agents open ad-hoc connections from a raw connection string. The server still refuses Windows / Entra identity, writable and file-attach connections unless the operator enables them (see the server README). |
-| `msSqlMcp.dataViewRows` | `500` | Rows loaded by Data View (1-10000). |
+| `msSqlMcp.dataViewRows` | `200` | Data View's initial TOP (1-10000); the panel's TOP box changes it per view. |
 | `msSqlMcp.query.maxRows` | `1000` | Rows kept per result set when a query window runs (1-10000); further rows are only counted. |
 | `msSqlMcp.serverPath` | bundled | Path to a different `MssqlMcp.exe`. |
 | `msSqlMcp.logLevel` | `error` (installed) | Output channel verbosity: `off`, `error`, `warn`, `info`, `debug`, `trace`. |
@@ -182,7 +189,7 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 ## Privacy
 
 - **Principal names are visible to agents.** Logins, users and roles are listed and scripted by the explorer and by the agent tools. They are often personal names (for example Active Directory accounts). Passwords, hashes and SIDs are never returned.
-- **The data view and query results are local only.** Rows are shown in the editor and in the Results panel and are not sent anywhere; there is no export, and the Output channel logs only row counts.
+- **The data view and query results are local only.** Rows are shown in the editor and in the Results panel and are not sent anywhere; there is no export or copy-all (the per-cell copy button copies one value to the clipboard), and the Output channel logs only row counts.
 - **Agents see what they query.** Data returned by `read_data` goes to the AI model the agent uses. Use read-only connections and least-privilege logins for databases with personal data.
 - **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged). Use `trace` only for troubleshooting and clear the channel afterwards.
 - Passwords are never written to settings, logs, the Output channel, tree labels or DDL documents.

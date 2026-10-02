@@ -1,128 +1,143 @@
 import * as vscode from 'vscode';
-import { GridTable, rowCountLabel } from './dataTable';
-import { escapeHtml, makeNonce } from './webviewUtil';
+import type { ServerProcessClient } from './client/serverProcessClient';
+import type { ObjectRef } from './explorer/catalog';
+import { dataViewRequest } from './explorer/treeModel';
+import { renderDataView } from './grid/gridHtml';
+import { DataViewOrder, SortDir, cellAt, copyText, isSortableType, parseDataViewMessage } from './grid/gridModel';
+import type { Logger } from './logger';
+import { RunScriptResultSet, parseRunScriptResult } from './query/runScript';
+import { makeNonce } from './webviewUtil';
+
+/** What the open Data View shows; kept until the panel is reused for another object (or closed). */
+interface DataViewSession {
+  ref: ObjectRef;
+  title: string;
+  top: number;
+  /** Server-side sort, by column name (the columns come back with every query). */
+  sort?: { column: string; dir: SortDir };
+  result?: RunScriptResultSet;
+  notes: string[];
+  error?: string;
+  /** Number of the latest query; an older query's answer is dropped. */
+  seq: number;
+}
 
 let panel: vscode.WebviewPanel | undefined;
+let session: DataViewSession | undefined;
+let runner: ServerProcessClient | undefined;
+let log: Logger | undefined;
 
 /**
- * Show rows in a reusable, read-only webview grid. Local only: rows can hold client personal data,
- * so the panel never sends them anywhere (no export, no network - see the CSP).
+ * Opens (or reuses) the Data View panel for a table or view and loads TOP `top` rows through the runner's
+ * run_script. Local only: rows can hold client personal data, so the panel never sends them anywhere (no export,
+ * no network - see the CSP); a copy click copies one cell, resolved here from the loaded result.
  */
-export function showDataPreview(objectName: string, connection: string, table: GridTable, truncated: boolean): void {
+export async function showDataView(ref: ObjectRef, top: number, deps: { runner: ServerProcessClient; log: Logger }): Promise<void> {
+  runner = deps.runner;
+  log = deps.log;
+  const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
+  session = { ref, title, top, notes: [], seq: 0 };
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'msSqlMcp.dataView',
-      `Data: ${objectName} (${connection})`,
+      panelTitle(session),
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
-      { enableScripts: true, retainContextWhenHidden: true },
+      { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
     panel.onDidDispose(() => {
       panel = undefined;
+      session = undefined;
     });
+    panel.webview.onDidReceiveMessage(onMessage);
   }
-  panel.title = `Data: ${objectName} (${connection})`;
-  panel.webview.html = renderHtml(objectName, table, truncated);
+  panel.title = panelTitle(session);
+  render(true);
   panel.reveal(panel.viewColumn ?? vscode.ViewColumn.Active);
+  await vscode.window.withProgress({ location: { viewId: 'msSqlMcp.explorer' }, title: `Loading ${title}` }, () => load());
 }
 
 export function disposeDataPanel(): void {
   panel?.dispose();
   panel = undefined;
+  session = undefined;
 }
 
-function renderHtml(objectName: string, table: GridTable, truncated: boolean): string {
-  const nonce = makeNonce();
-  const { columns, data } = table;
+const panelTitle = (s: DataViewSession): string => `Data: ${s.title} (${s.ref.connection})`;
 
-  const head = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
-  const body = data
-    .map((row) => {
-      const cells = row
-        .map((value) => {
-          if (value === null || value === undefined) {
-            return '<td class="null">NULL</td>';
-          }
-          const numeric = typeof value === 'number' || typeof value === 'bigint';
-          const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-          return `<td class="${numeric ? 'num' : ''}">${escapeHtml(text)}</td>`;
-        })
-        .join('');
-      return `<tr>${cells}</tr>`;
-    })
-    .join('');
+function render(loading = false): void {
+  if (!panel || !session) return;
+  const s = session;
+  const sortCol = s.sort && s.result ? s.result.columns.findIndex(c => c.name === s.sort!.column) : -1;
+  panel.webview.html = renderDataView({
+    objectName: s.title,
+    connection: s.ref.connection,
+    top: s.top,
+    loading,
+    ...(s.error !== undefined ? { error: s.error } : {}),
+    ...(s.result ? { result: { columns: s.result.columns, rows: s.result.rows, truncated: s.result.truncated } } : {}),
+    ...(sortCol >= 0 ? { sort: { col: sortCol, dir: s.sort!.dir } } : {}),
+    notes: s.notes,
+  }, makeNonce());
+}
 
-  const countLabel = rowCountLabel(data.length, truncated);
-  // Zero rows: no header (read_data returns no column names without rows; they are in the DDL).
-  const grid = data.length === 0 ? '' : `<table>
-      <thead><tr>${head}</tr></thead>
-      <tbody id="body">${body}</tbody>
-    </table>`;
-  const columnsLabel = data.length === 0 ? '' : ` · ${columns.length} column${columns.length === 1 ? '' : 's'}`;
+/** Runs the Data View query for the current session state and shows its result or error. */
+async function load(): Promise<void> {
+  const s = session;
+  if (!s || !runner) return;
+  const seq = ++s.seq;
+  const sortType = s.sort && s.result?.columns.find(c => c.name === s.sort!.column)?.type;
+  const order: DataViewOrder | undefined = s.sort && sortType !== undefined ? { column: s.sort.column, type: sortType, dir: s.sort.dir } : undefined;
+  let result: RunScriptResultSet | undefined;
+  let notes: string[] = [];
+  let error: string | undefined;
+  try {
+    const parsed = parseRunScriptResult(await runner.callResult(s.ref.connection, 'run_script', dataViewRequest(s.ref, s.top, order)));
+    const errors = parsed.messages.filter(m => m.kind === 'error').map(m => m.text);
+    notes = parsed.messages.filter(m => m.kind === 'warning').map(m => m.text);
+    result = parsed.resultSets[0];
+    if (errors.length || !result) error = errors.join('\n') || 'The query returned no result set.';
+    log?.info('dataView', `run_script on '${s.ref.connection}': ${result ? `${result.rows.length} row(s), ${result.columns.length} column(s)` : 'no result set'}`
+      + `${result?.truncated ? ' (truncated)' : ''}, ${errors.length} error(s)`);
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    log?.warn('dataView', `run_script on '${s.ref.connection}' failed: ${error}`);
+  }
+  // A newer query, another object or a closed panel: this answer is stale.
+  if (session !== s || seq !== s.seq) return;
+  s.result = error === undefined ? result : undefined;
+  s.notes = error === undefined ? notes : [];
+  s.error = error;
+  render();
+}
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>
-  body{margin:0;padding:0;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);
-       color:var(--vscode-foreground);background:var(--vscode-editor-background)}
-  .bar{position:sticky;top:0;z-index:3;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
-       padding:10px 14px;background:var(--vscode-editor-background);
-       border-bottom:1px solid var(--vscode-panel-border)}
-  .name{font-weight:600}
-  .meta{color:var(--vscode-descriptionForeground);font-size:12px}
-  input{flex:1;min-width:160px;max-width:320px;padding:4px 8px;
-        color:var(--vscode-input-foreground);background:var(--vscode-input-background);
-        border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:3px;
-        font-family:inherit;font-size:12px;outline:none}
-  input:focus{border-color:var(--vscode-focusBorder)}
-  .scroll{overflow:auto;max-height:calc(100vh - 46px)}
-  table{border-collapse:collapse;width:max-content;min-width:100%}
-  th,td{padding:4px 10px;border-bottom:1px solid var(--vscode-panel-border);
-        border-right:1px solid var(--vscode-panel-border);text-align:left;white-space:pre;
-        font-family:var(--vscode-editor-font-family),monospace;font-size:12px;max-width:420px;
-        overflow:hidden;text-overflow:ellipsis}
-  th{position:sticky;top:0;z-index:2;background:var(--vscode-editorWidget-background,#2224);
-     font-weight:600;font-family:var(--vscode-font-family)}
-  tbody tr:nth-child(even){background:var(--vscode-list-hoverBackground)}
-  tbody tr:hover{background:var(--vscode-list-activeSelectionBackground);
-                 color:var(--vscode-list-activeSelectionForeground)}
-  td.num{text-align:right;font-variant-numeric:tabular-nums}
-  td.null{color:var(--vscode-descriptionForeground);font-style:italic}
-  .hidden{display:none}
-</style>
-</head>
-<body>
-  <div class="bar">
-    <span class="name">${escapeHtml(objectName)}</span>
-    <span class="meta">${escapeHtml(countLabel)}${columnsLabel} · read-only</span>
-    <input id="filter" type="text" placeholder="Filter rows…" aria-label="Filter rows">
-    <span class="meta" id="shown"></span>
-  </div>
-  <div class="scroll">
-    ${grid}
-  </div>
-<script nonce="${nonce}">
-  (function () {
-    var input = document.getElementById('filter');
-    var rows = Array.prototype.slice.call(document.querySelectorAll('#body tr'));
-    var shown = document.getElementById('shown');
-    var total = rows.length;
-    function apply() {
-      var q = input.value.toLowerCase();
-      var count = 0;
-      for (var i = 0; i < rows.length; i++) {
-        var match = q === '' || rows[i].textContent.toLowerCase().indexOf(q) !== -1;
-        rows[i].classList.toggle('hidden', !match);
-        if (match) count++;
-      }
-      shown.textContent = q === '' ? '' : count + ' of ' + total + ' match';
+function onMessage(raw: unknown): void {
+  const s = session;
+  if (!s) return;
+  const message = parseDataViewMessage(raw, { rows: s.result?.rows.length ?? 0, cols: s.result?.columns.length ?? 0 });
+  if (!message) return;
+  switch (message.type) {
+    case 'copy': {
+      // Indexes only came from the webview; the value is resolved from the loaded result.
+      const text = copyText(cellAt(s.result!.rows, message.row, message.col));
+      vscode.env.clipboard.writeText(text).then(
+        () => { vscode.window.setStatusBarMessage('Copied', 2000); },
+        err => { void vscode.window.showWarningMessage(`APoint-ms-sql: copy failed: ${err instanceof Error ? err.message : String(err)}`); });
+      return;
     }
-    input.addEventListener('input', apply);
-  })();
-</script>
-</body>
-</html>`;
+    case 'sort': {
+      const column = s.result!.columns[message.col];
+      if (!isSortableType(column.type)) return;
+      s.sort = message.dir === 'none' ? undefined : { column: column.name, dir: message.dir };
+      void requery();
+      return;
+    }
+    case 'reload':
+      s.top = message.top;
+      void requery();
+      return;
+  }
+}
+
+function requery(): Thenable<void> {
+  return vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, () => load());
 }

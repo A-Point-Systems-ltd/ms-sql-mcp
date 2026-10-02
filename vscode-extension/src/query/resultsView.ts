@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { cellAt, copyText, parseResultsMessage } from '../grid/gridModel';
 import { makeNonce } from '../webviewUtil';
 import { ResultsState, renderResults } from './resultsHtml';
 import { editorLine } from './runScript';
@@ -32,7 +33,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     view.webview.options = { enableScripts: true, localResourceRoots: [] };
     this.disposeViewSubs();
     this.viewSubs = [
-      view.webview.onDidReceiveMessage((message: { type?: unknown; line?: unknown }) => this.onMessage(message)),
+      view.webview.onDidReceiveMessage((message: unknown) => this.onMessage(message)),
       view.onDidDispose(() => {
         if (this.view !== view) return;
         this.view = undefined;
@@ -95,15 +96,26 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     this.viewSubs = [];
   }
 
-  private onMessage(message: { type?: unknown; line?: unknown }): void {
+  private onMessage(raw: unknown): void {
     const key = this.shownKey;
     if (!key) return;
-    if (message?.type === 'cancel') {
+    const state = this.states.get(key);
+    const sets = state?.kind === 'done' ? state.result.resultSets : [];
+    const message = parseResultsMessage(raw, sets.map(s => ({ rows: s.rows.length, cols: s.columns.length })));
+    if (!message) return;
+    if (message.type === 'cancel') {
       this.onCancel(key);
       return;
     }
-    if (message?.type === 'reveal' && typeof message.line === 'number') {
-      const state = this.states.get(key);
+    if (message.type === 'copy') {
+      // Resolved from the stored result of the shown document; the webview only sent indexes.
+      const text = copyText(cellAt(sets[message.set].rows, message.row, message.col));
+      vscode.env.clipboard.writeText(text).then(
+        () => { vscode.window.setStatusBarMessage('Copied', 2000); },
+        err => { void vscode.window.showWarningMessage(`APoint-ms-sql: copy failed: ${err instanceof Error ? err.message : String(err)}`); });
+      return;
+    }
+    if (message.type === 'reveal') {
       if (state?.kind !== 'done') return;
       const line = editorLine(message.line, state.lineOffset);
       if (line === undefined) return;

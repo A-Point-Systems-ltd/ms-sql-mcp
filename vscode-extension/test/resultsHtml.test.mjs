@@ -86,20 +86,26 @@ test('values, column names, types, messages and the connection are HTML-escaped'
   assert.ok(!render({ kind: 'failed', connection: 'dev', error: evil }).includes('<script>alert'));
 });
 
-test('grid: NULL cells, numbers right-aligned, column type as header tooltip', () => {
+test('grid: NULL cells, numeric columns right-aligned, name and type as header tooltip', () => {
   const html = render(done(result({
     resultSets: [set({
       columns: [{ name: 'Id', type: 'int' }, { name: 'Name', type: 'nvarchar' }, { name: 'Amount', type: 'decimal' }, { name: '', type: 'int' }],
       rows: [[1, null, '12.50', 7]],
     })],
   })));
-  assert.match(html, /<th title="int">Id<\/th>/);
-  assert.match(html, /<th title="nvarchar">Name<\/th>/);
-  assert.match(html, /<th title="int">\(No column name\)<\/th>/);
-  assert.match(html, /<td class="null">NULL<\/td>/);
-  assert.match(html, /<td class="num">1<\/td>/);
-  // A decimal arrives as a string but is still a numeric column.
-  assert.match(html, /<td class="num">12\.50<\/td>/);
+  assert.match(html, /<th data-c="0" data-sort="" data-num="1" title="Id \(int\)"><span class="hl">Id<\/span>/);
+  assert.match(html, /<th data-c="1" data-sort="" title="Name \(nvarchar\)"><span class="hl">Name<\/span>/);
+  assert.match(html, /title="\(No column name\) \(int\)"><span class="hl">\(No column name\)<\/span>/);
+  assert.match(html, /<td class="null" data-null="1">NULL<\/td>/);
+  assert.match(html, /<td title="1">1<\/td>/);
+  // A decimal arrives as a string but is still a numeric column: right-aligned by a per-column rule.
+  assert.match(html, /<td title="12\.50">12\.50<\/td>/);
+  assert.match(html, /#g0 \.gt tbody tr>:nth-child\(2\)\{text-align:right/);
+  assert.match(html, /#g0 \.gt tbody tr>:nth-child\(4\)\{text-align:right/);
+  assert.doesNotMatch(html, /#g0 \.gt tbody tr>:nth-child\(3\)\{text-align:right/);
+  // Local sort per set, with the caption note and the set index for copy messages.
+  assert.match(html, /class="dgrid" id="g0" data-mode="local" data-set="0"/);
+  assert.match(html, /data-sortnote="g0" style="display:none"> · sorted locally \(loaded rows only\)/);
 });
 
 test('captions: row counts, truncation, single set fills the view, several sets are capped', () => {
@@ -125,7 +131,8 @@ test('messages: kind classes in order, and a line becomes a reveal link', () => 
       { kind: 'error', text: 'fourth', line: 7 },
     ],
   })));
-  const order = ['first', 'second', 'third', 'fourth'].map(t => html.indexOf(t));
+  const body = html.slice(html.indexOf('<body>'));
+  const order = ['first', 'second', 'third', 'fourth'].map(t => body.indexOf(t));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(html, /class="msg info"/);
   assert.match(html, /class="msg rows"/);
@@ -150,12 +157,12 @@ test('exact-number strings (decimal, money, bigint) are right-aligned by column 
     columns: [{ name: 'd', type: 'decimal' }, { name: 'm', type: 'money' }, { name: 'b', type: 'bigint' }, { name: 'v', type: 'varbinary' }, { name: 's', type: 'nvarchar' }],
     rows: [['12345678901234.5678', '922337203685477.5807', '9223372036854775807', '0x00FF10', '42']],
   })] })));
-  assert.ok(html.includes('<td class="num">12345678901234.5678</td>'));
-  assert.ok(html.includes('<td class="num">922337203685477.5807</td>'));
-  assert.ok(html.includes('<td class="num">9223372036854775807</td>'));
-  assert.ok(html.includes('<td>0x00FF10</td>'));
+  const right = n => html.includes(`#g0 .gt tbody tr>:nth-child(${n}){text-align:right`);
+  assert.deepEqual([2, 3, 4, 5, 6].map(right), [true, true, true, false, false]);
+  assert.ok(html.includes('<td title="12345678901234.5678">12345678901234.5678</td>'));
+  assert.ok(html.includes('<td title="0x00FF10">0x00FF10</td>'));
   // A numeric-looking string in a text column stays left-aligned.
-  assert.ok(html.includes('<td>42</td>'));
+  assert.ok(html.includes('<td title="42">42</td>'));
 });
 
 test('a value cut by the server cap is marked and explains the full size in its tooltip', () => {
@@ -165,8 +172,8 @@ test('a value cut by the server cap is marked and explains the full size in its 
     columns: [{ name: 's', type: 'nvarchar' }, { name: 'b', type: 'varbinary' }],
     rows: [[cutText, cutBinary]],
   })] })));
-  assert.ok(html.includes(`<td class="trunc" title="Truncated by the server: the full value has 70000 chars.">${cutText}</td>`));
-  assert.ok(html.includes(`<td class="trunc" title="Truncated by the server: the full value has 40000 bytes.">${cutBinary}</td>`));
+  assert.ok(html.includes(`<td class="trunc" title="${cutText}\n\nTruncated by the server: the full value has 70000 chars.">${cutText}</td>`));
+  assert.ok(html.includes(`<td class="trunc" title="${cutBinary}\n\nTruncated by the server: the full value has 40000 bytes.">${cutBinary}</td>`));
   // Only the exact server suffix at the end counts.
   const plain = render(done(result({ resultSets: [set({ columns: [{ name: 's', type: 'nvarchar' }], rows: [['(truncated, 5 chars) is just text']] })] })));
   assert.ok(!plain.includes('class="trunc"'));

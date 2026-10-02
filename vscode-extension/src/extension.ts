@@ -59,7 +59,7 @@ export function activate(context: vscode.ExtensionContext): void {
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs);
+  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs, runner);
   registerHistoryCommands(context, { store, docs: queryDocs, runner, explorer, log });
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.

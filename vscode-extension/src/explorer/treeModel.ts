@@ -5,7 +5,8 @@ import type { ConnectionProfile } from '../connections/profile';
 import { supportsHistory } from '../history/historyModel';
 import { matchesFilter } from '../tree/filter';
 import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
-import { previewSql, qualified } from './sqlText';
+import { DataViewOrder, dataViewSql } from '../grid/gridModel';
+import { qualified } from './sqlText';
 
 export interface ConnectionNode { kind: 'connection'; profile: ConnectionProfile }
 export interface CategoryNode { kind: 'category'; connection: string; def: CategoryDef }
@@ -112,11 +113,12 @@ export function childNodes(connection: string, folder: ChildFolderId, children: 
 }
 
 /**
- * read_data arguments for Data View: TOP (rows + 1) with maxRows = rows, so a table with more rows
- * makes the server cut at `rows` and report truncated=true.
+ * run_script arguments for Data View: one generated SELECT of TOP (rows + 1) with maxRows = rows, so a table with
+ * more rows makes the server keep `rows` and report truncated=true. `order` (a column of the last result) adds
+ * ORDER BY when its type is sortable. Only bracket-quoted identifiers and the validated integer reach the SQL.
  */
-export function dataViewRequest(ref: ObjectRef, rows: number): { sql: string; maxRows: number } {
-  return { sql: previewSql(ref.schema, ref.name, rows + 1), maxRows: rows };
+export function dataViewRequest(ref: ObjectRef, rows: number, order?: DataViewOrder): { script: string; maxRows: number } {
+  return { script: dataViewSql(ref, rows, order), maxRows: rows };
 }
 
 /** script_object arguments. `form` (e.g. 'alter') is sent only when non-empty: the server rejects an empty form. */

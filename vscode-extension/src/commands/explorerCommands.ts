@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { showDataPreview } from '../dataPanel';
-import { parseReadData, rowsToTable } from '../dataTable';
+import type { ServerProcessClient } from '../client/serverProcessClient';
+import { showDataView } from '../dataPanel';
 import type { ObjectRef } from '../explorer/catalog';
 import { openEditableDdl } from '../explorer/editableDdl';
 import { isEditable } from '../explorer/objectEdit';
@@ -12,12 +12,9 @@ import type { DdlDocumentProvider } from '../explorer/ddlDocuments';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import type { ExplorerNode, ExplorerTreeProvider } from '../explorer/explorerTree';
 import { DDL_SCHEME, ddlUri } from '../explorer/sqlText';
-import { dataViewRequest } from '../explorer/treeModel';
+import { DEFAULT_TOP, clampTop } from '../grid/gridModel';
 import { Logger } from '../logger';
 import type { ObjectFilterViewProvider } from '../tree/filterView';
-
-const DEFAULT_ROWS = 500;
-const MAX_ROWS = 10_000;
 
 /** The object an explorer command acts on (object and child nodes only). */
 function refOf(node: unknown): ObjectRef | undefined {
@@ -25,9 +22,9 @@ function refOf(node: unknown): ObjectRef | undefined {
   return n && (n.kind === 'object' || n.kind === 'child') ? n.ref : undefined;
 }
 
+/** The `msSqlMcp.dataViewRows` setting: Data View's initial TOP (1..10000, default 200). */
 function dataViewRows(): number {
-  const v = vscode.workspace.getConfiguration('msSqlMcp').get<number>('dataViewRows', DEFAULT_ROWS);
-  return Number.isFinite(v) ? Math.min(MAX_ROWS, Math.max(1, Math.floor(v))) : DEFAULT_ROWS;
+  return clampTop(vscode.workspace.getConfiguration('msSqlMcp').get<number>('dataViewRows', DEFAULT_TOP));
 }
 
 export function registerExplorerCommands(
@@ -40,6 +37,7 @@ export function registerExplorerCommands(
   store: ConnectionStore,
   log: Logger,
   sqlDocs: SqlDocFileSystem,
+  runner: ServerProcessClient,
 ): void {
   const reg = (id: string, fn: (arg?: unknown) => Promise<void> | void) =>
     context.subscriptions.push(vscode.commands.registerCommand(`msSqlMcp.${id}`, async (arg?: unknown) => {
@@ -72,13 +70,9 @@ export function registerExplorerCommands(
       void vscode.window.showInformationMessage('APoint-ms-sql: select a table or view in the APoint-ms-sql tree.');
       return;
     }
-    const rows = dataViewRows();
-    const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
-    const payload = await vscode.window.withProgress(
-      { location: { viewId: 'msSqlMcp.explorer' }, title: `Loading ${title}` },
-      () => explorer.callResult(ref.connection, 'read_data', dataViewRequest(ref, rows)));
-    const result = parseReadData(payload);
-    showDataPreview(title, ref.connection, rowsToTable(result.rows), result.truncated);
+    // The runner's run_script (a single generated SELECT, allowed on read-only connections too) returns column
+    // names and types even for zero rows, and exact value encodings. Errors show in the panel.
+    await showDataView(ref, dataViewRows(), { runner, log });
   });
 
   // Refresh: from a DDL editor's title (arg = its Uri) it re-scripts that document; from the tree it clears
