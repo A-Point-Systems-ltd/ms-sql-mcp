@@ -15,7 +15,6 @@ public sealed class TransientBuildFailureTests
 
     [Theory]
     [InlineData(596)]
-    [InlineData(233)]
     [InlineData(10053)]
     [InlineData(10054)]
     [InlineData(64)]
@@ -32,11 +31,16 @@ public sealed class TransientBuildFailureTests
     [InlineData(4060)]  // cannot open database
     [InlineData(229)]   // permission denied
     [InlineData(208)]   // invalid object name
+    [InlineData(233)]   // no process on the other end of the pipe: also a rejected login
     public void Login_permission_and_database_errors_are_not_retried(int number)
     {
         Assert.Null(LanguageServiceCache.TransientSqlNumber(new FakeSqlError(number), NumberOf));
         Assert.Null(LanguageServiceCache.TransientSqlNumber(new InvalidOperationException("smo", new FakeSqlError(number)), NumberOf));
     }
+
+    [Fact]
+    public void The_transient_set_is_exactly_the_documented_numbers() =>
+        Assert.Equal(new[] { 64, 596, 10053, 10054 }, LanguageServiceCache.TransientSqlErrors.Order());
 
     [Fact]
     public void Non_sql_exceptions_are_not_retried() =>

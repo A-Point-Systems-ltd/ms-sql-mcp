@@ -425,8 +425,8 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
             Microsoft.Data.SqlClient.SqlConnection.ClearAllPools();
             await ScratchDatabases.ExecAsync(db.ConnectionString!, $"IF USER_ID(N'{login}') IS NOT NULL DROP USER [{login}];");
 
-            // No KILL by session id: in a parallel test run an id can be reused by another test's session between the
-            // lookup and the KILL. The cache closed its session on dispose; wait for the server to finish the logout.
+            // SMO keeps no session open between requests and the cache is disposed, so first wait for the server to
+            // finish the logout. Only if DROP LOGIN still fails are this temp login's own sessions killed (below).
             var deadline = DateTime.UtcNow.AddSeconds(30);
             while (await ScratchDatabases.ScalarAsync<int>(master, $"SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE login_name = N'{login}'") > 0
                    && DateTime.UtcNow < deadline)
@@ -529,6 +529,29 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
         var next = await CompleteAsync(cache, main, "SELECT t. FROM dbo.T t", 1, 10);
         Item(next, "a", "column");
         Item(next, "b", "column");
+    }
+
+    /// <summary>
+    /// Hover gets the same containment as signature help: a SqlParser NullReferenceException at a scalar UDF call is
+    /// logged once per entry at Debug, never as a Warning, and the entry keeps binding.
+    /// </summary>
+    [SkippableFact]
+    public async Task Hover_at_a_scalar_udf_call_logs_no_warning_and_keeps_the_entry()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+        await CompleteAsync(cache, main, "SELECT * FROM ", 1, 15);
+        var warningsBefore = Log.Warnings.Count;
+
+        for (var i = 0; i < 3; i++)
+        {
+            await cache.HoverAsync(main, "EXEC dbo.p 1\nSELECT dbo.f(", 2, 12, CancellationToken.None);
+            await cache.HoverAsync(main, "EXEC dbo.p 1\nSELECT dbo.f(", 2, 14, CancellationToken.None);
+        }
+
+        Assert.Equal(warningsBefore, Log.Warnings.Count);
+        Assert.Equal(1, cache.EntryCount);
+        Item(await CompleteAsync(cache, main, "SELECT t. FROM dbo.T t", 1, 10), "a", "column");
     }
 
     private static async Task WaitForSkippedAsync(LanguageServiceCache cache, int expected)

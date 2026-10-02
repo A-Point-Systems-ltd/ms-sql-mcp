@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using Babel;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using Microsoft.SqlServer.Management.SqlParser.Intellisense;
@@ -53,18 +54,20 @@ public sealed class LanguageServiceCache : IDisposable
     internal int SkippedOperations => Volatile.Read(ref _skippedOperations);
 
     /// <summary>
-    /// The dedicated SMO session's connection string: the profile's, unpooled, with <c>Persist Security Info=true</c>
-    /// so that SMO's own copies of the string (reconnects, extra connections) keep the password or Entra settings.
+    /// The dedicated SMO session's connection string: the profile's, unpooled, with <c>Persist Security Info=true</c>.
+    /// That setting only matters for SQL-authentication passwords, in case SMO copies the string; it is defensive (on
+    /// LocalDB, SMO reopens the same SqlConnection object and SQL auth works without it), and Entra ID is untested.
     /// It stays in process memory: never log it or put it in an error.
     /// </summary>
     internal static string MetadataConnectionString(ConnectionProfile profile) =>
         new SqlConnectionStringBuilder(profile.ConnectionString) { Pooling = false, PersistSecurityInfo = true }.ConnectionString;
 
     /// <summary>
-    /// SQL error numbers a metadata build retries once: 596 (session in the kill state), 233 (no process on the other end
-    /// of the pipe), 10053 / 10054 (connection aborted / reset), 64 (network name no longer available).
+    /// SQL error numbers a metadata build retries once: 596 (session in the kill state), 10053 / 10054 (connection
+    /// aborted / reset), 64 (network name no longer available). 233 (no process on the other end of
+    /// the pipe) is left out: the server also reports it when it rejects a login, and login failures are not retried.
     /// </summary>
-    internal static readonly IReadOnlySet<int> TransientSqlErrors = new HashSet<int> { 596, 233, 10053, 10054, 64 };
+    internal static readonly IReadOnlySet<int> TransientSqlErrors = new HashSet<int> { 596, 10053, 10054, 64 };
 
     /// <summary>
     /// The transient SQL error number found on <paramref name="ex"/> or anywhere in its InnerException chain (SMO wraps
@@ -129,7 +132,25 @@ public sealed class LanguageServiceCache : IDisposable
 
     /// <summary>Quick info at a 1-based line and column; null when there is none or binding is not ready.</summary>
     public Task<HoverInfo?> HoverAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken) =>
-        RunOrNullAsync(profile, ctx => CompletionConverter.ToHover(Resolver.GetQuickInfo(ctx.ParseAndBind(text), line, column, ctx.DisplayInfoProvider)), cancellationToken);
+        RunOrNullAsync(
+            profile,
+            ctx =>
+            {
+                var parsed = ctx.ParseAndBind(text);
+                CodeObjectQuickInfo? quickInfo;
+                try
+                {
+                    quickInfo = Resolver.GetQuickInfo(parsed, line, column, ctx.DisplayInfoProvider);
+                }
+                catch (NullReferenceException)
+                {
+                    LogParserFault(ctx, "hover");
+                    return null;
+                }
+
+                return CompletionConverter.ToHover(quickInfo);
+            },
+            cancellationToken);
 
     /// <summary>Signature help at a 1-based line and column; null when the caret is in no call or binding is not ready.</summary>
     public Task<SignatureHelpInfo?> SignatureHelpAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken) =>
@@ -138,25 +159,35 @@ public sealed class LanguageServiceCache : IDisposable
             ctx =>
             {
                 var parsed = ctx.ParseAndBind(text);
+                List<MethodHelpText>? methods;
+                MethodNameAndParamLocations? locations;
                 try
                 {
-                    var methods = Resolver.FindMethods(parsed, line, column, ctx.DisplayInfoProvider);
-                    var locations = Resolver.GetMethodNameAndParams(parsed, line, column, ctx.DisplayInfoProvider);
-                    return CompletionConverter.ToSignatureHelp(methods, locations, line, column);
+                    methods = Resolver.FindMethods(parsed, line, column, ctx.DisplayInfoProvider);
+                    locations = Resolver.GetMethodNameAndParams(parsed, line, column, ctx.DisplayInfoProvider);
                 }
                 catch (NullReferenceException)
                 {
-                    // SqlParser 180.9.0 throws here for some scalar UDF calls (SqlScalarFunctionCallExpression.GetMyMethodHelpText).
-                    // Known and harmless for the binder: no signatures, logged once per cache entry at Debug.
-                    if (ctx.FirstParserFault())
-                    {
-                        _logger.LogDebug("language_service signatureHelp: SqlParser has no method help at this position (NullReferenceException); further ones are not logged");
-                    }
-
+                    LogParserFault(ctx, "signatureHelp");
                     return null;
                 }
+
+                return CompletionConverter.ToSignatureHelp(methods, locations, line, column);
             },
             cancellationToken);
+
+    /// <summary>
+    /// SqlParser 180.9.0 throws a NullReferenceException inside its Resolver for some scalar UDF calls
+    /// (SqlScalarFunctionCallExpression.GetMyMethodHelpText). Known and harmless for the binder: the request returns
+    /// nothing, logged once per cache entry at Debug instead of a Warning per keystroke.
+    /// </summary>
+    private void LogParserFault(BindingContext ctx, string action)
+    {
+        if (ctx.FirstParserFault())
+        {
+            _logger.LogDebug("language_service {Action}: SqlParser has no result at this position (NullReferenceException); further ones are not logged", action);
+        }
+    }
 
     /// <summary>Starts building the entry in the background if needed; returns at once with the current state.</summary>
     public string Warm(ConnectionProfile profile) => StateOf(GetOrStart(profile));
