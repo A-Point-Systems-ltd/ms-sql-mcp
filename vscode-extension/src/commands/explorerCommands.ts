@@ -46,14 +46,14 @@ export function registerExplorerCommands(
       try { await fn(arg); }
       catch (err) {
         log.error(id, 'Command failed', err);
-        void vscode.window.showErrorMessage(`MSSQL-MCP: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
       }
     }));
 
   reg('showDdl', async arg => {
     const ref = refOf(arg);
     if (!ref) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: select an object in the MSSQL-MCP tree.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: select an object in the APoint-ms-sql tree.');
       return;
     }
     // Views, procedures and functions open as editable mssql-sql: documents bound to their connection (and to its
@@ -69,7 +69,7 @@ export function registerExplorerCommands(
   reg('dataView', async arg => {
     const ref = refOf(arg);
     if (!ref || (ref.scriptType !== 'Table' && ref.scriptType !== 'View')) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: select a table or view in the MSSQL-MCP tree.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: select a table or view in the APoint-ms-sql tree.');
       return;
     }
     const rows = dataViewRows();

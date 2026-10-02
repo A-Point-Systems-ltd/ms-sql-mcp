@@ -19,7 +19,7 @@ export class HistoryDocumentProvider implements vscode.TextDocumentContentProvid
 
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const ref = parseHistoryUri(uri.toString());
-    if (!ref) return '-- MSSQL-MCP: this DDL history link is not valid.';
+    if (!ref) return '-- APoint-ms-sql: this DDL history link is not valid.';
     try {
       switch (ref.kind) {
         case 'empty':
@@ -35,7 +35,7 @@ export class HistoryDocumentProvider implements vscode.TextDocumentContentProvid
     } catch (err) {
       const message = errorMessage(err);
       this.log.warn('history', `Loading DDL history text (${ref.kind}) on '${'connection' in ref ? ref.connection : ''}' failed: ${message}`);
-      return ['-- MSSQL-MCP could not load this DDL history text:', ...message.split(/\r?\n/).map(l => `-- ${l}`)].join('\n');
+      return ['-- APoint-ms-sql could not load this DDL history text:', ...message.split(/\r?\n/).map(l => `-- ${l}`)].join('\n');
     }
   }
 }

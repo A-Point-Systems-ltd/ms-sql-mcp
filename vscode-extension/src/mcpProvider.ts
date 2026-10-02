@@ -3,6 +3,7 @@ import { PROVIDER_ID } from './constants';
 import { ConnectionStore } from './connections/store';
 import { AgentServerSettings, agentProviderEnv, buildServerConnections, definitionVersion, missingPasswordMessage, missingPasswords } from './connections/serverEnv';
 import { resolveExePath } from './exe';
+import { SERVER_KEY } from './register/naming';
 
 export { PROVIDER_ID };
 
@@ -38,7 +39,7 @@ export class MssqlMcpServerProvider implements vscode.McpServerDefinitionProvide
     if (usable <= 0) return [];
     // The version changes whenever the server config would, so VS Code restarts a running server on profile changes.
     const version = definitionVersion(this.context.extension.packageJSON.version as string, profiles, agentSettings(), passwords);
-    return [new vscode.McpStdioServerDefinition('MSSQL-MCP', exe, [], {}, version)];
+    return [new vscode.McpStdioServerDefinition(SERVER_KEY, exe, [], {}, version)];
   }
 
   // Secrets are attached here so they are read only when the server actually starts.
@@ -49,7 +50,7 @@ export class MssqlMcpServerProvider implements vscode.McpServerDefinitionProvide
     if (missing.length) {
       // Non-blocking: these profiles are omitted from the server, the rest still start.
       void vscode.window.showWarningMessage(
-        `MSSQL-MCP: ${missing.length} connection(s) skipped. ${missing.map(missingPasswordMessage).join(' ')}`);
+        `APoint-ms-sql: ${missing.length} connection(s) skipped. ${missing.map(missingPasswordMessage).join(' ')}`);
     }
     def.env = agentProviderEnv(buildServerConnections(profiles, passwords), agentSettings());
     return def;

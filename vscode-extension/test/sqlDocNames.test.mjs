@@ -18,7 +18,7 @@ test('scheme is mssql-sql', () => {
 });
 
 test('title is <objectName> - <server> - <database>', () => {
-  assert.equal(docTitle('Query 1', profileTarget(profile())), 'Query 1 - DC\\DEV - Sales');
+  assert.equal(docTitle('Query 1', profileTarget(profile())), 'Query 1 - DC∖DEV - Sales');
   assert.equal(docTitle('dbo.vOrders', { server: 'srv,1433', database: 'my db' }), 'dbo.vOrders - srv,1433 - my db');
   assert.equal(queryObjectName(3), 'Query 3');
 });
@@ -43,7 +43,7 @@ test('title parts: "/" becomes U+2215, control characters are dropped, empty par
   assert.equal(titlePart('a/b'), 'a∕b');
   assert.equal(titlePart('a\u0000b\u001fc\u007fd\u0085e'), 'abcde');
   assert.equal(titlePart('  '), '_');
-  assert.equal(titlePart('DC\\DEV'), 'DC\\DEV', 'a backslash is kept (it survives vscode-uri, see the round-trip test)');
+  assert.equal(titlePart('DC\\DEV'), 'DC∖DEV', 'a backslash becomes U+2216: Cursor takes the tab label after the last backslash');
   assert.equal(docTitle('x/y', { server: 's/t', database: 'd\nb' }), 'x∕y - s∕t - db');
 });
 
@@ -82,9 +82,9 @@ test('ids: 8 random hex for queries; isValidDocId accepts 8-40 lowercase hex onl
 });
 
 const TITLES = [
-  'Query 1 - DC\\DEV - Sales',
+  'Query 1 - dc∖dev16 - EasyHouse',
   'Query 2 - srv,1433 - my db',
-  'dbo.Order Details - DC\\DEV - Northwind',
+  'dbo.Order Details - DC∖DEV - Northwind',
   'dbo.a#b - s?x - 100%',
   'dbo.%41%2F - srv - db',
   'dbo.טבלה - שרת - בסיס נתונים',
@@ -102,6 +102,7 @@ test('the title survives vscode-uri: URI.parse(uri.toString()) and Utils.basenam
     assert.equal(back.toString(), uri.toString(), title);
     assert.equal(Utils.basename(back), title, title);
     assert.equal(Utils.basename(uri), title, title);
+    assert.equal(back.path.slice(Math.max(back.path.lastIndexOf('/'), back.path.lastIndexOf('\\')) + 1), title, `${title}: the label after the last / or backslash`);
     assert.deepEqual(parseSqlDocPath(back.path), { kind: 'object', id: '0123456789abcdef', title }, title);
     assert.equal(back.query, '', title);
     assert.equal(back.fragment, '', title);

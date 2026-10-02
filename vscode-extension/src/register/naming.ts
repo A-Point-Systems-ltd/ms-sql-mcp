@@ -1,7 +1,13 @@
 // Pure naming helpers for external-client registration.
 
-/** Server key used in every client config. */
-export const SERVER_KEY = 'ms-sql';
+/**
+ * Server key used in every client config. Cursor shows an extension-registered server as `extension-<name>`
+ * (the prefix is added by Cursor), so it lists this one as `extension-APoint-ms-sql`.
+ */
+export const SERVER_KEY = 'APoint-ms-sql';
+
+/** The key earlier versions registered; removed from client configs when registering and flagged as a duplicate. */
+export const LEGACY_SERVER_KEY = 'ms-sql';
 
 /** Uppercase, every character outside [A-Z0-9_] becomes '_'. */
 export function normalizeName(name: string): string {

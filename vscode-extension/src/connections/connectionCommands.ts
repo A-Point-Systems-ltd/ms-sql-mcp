@@ -26,12 +26,12 @@ export async function pickProfile(store: ConnectionStore, arg: unknown, placeHol
   const wanted = argName(arg);
   if (wanted) {
     const found = all.find(p => p.name.toLowerCase() === wanted.toLowerCase());
-    if (!found) void vscode.window.showErrorMessage(`MSSQL-MCP: connection '${wanted}' was not found.`);
+    if (!found) void vscode.window.showErrorMessage(`APoint-ms-sql: connection '${wanted}' was not found.`);
     return found;
   }
   const items = all.filter(p => !filter || filter(p));
   if (!items.length) {
-    void vscode.window.showInformationMessage('MSSQL-MCP: no matching connections.');
+    void vscode.window.showInformationMessage('APoint-ms-sql: no matching connections.');
     return undefined;
   }
   const picked = await vscode.window.showQuickPick(
@@ -58,7 +58,7 @@ export function registerConnectionCommands(
       try { await fn(arg); }
       catch (err) {
         log.error(id, 'Command failed', err);
-        void vscode.window.showErrorMessage(`MSSQL-MCP: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
       }
     }));
 
@@ -109,11 +109,11 @@ export function registerConnectionCommands(
               }),
             ])
           : await probeConnection(context.extensionUri, p, passwords, log, ac.signal);
-        void vscode.window.showInformationMessage(`MSSQL-MCP '${p.name}': ${summary}`);
+        void vscode.window.showInformationMessage(`APoint-ms-sql '${p.name}': ${summary}`);
       } catch (err) {
         if (token.isCancellationRequested) return;
         log.error('testConnection', `Test of '${p.name}' failed`, err);
-        void vscode.window.showErrorMessage(`MSSQL-MCP '${p.name}' failed: ${withConnectionHint(err instanceof Error ? err.message : String(err))}`);
+        void vscode.window.showErrorMessage(`APoint-ms-sql '${p.name}' failed: ${withConnectionHint(err instanceof Error ? err.message : String(err))}`);
       } finally {
         clearTimeout(timer);
         if (onAbort) ac.signal.removeEventListener('abort', onAbort);

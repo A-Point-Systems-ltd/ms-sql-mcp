@@ -124,7 +124,7 @@ export class SqlDocLifecycle implements vscode.Disposable {
     try {
       index = await this.reconcileIndex();
     } catch {
-      void vscode.window.showWarningMessage('MSSQL-MCP: the list of recent query windows could not be read. Details are in the APoint-ms-sql Output.');
+      void vscode.window.showWarningMessage('APoint-ms-sql: the list of recent query windows could not be read. Details are in the APoint-ms-sql Output.');
       return;
     }
     const open = openSqlDocs('query');
@@ -142,7 +142,7 @@ export class SqlDocLifecycle implements vscode.Disposable {
     }
     if (missing.length) void this.index.update(i => withoutIds(i, missing));
     if (!items.length) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: no recent query windows.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: no recent query windows.');
       return;
     }
     const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Open a recent query window', matchOnDescription: true });

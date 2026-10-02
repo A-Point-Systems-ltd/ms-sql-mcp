@@ -11,7 +11,7 @@ import { atomicWriteFile, writeClientConfig } from './configWriter';
 import { externalClientEnv } from '../connections/serverEnv';
 import { buildConnectionsFile, needsSecretDecision, refreshConnectionsFileOnDisk } from './connectionsFile';
 import { McpEntry } from './jsonMerge';
-import { SERVER_KEY } from './naming';
+import { LEGACY_SERVER_KEY, SERVER_KEY } from './naming';
 import { copyStableExe } from './stableExe';
 
 const PASSWORDS_FLAG = 'msSqlMcp.connectionsFileHasPasswords';
@@ -58,7 +58,7 @@ export function registerClientCommand(context: vscode.ExtensionContext, store: C
     try { await run(context, store, log); }
     catch (err) {
       log.error('registerClients', 'Command failed', err);
-      void vscode.window.showErrorMessage(`MSSQL-MCP: ${err instanceof Error ? err.message : String(err)}`);
+      void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
     }
   }));
 
@@ -90,35 +90,35 @@ async function refreshConnectionsFile(context: vscode.ExtensionContext, store: C
   if (r.action === 'delete') {
     log.warn('registerClients', `connections.json deleted: no connections left.${pending}`);
     const pick = await vscode.window.showWarningMessage(
-      `MSSQL-MCP: no open connections are left, so the connections file for Cursor / Claude was deleted. Registered clients will not start the server until you open a connection and re-register.${pending}`,
+      `APoint-ms-sql: no open connections are left, so the connections file for Cursor / Claude was deleted. Registered clients will not start the server until you open a connection and re-register.${pending}`,
       RE_REGISTER);
     if (pick === RE_REGISTER) await vscode.commands.executeCommand('msSqlMcp.registerClients');
     return;
   }
   if (r.pending.length) {
     log.warn('registerClients', `connections.json updated; pending: ${r.pending.map(x => x.name).join(', ')}.`);
-    const pick = await vscode.window.showWarningMessage(`MSSQL-MCP: the connections file for Cursor / Claude was updated.${pending}`, RE_REGISTER);
+    const pick = await vscode.window.showWarningMessage(`APoint-ms-sql: the connections file for Cursor / Claude was updated.${pending}`, RE_REGISTER);
     if (pick === RE_REGISTER) await vscode.commands.executeCommand('msSqlMcp.registerClients');
   }
 }
 
 async function run(context: vscode.ExtensionContext, store: ConnectionStore, log: Logger): Promise<void> {
   if (process.platform !== 'win32') {
-    void vscode.window.showInformationMessage('MSSQL-MCP: registration is only supported on Windows.');
+    void vscode.window.showInformationMessage('APoint-ms-sql: registration is only supported on Windows.');
     return;
   }
   const profiles = store.list();
   if (!profiles.some(p => p.open)) {
-    void vscode.window.showWarningMessage('MSSQL-MCP: open at least one connection before registering.');
+    void vscode.window.showWarningMessage('APoint-ms-sql: open at least one connection before registering.');
     return;
   }
   // Inside Cursor the extension already registers the server through Cursor's own API, so the mcp.json entry is for the CLI only.
   const cursorDetail = cursorMcpApi(vscode)
-    ? 'Not needed in this window - the extension registers MSSQL-MCP with Cursor automatically. Use only for the cursor-agent CLI.'
+    ? 'Not needed in this window - the extension registers APoint-ms-sql with Cursor automatically. Use only for the cursor-agent CLI.'
     : undefined;
   const picks = await vscode.window.showQuickPick(
     [{ label: 'Cursor', detail: cursorDetail }, { label: 'Claude Desktop' }, { label: 'Claude Code' }],
-    { canPickMany: true, title: 'Register MSSQL-MCP with...', placeHolder: 'Select one or more clients' });
+    { canPickMany: true, title: 'Register APoint-ms-sql with...', placeHolder: 'Select one or more clients' });
   if (!picks?.length) return;
   const chosen = new Set(picks.map(p => p.label));
 
@@ -141,8 +141,9 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
 
   const tryWrite = (label: string, p: string) => {
     try {
-      const r = writeClientConfig(p, SERVER_KEY, entry);
-      report.push(`${label}: updated ${r.path}${r.backup ? ` (backup ${path.basename(r.backup)})` : ''}. Restart it to load the server.`);
+      const r = writeClientConfig(p, SERVER_KEY, entry, new Date(), LEGACY_SERVER_KEY);
+      if (r.removedLegacy) log.info('registerClients', `${label}: removed the legacy '${LEGACY_SERVER_KEY}' entry from ${r.path}`);
+      report.push(`${label}: updated ${r.path}${r.backup ? ` (backup ${path.basename(r.backup)})` : ''}. ${r.removedLegacy ? ` Removed the old '${LEGACY_SERVER_KEY}' entry.` : ''} Restart it to load the server.`);
     } catch (err) {
       log.error('registerClients', `${label} failed`, err);
       report.push(`${label}: FAILED - ${err instanceof Error ? err.message : String(err)}`);
@@ -161,6 +162,6 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
 
   log.info('registerClients', report.join(' | '));
   const buttons = copyCmd ? ['Copy PowerShell command'] : [];
-  const pick = await vscode.window.showInformationMessage(`MSSQL-MCP: ${report.join('\n')}`, { modal: report.length > 2 }, ...buttons);
+  const pick = await vscode.window.showInformationMessage(`APoint-ms-sql: ${report.join('\n')}`, { modal: report.length > 2 }, ...buttons);
   if (pick && copyCmd) await vscode.env.clipboard.writeText(copyCmd);
 }

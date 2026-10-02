@@ -78,7 +78,7 @@ export class QueryEditorTracker implements vscode.Disposable {
 
   constructor(private readonly store: ConnectionStore, private readonly docs: QueryDocuments) {
     this.item = vscode.window.createStatusBarItem('msSqlMcp.editorConnection', vscode.StatusBarAlignment.Left, 100);
-    this.item.name = 'MSSQL-MCP Connection';
+    this.item.name = 'APoint-ms-sql Connection';
     this.item.command = 'msSqlMcp.changeConnection';
     this.subs.push(
       this.item,
@@ -216,7 +216,7 @@ export function registerQueryCommands(
       try { await fn(arg); }
       catch (err) {
         log.error(id, 'Command failed', err);
-        void vscode.window.showErrorMessage(`MSSQL-MCP: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
       }
     }));
 
@@ -225,7 +225,7 @@ export function registerQueryCommands(
     const p = await pickProfile(store, arg, 'Connection for the new query', x => x.open);
     if (!p) return;
     if (!p.open) {
-      void vscode.window.showWarningMessage(`MSSQL-MCP: open the connection '${p.name}' first.`);
+      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${p.name}' first.`);
       return;
     }
     // An empty mssql-sql: document titled "Query N - <server> - <database>" (not untitled: its tab shows the target).
@@ -239,12 +239,12 @@ export function registerQueryCommands(
   reg('changeConnection', async () => {
     const editor = vscode.window.activeTextEditor;
     if (editor && isNeverBound(editor.document.uri.scheme)) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: a DDL view is read-only and is not bound to a connection. Use New Query to run SQL.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: a DDL view is read-only and is not bound to a connection. Use New Query to run SQL.');
       return;
     }
     const current = editor ? docs.get(editor.document.uri) : undefined;
     if (!editor || (editor.document.languageId !== 'sql' && !current)) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: open a SQL editor first.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: open a SQL editor first.');
       return;
     }
     const placeHolder = current ? `Connection for this editor (now '${current.connection}')` : 'Connection for this editor';
@@ -260,7 +260,7 @@ export function registerQueryCommands(
       : { connection: p.name, kind: 'query' };
     await docs.set(editor.document.uri, next);
     if (current?.kind === 'object' && changed) {
-      void vscode.window.showInformationMessage(`MSSQL-MCP: this script was generated from ${describeTarget(current.target)}. `
+      void vscode.window.showInformationMessage(`APoint-ms-sql: this script was generated from ${describeTarget(current.target)}. `
         + `The next run asks you to confirm before it is applied through '${p.name}' (${describeTarget(targetOf(p))}).`);
     }
   });
@@ -270,13 +270,13 @@ export function registerQueryCommands(
     const target = commandTarget(arg);
     const run = target ? tracker.contextOf(target.document) : undefined;
     if (!target || !run?.assoc) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: open a SQL editor bound to a connection first (New Query or Change Connection).');
+      void vscode.window.showInformationMessage('APoint-ms-sql: open a SQL editor bound to a connection first (New Query or Change Connection).');
       return;
     }
     const { document, editor } = target;
     const { assoc, profile, state } = run;
     if (!state.canRun || !profile) {
-      void vscode.window.showWarningMessage(`MSSQL-MCP: ${state.reason ?? 'this editor cannot run now.'}`);
+      void vscode.window.showWarningMessage(`APoint-ms-sql: ${state.reason ?? 'this editor cannot run now.'}`);
       return;
     }
     const key = document.uri.toString();
@@ -301,7 +301,7 @@ export function registerQueryCommands(
     };
     try {
       if (assoc.kind === 'object' && document.isDirty && !(await document.save())) {
-        void vscode.window.showWarningMessage('MSSQL-MCP: the document was not saved, so it was not run.');
+        void vscode.window.showWarningMessage('APoint-ms-sql: the document was not saved, so it was not run.');
         return;
       }
       const selection = editor?.selection;
@@ -311,7 +311,7 @@ export function registerQueryCommands(
         ? undefined
         : { text: document.getText(selection), startLine: selection.start.line });
       if (!request.script.trim()) {
-        void vscode.window.showInformationMessage('MSSQL-MCP: nothing to run.');
+        void vscode.window.showInformationMessage('APoint-ms-sql: nothing to run.');
         return;
       }
       const maxRows = clampMaxRows(vscode.workspace.getConfiguration('msSqlMcp').get('query.maxRows'));
@@ -368,7 +368,7 @@ export function registerQueryCommands(
   reg('runQueryReadOnly', async arg => {
     const target = commandTarget(arg);
     const reason = target ? tracker.contextOf(target.document).state.reason : undefined;
-    void vscode.window.showWarningMessage(`MSSQL-MCP: ${reason ?? 'apply changes on a read-write connection.'}`);
+    void vscode.window.showWarningMessage(`APoint-ms-sql: ${reason ?? 'apply changes on a read-write connection.'}`);
   });
 
   return { docs, tracker, results };

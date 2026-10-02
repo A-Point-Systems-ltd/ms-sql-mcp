@@ -66,7 +66,7 @@ test('sync registers once under the ms-sql key with string-only env', async () =
   assert.equal(api.calls.length, 1);
   const [kind, cfg] = api.calls[0];
   assert.equal(kind, 'register');
-  assert.equal(cfg.name, 'ms-sql');
+  assert.equal(cfg.name, 'APoint-ms-sql');
   assert.equal(cfg.server.command, 'C:\\x\\MssqlMcp.exe');
   assert.deepEqual(cfg.server.args, []);
   assert.ok(Object.values(cfg.server.env).every(v => typeof v === 'string'));
@@ -89,7 +89,7 @@ test('a profile change unregisters then registers', async () => {
   state.profiles = [p('a'), p('b')];
   await reg.sync();
   assert.deepEqual(api.calls.map(c => c[0]), ['unregister', 'register']);
-  assert.equal(api.calls[0][1], 'ms-sql');
+  assert.equal(api.calls[0][1], 'APoint-ms-sql');
   assert.deepEqual(JSON.parse(api.calls[1][1].server.env.MSSQL_CONNECTIONS).map(x => x.name), ['a', 'b']);
 });
 
@@ -112,7 +112,7 @@ test('no usable profile unregisters, and does nothing when never registered', as
   api.calls.length = 0;
   state.profiles = [p('a', { open: false })];
   await reg.sync();
-  assert.deepEqual(api.calls, [['unregister', 'ms-sql']]);
+  assert.deepEqual(api.calls, [['unregister', 'APoint-ms-sql']]);
   await reg.sync();
   assert.equal(api.calls.length, 1);
 });
@@ -126,14 +126,14 @@ test('a profile that only lacks its password is not usable; no exe unregisters',
   api.calls.length = 0;
   state.exe = undefined;
   await reg.sync();
-  assert.deepEqual(api.calls, [['unregister', 'ms-sql']]);
+  assert.deepEqual(api.calls, [['unregister', 'APoint-ms-sql']]);
 });
 
 test('missing passwords warn once per distinct set and skip those profiles', async () => {
   const { api, reg, state, warnings } = make({ profiles: [p('a'), p('s1', { auth: 'sql', user: 'u' })] });
   await reg.sync();
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /^MSSQL-MCP: 1 connection\(s\) skipped\. /);
+  assert.match(warnings[0], /^APoint-ms-sql: 1 connection\(s\) skipped\. /);
   assert.match(warnings[0], /'s1'/);
   assert.deepEqual(JSON.parse(api.calls[0][1].server.env.MSSQL_CONNECTIONS).map(x => x.name), ['a']);
   await reg.sync();
@@ -141,7 +141,7 @@ test('missing passwords warn once per distinct set and skip those profiles', asy
   state.profiles = [p('a'), p('s1', { auth: 'sql', user: 'u' }), p('s2', { auth: 'sql', user: 'u' })];
   await reg.sync();
   assert.equal(warnings.length, 2);
-  assert.match(warnings[1], /^MSSQL-MCP: 2 connection\(s\) skipped\. /);
+  assert.match(warnings[1], /^APoint-ms-sql: 2 connection\(s\) skipped\. /);
   state.passwords = new Map([['s1', 'x'], ['s2', 'y']]);
   await reg.sync();
   assert.equal(warnings.length, 2);
@@ -152,7 +152,7 @@ test('dispose unregisters once and stops further syncs', async () => {
   await reg.sync();
   api.calls.length = 0;
   reg.dispose();
-  assert.deepEqual(api.calls, [['unregister', 'ms-sql']]);
+  assert.deepEqual(api.calls, [['unregister', 'APoint-ms-sql']]);
   reg.dispose();
   await reg.sync();
   assert.equal(api.calls.length, 1);
@@ -198,7 +198,7 @@ test('the log never contains passwords or the connections payload', async () => 
   assert.ok(!text.includes(secret));
   assert.ok(!text.includes('MSSQL_CONNECTIONS'));
   assert.ok(!text.includes('Password'));
-  assert.match(logs[0], /^Registered 'ms-sql' with Cursor \(1 connections?\)$/);
+  assert.match(logs[0], /^Registered 'APoint-ms-sql' with Cursor \(1 connections?\)$/);
 });
 
 test('hasMsSqlEntry reads mcp.json read-only and skips missing or invalid files', () => {
@@ -210,10 +210,12 @@ test('hasMsSqlEntry reads mcp.json read-only and skips missing or invalid files'
     assert.equal(hasMsSqlEntry(f), false);
     fs.writeFileSync(f, JSON.stringify({ mcpServers: { other: {} } }));
     assert.equal(hasMsSqlEntry(f), false);
-    const body = JSON.stringify({ mcpServers: { 'ms-sql': { command: 'x' } } });
+    const body = JSON.stringify({ mcpServers: { 'APoint-ms-sql': { command: 'x' } } });
     fs.writeFileSync(f, body);
     assert.equal(hasMsSqlEntry(f), true);
     assert.equal(fs.readFileSync(f, 'utf8'), body);
+    fs.writeFileSync(f, JSON.stringify({ mcpServers: { 'ms-sql': { command: 'x' } } }));
+    assert.equal(hasMsSqlEntry(f), true, 'the legacy key counts as a duplicate too');
     fs.writeFileSync(f, '[]');
     assert.equal(hasMsSqlEntry(f), false);
   } finally {

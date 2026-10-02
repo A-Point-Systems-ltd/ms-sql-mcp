@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import { ConnectionProfile } from './connections/profile';
 import { AgentServerSettings, buildServerConnections, cursorServerEnv, missingPasswordMessage, missingPasswords } from './connections/serverEnv';
-import { SERVER_KEY } from './register/naming';
+import { LEGACY_SERVER_KEY, SERVER_KEY } from './register/naming';
 
 // This module must not import 'vscode': the host is injected so the unit tests can drive it with a fake.
 
@@ -37,7 +37,7 @@ export interface CursorRegistrarDeps {
 const SCOPE = 'cursorMcp';
 
 /**
- * Keeps the agent-facing MSSQL-MCP server registered with Cursor through `cursor.mcp.registerServer`, because Cursor
+ * Keeps the agent-facing APoint-ms-sql server registered with Cursor through `cursor.mcp.registerServer`, because Cursor
  * ignores `vscode.lm.registerMcpServerDefinitionProvider`. The registration carries the connection strings (with
  * passwords) in its env, so nothing about it except the connection count is ever logged.
  */
@@ -86,7 +86,7 @@ export class CursorMcpRegistrar {
       const missingKey = missing.join('\n');
       if (missingKey !== this.lastMissing) {
         this.lastMissing = missingKey;
-        if (missing.length) this.deps.warn(`MSSQL-MCP: ${missing.length} connection(s) skipped. ${missing.map(missingPasswordMessage).join(' ')}`);
+        if (missing.length) this.deps.warn(`APoint-ms-sql: ${missing.length} connection(s) skipped. ${missing.map(missingPasswordMessage).join(' ')}`);
       }
 
       // The server exits on an empty config, so register it only when at least one open profile is usable.
@@ -124,7 +124,7 @@ export class CursorMcpRegistrar {
 }
 
 /**
- * What activation does about a duplicate `ms-sql` entry in ~/.cursor/mcp.json: warn while it exists unless the user
+ * What activation does about a duplicate `APoint-ms-sql` or legacy `ms-sql` entry in ~/.cursor/mcp.json: warn while it exists unless the user
  * chose "Don't show again", and clear that choice once the entry is gone (so a new duplicate warns again).
  */
 export function duplicateEntryAction(hasEntry: boolean, dismissed: boolean): 'warn' | 'clear' | 'none' {
@@ -133,14 +133,15 @@ export function duplicateEntryAction(hasEntry: boolean, dismissed: boolean): 'wa
 }
 
 /**
- * True when a Cursor mcp.json already has an `ms-sql` entry. Read-only: a missing file, invalid JSON or an unexpected
+ * True when a Cursor mcp.json already has an `APoint-ms-sql` or legacy `ms-sql` entry. Read-only: a missing file, invalid JSON or an unexpected
  * shape counts as "no entry" and is skipped silently.
  */
 export function hasMsSqlEntry(configPath: string, fsApi: Pick<typeof fs, 'readFileSync'> = fs): boolean {
   try {
     const json: unknown = JSON.parse(fsApi.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
     const servers = (json as { mcpServers?: unknown } | null)?.mcpServers;
-    return typeof servers === 'object' && servers !== null && Object.prototype.hasOwnProperty.call(servers, SERVER_KEY);
+    return typeof servers === 'object' && servers !== null
+      && [SERVER_KEY, LEGACY_SERVER_KEY].some(k => Object.prototype.hasOwnProperty.call(servers, k));
   } catch {
     return false;
   }

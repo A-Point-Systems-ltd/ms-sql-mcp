@@ -24,17 +24,17 @@ const ref = { connection: 'dev', scriptType: 'View', schema: 'dbo', name: 'vOrde
 // ---- I1: title refresh decisions ----
 
 test('titleAction: a query doc retitles to its bound profile after Change Connection or a profile edit', () => {
-  const addr = queryAddr('Query 3 - DC\\DEV - Sales');
+  const addr = queryAddr('Query 3 - DC∖DEV - Sales');
   const assoc = { connection: 'prod', kind: 'query' };
   assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('prod', { server: 'PROD1', database: 'ClientB' }), isDirty: false }),
     { kind: 'retitle', title: 'Query 3 - PROD1 - ClientB' });
   // Same profile, database edited.
   assert.deepEqual(titleAction({ address: addr, assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev', { database: 'Sales2' }), isDirty: false }),
-    { kind: 'retitle', title: 'Query 3 - DC\\DEV - Sales2' });
+    { kind: 'retitle', title: 'Query 3 - DC∖DEV - Sales2' });
 });
 
 test('titleAction: an up-to-date title, no binding, a removed profile or a non-Query title is left alone', () => {
-  const addr = queryAddr('Query 3 - DC\\DEV - Sales');
+  const addr = queryAddr('Query 3 - DC∖DEV - Sales');
   assert.deepEqual(titleAction({ address: addr, assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev'), isDirty: false }), { kind: 'none' });
   assert.deepEqual(titleAction({ address: addr, assoc: undefined, profile: profile('dev'), isDirty: false }), { kind: 'none' });
   assert.deepEqual(titleAction({ address: addr, assoc: { connection: 'gone', kind: 'query' }, profile: undefined, isDirty: false }), { kind: 'none' });
@@ -42,7 +42,7 @@ test('titleAction: an up-to-date title, no binding, a removed profile or a non-Q
 });
 
 test('titleAction: a dirty (or running) document is never closed: the rename waits for the next save', () => {
-  const addr = queryAddr('Query 1 - DC\\DEV - Sales');
+  const addr = queryAddr('Query 1 - DC∖DEV - Sales');
   const input = { address: addr, assoc: { connection: 'p', kind: 'query' }, profile: profile('p', { server: 'S2' }) };
   assert.deepEqual(titleAction({ ...input, isDirty: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
   assert.deepEqual(titleAction({ ...input, isDirty: false, running: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
@@ -50,10 +50,10 @@ test('titleAction: a dirty (or running) document is never closed: the rename wai
 });
 
 test('titleAction: object docs follow profile edits, but keep their title after Change Connection (rebound)', () => {
-  const addr = objectAddr('dbo.vOrders - DC\\DEV - Sales');
+  const addr = objectAddr('dbo.vOrders - DC∖DEV - Sales');
   const assoc = { connection: 'dev', kind: 'object', object: ref, target: { server: 'DC\\DEV', database: 'Sales' } };
   assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('dev', { server: 'DC\\NEW' }), isDirty: false }),
-    { kind: 'retitle', title: 'dbo.vOrders - DC\\NEW - Sales' });
+    { kind: 'retitle', title: 'dbo.vOrders - DC∖NEW - Sales' });
   assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('dev'), isDirty: false }), { kind: 'none' });
   const rebound = { ...assoc, connection: 'prod', object: { ...ref, connection: 'prod' }, rebound: true };
   assert.deepEqual(titleAction({ address: addr, assoc: rebound, profile: profile('prod', { server: 'PROD1' }), isDirty: false }), { kind: 'none' });
@@ -61,10 +61,10 @@ test('titleAction: object docs follow profile edits, but keep their title after 
 
 test('expectedTitle: titles go through titlePart (a / in a name, an empty database)', () => {
   assert.equal(expectedTitle({ address: queryAddr('Query 2 - a - b'), assoc: { connection: 'r', kind: 'query' }, profile: profile('r', { database: '' }) }),
-    'Query 2 - DC\\DEV - default');
+    'Query 2 - DC∖DEV - default');
   assert.equal(expectedTitle({
     address: objectAddr('x'), assoc: { connection: 'dev', kind: 'object', object: { ...ref, name: 'a/b' } }, profile: profile('dev'),
-  }), 'dbo.a∕b - DC\\DEV - Sales');
+  }), 'dbo.a∕b - DC∖DEV - Sales');
   // The kinds must agree (a malformed binding is left alone).
   assert.equal(expectedTitle({ address: objectAddr('x'), assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev') }), undefined);
 });

@@ -165,7 +165,7 @@ export class ConnectionFormManager implements vscode.Disposable {
       return;
     }
     await this.store.upsert(profile, password);
-    void vscode.window.showInformationMessage(`MSSQL-MCP: connection '${profile.name}' saved.`);
+    void vscode.window.showInformationMessage(`APoint-ms-sql: connection '${profile.name}' saved.`);
     form.panel.dispose();
     // After the store change: the runner's debounced reset is pending, and its next call applies it first, so the
     // status check runs against the saved profile set. An edit that points the connection at another server or

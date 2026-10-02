@@ -89,7 +89,7 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
       await showHistory(arg);
     } catch (err) {
       log.error('showHistory', 'Command failed', err);
-      void vscode.window.showErrorMessage(`MSSQL-MCP: ${errorMessage(err)}`);
+      void vscode.window.showErrorMessage(`APoint-ms-sql: ${errorMessage(err)}`);
     }
   }));
 
@@ -97,20 +97,20 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
     const uri = arg instanceof vscode.Uri ? arg : vscode.window.activeTextEditor?.document.uri;
     const ref = refOfNode(arg) ?? (uri ? refOfUri(uri, docs) : undefined);
     if (!ref || !supportsHistory(ref.scriptType)) {
-      void vscode.window.showInformationMessage('MSSQL-MCP: select a table, view, procedure, function, trigger or type in the tree, or open its SQL document.');
+      void vscode.window.showInformationMessage('APoint-ms-sql: select a table, view, procedure, function, trigger or type in the tree, or open its SQL document.');
       return;
     }
     const profile = findProfile(store.list(), ref.connection);
     if (!profile) {
-      void vscode.window.showErrorMessage(`MSSQL-MCP: connection '${ref.connection}' was not found.`);
+      void vscode.window.showErrorMessage(`APoint-ms-sql: connection '${ref.connection}' was not found.`);
       return;
     }
     if (profile.ddlHistory !== true) {
-      void vscode.window.showInformationMessage(`MSSQL-MCP: DDL history is off for '${profile.name}'. Turn it on in Edit Connection.`);
+      void vscode.window.showInformationMessage(`APoint-ms-sql: DDL history is off for '${profile.name}'. Turn it on in Edit Connection.`);
       return;
     }
     if (!profile.open) {
-      void vscode.window.showWarningMessage(`MSSQL-MCP: open the connection '${profile.name}' first.`);
+      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${profile.name}' first.`);
       return;
     }
     const obj = objectDisplayName(ref);
@@ -134,11 +134,11 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
     } catch (err) {
       const message = errorMessage(err);
       if (isNotInstalledError(message)) {
-        await offerSetUp(`MSSQL-MCP '${connection}': ${message}`);
+        await offerSetUp(`APoint-ms-sql '${connection}': ${message}`);
         return;
       }
       log.warn('history', `ddl_history list for ${obj} on '${connection}' failed: ${message}`);
-      void vscode.window.showErrorMessage(`MSSQL-MCP: DDL history of ${obj} on '${connection}' failed: ${message}`);
+      void vscode.window.showErrorMessage(`APoint-ms-sql: DDL history of ${obj} on '${connection}' failed: ${message}`);
       return;
     }
     log.debug('history', `ddl_history list for ${obj} on '${connection}': ${entries.length} of ${listed} entries`);

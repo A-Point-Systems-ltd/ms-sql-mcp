@@ -76,7 +76,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const cursorApi = cursorMcpApi(vscode);
   if (cursorApi) registerCursorServer(context, store, log, cursorApi);
   else registerMcpProvider(context, store, log);
-  log.info('activate', 'MSSQL-MCP activated');
+  log.info('activate', 'APoint-ms-sql activated');
 }
 
 /** Registers the agent-facing MCP server definition provider when the host supports it (VS Code 1.101+, Cursor). */
@@ -130,16 +130,16 @@ function registerCursorServer(context: vscode.ExtensionContext, store: Connectio
 }
 
 /**
- * Warns on every activation while ~/.cursor/mcp.json holds an `ms-sql` entry (the extension never edits that file on
+ * Warns on every activation while ~/.cursor/mcp.json holds an `APoint-ms-sql` or legacy `ms-sql` entry (the extension never edits that file on
  * its own). Only "Don't show again" stops it; the choice is cleared once the entry is gone.
  */
 function warnAboutDuplicateEntry(context: vscode.ExtensionContext, log: Logger): void {
   const action = duplicateEntryAction(hasMsSqlEntry(cursorConfigPath()), context.globalState.get<boolean>(CURSOR_DUPLICATE_FLAG, false));
   if (action === 'clear') void context.globalState.update(CURSOR_DUPLICATE_FLAG, undefined);
   if (action !== 'warn') return;
-  log.warn('activate', "~/.cursor/mcp.json has an 'ms-sql' entry that duplicates the server registered by the extension.");
+  log.warn('activate', "~/.cursor/mcp.json has an 'APoint-ms-sql' or 'ms-sql' entry that duplicates the server registered by the extension.");
   void vscode.window.showWarningMessage(
-    "An 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two MSSQL-MCP servers.",
+    "An 'APoint-ms-sql' or 'ms-sql' entry in ~/.cursor/mcp.json duplicates the server this extension now registers automatically. Remove that entry to avoid two APoint-ms-sql servers.",
     DONT_SHOW_AGAIN,
   ).then(choice => {
     if (choice === DONT_SHOW_AGAIN) void context.globalState.update(CURSOR_DUPLICATE_FLAG, true);

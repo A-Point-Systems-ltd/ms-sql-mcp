@@ -37,12 +37,13 @@ export function newQueryId(): string {
 }
 
 /**
- * One part of a tab title: `/` becomes `∕` (U+2215, so it never adds a path segment), C0/C1 control characters are
- * dropped, surrounding whitespace is trimmed, and an empty part becomes `_`. A backslash is kept: vscode-uri keeps it
- * in `path`, `toString()` / `parse()` and `Utils.basename` (see test/sqlDocNames.test.mjs).
+ * One part of a tab title: `/` becomes `∕` (U+2215) and `\` becomes `∖` (U+2216), so neither adds a path segment
+ * (Cursor builds the tab label after the last `/` or `\`: `dc\dev16` showed as `dev16`). C0/C1 control characters are
+ * dropped, surrounding whitespace is trimmed, and an empty part becomes `_`. Only the URI title uses these look-alikes;
+ * the UI (status bar, tooltips, modals) shows the real `\`.
  */
 export function titlePart(value: string): string {
-  const s = value.replace(/\//g, '∕').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim();
+  const s = value.replace(/\//g, '∕').replace(/\\/g, '∖').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim();
   return s || '_';
 }
 

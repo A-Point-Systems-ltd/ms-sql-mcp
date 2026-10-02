@@ -108,7 +108,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       const line = editorLine(message.line, state.lineOffset);
       if (line === undefined) return;
       revealLine(key, line).catch(err => {
-        void vscode.window.showWarningMessage(`MSSQL-MCP: could not show line ${line + 1}: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showWarningMessage(`APoint-ms-sql: could not show line ${line + 1}: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
   }
@@ -120,7 +120,7 @@ async function revealLine(key: string, line: number): Promise<void> {
   const visible = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === key);
   const document = visible?.document ?? await vscode.workspace.openTextDocument(uri);
   if (line >= document.lineCount) {
-    void vscode.window.showInformationMessage(`MSSQL-MCP: line ${line + 1} is past the end of the document (it changed after the run).`);
+    void vscode.window.showInformationMessage(`APoint-ms-sql: line ${line + 1} is past the end of the document (it changed after the run).`);
     return;
   }
   const range = document.lineAt(line).range;

@@ -27,7 +27,7 @@ export class DdlDocumentProvider implements vscode.TextDocumentContentProvider, 
       const message = err instanceof Error ? err.message : String(err);
       this.log.warn('ddl', `script_object for ${label} failed: ${message}`);
       // An error document instead of a failed open; Refresh on the editor retries.
-      return [`-- MSSQL-MCP could not script ${label}:`, ...message.split(/\r?\n/).map(l => `-- ${l}`),
+      return [`-- APoint-ms-sql could not script ${label}:`, ...message.split(/\r?\n/).map(l => `-- ${l}`),
         '-- Use Refresh (editor title) to retry.'].join('\n');
     }
   }

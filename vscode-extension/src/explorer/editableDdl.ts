@@ -15,7 +15,7 @@ import { definitionUnavailable } from './sqlText';
 import { scriptArgs } from './treeModel';
 
 const MAX_WARNING_CHARS = 600;
-const DIRTY_MESSAGE = 'MSSQL-MCP: Unsaved edits kept - close the editor to reload from the server.';
+const DIRTY_MESSAGE = 'APoint-ms-sql: Unsaved edits kept - close the editor to reload from the server.';
 
 const sameRef = (a: ObjectRef | undefined, b: ObjectRef): boolean =>
   !!a && a.connection === b.connection && a.scriptType === b.scriptType && (a.schema ?? '') === (b.schema ?? '') && a.name === b.name;
@@ -55,7 +55,7 @@ export async function openEditableDdl(
   const bound = docs.get(uri);
   if (bound && bound.kind === 'object' && !sameRef(bound.object, ref)) {
     log.warn('ddl', `${label}: the object document is bound to a different object; not rebinding.`);
-    void vscode.window.showWarningMessage(`MSSQL-MCP: the document for ${label} is bound to a different object. Close it to continue.`);
+    void vscode.window.showWarningMessage(`APoint-ms-sql: the document for ${label} is bound to a different object. Close it to continue.`);
     return true;
   }
 
@@ -114,7 +114,7 @@ export async function openEditableDdl(
   if (warnings.length) {
     const text = warnings.join(' | ');
     log.info('ddl', `script_object warnings for ${label}: ${text}`);
-    void vscode.window.showInformationMessage(`MSSQL-MCP: ${label} - ${text.length > MAX_WARNING_CHARS ? `${text.slice(0, MAX_WARNING_CHARS - 1)}… (full text in the MSSQL-MCP Output)` : text}`);
+    void vscode.window.showInformationMessage(`APoint-ms-sql: ${label} - ${text.length > MAX_WARNING_CHARS ? `${text.slice(0, MAX_WARNING_CHARS - 1)}… (full text in the APoint-ms-sql Output)` : text}`);
   }
   return true;
 }
