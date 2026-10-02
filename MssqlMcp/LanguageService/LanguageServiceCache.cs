@@ -60,6 +60,48 @@ public sealed class LanguageServiceCache : IDisposable
     internal static string MetadataConnectionString(ConnectionProfile profile) =>
         new SqlConnectionStringBuilder(profile.ConnectionString) { Pooling = false, PersistSecurityInfo = true }.ConnectionString;
 
+    /// <summary>
+    /// SQL error numbers a metadata build retries once: 596 (session in the kill state), 233 (no process on the other end
+    /// of the pipe), 10053 / 10054 (connection aborted / reset), 64 (network name no longer available).
+    /// </summary>
+    internal static readonly IReadOnlySet<int> TransientSqlErrors = new HashSet<int> { 596, 233, 10053, 10054, 64 };
+
+    /// <summary>
+    /// The transient SQL error number found on <paramref name="ex"/> or anywhere in its InnerException chain (SMO wraps
+    /// SqlException), or null when there is none. <paramref name="numberOf"/> reads an exception's SQL error number; the
+    /// default reads SqlException.Number and every error in SqlException.Errors.
+    /// </summary>
+    internal static int? TransientSqlNumber(Exception ex, Func<Exception, int?>? numberOf = null)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (numberOf is not null)
+            {
+                if (numberOf(current) is { } n && TransientSqlErrors.Contains(n))
+                {
+                    return n;
+                }
+            }
+            else if (current is SqlException sql)
+            {
+                if (TransientSqlErrors.Contains(sql.Number))
+                {
+                    return sql.Number;
+                }
+
+                foreach (SqlError error in sql.Errors)
+                {
+                    if (TransientSqlErrors.Contains(error.Number))
+                    {
+                        return error.Number;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Completion at a 1-based line and column.</summary>
     public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken)
     {
@@ -96,9 +138,23 @@ public sealed class LanguageServiceCache : IDisposable
             ctx =>
             {
                 var parsed = ctx.ParseAndBind(text);
-                var methods = Resolver.FindMethods(parsed, line, column, ctx.DisplayInfoProvider);
-                var locations = Resolver.GetMethodNameAndParams(parsed, line, column, ctx.DisplayInfoProvider);
-                return CompletionConverter.ToSignatureHelp(methods, locations, line, column);
+                try
+                {
+                    var methods = Resolver.FindMethods(parsed, line, column, ctx.DisplayInfoProvider);
+                    var locations = Resolver.GetMethodNameAndParams(parsed, line, column, ctx.DisplayInfoProvider);
+                    return CompletionConverter.ToSignatureHelp(methods, locations, line, column);
+                }
+                catch (NullReferenceException)
+                {
+                    // SqlParser 180.9.0 throws here for some scalar UDF calls (SqlScalarFunctionCallExpression.GetMyMethodHelpText).
+                    // Known and harmless for the binder: no signatures, logged once per cache entry at Debug.
+                    if (ctx.FirstParserFault())
+                    {
+                        _logger.LogDebug("language_service signatureHelp: SqlParser has no method help at this position (NullReferenceException); further ones are not logged");
+                    }
+
+                    return null;
+                }
             },
             cancellationToken);
 
@@ -332,12 +388,13 @@ public sealed class LanguageServiceCache : IDisposable
                 _logger.LogDebug("language_service metadata provider for '{Connection}' built in {Elapsed} ms", profile.Name, watch.ElapsedMilliseconds);
                 return context;
             }
-            catch (SqlException ex) when (attempt == 1)
+            catch (Exception ex) when (attempt == 1 && TransientSqlNumber(ex) is { } number)
             {
-                // SMO reads instance-wide catalog data; in parallel test runs the build session was occasionally killed
-                // (most likely by another test's ALTER DATABASE ... ROLLBACK IMMEDIATE; not proven). One immediate retry.
+                // A killed session (596, for example by an ALTER DATABASE ... ROLLBACK IMMEDIATE elsewhere on the instance
+                // while SMO reads catalog data) or a dropped transport: one immediate retry. Login, permission and
+                // database errors are never retried.
                 await connection.DisposeAsync().ConfigureAwait(false);
-                _logger.LogDebug("language_service metadata build for '{Connection}' failed once ({Number}); retrying", profile.Name, ex.Number);
+                _logger.LogWarning("language_service metadata build for '{Connection}' hit transient SQL error {Number}; retrying once", profile.Name, number);
             }
             catch (Exception ex)
             {

@@ -92,6 +92,11 @@ internal sealed class BindingContext : IDisposable
         return result;
     }
 
+    private int _parserFaultLogged;
+
+    /// <summary>True the first time it is called for this context: a known SqlParser fault is logged once per entry, not per keystroke.</summary>
+    public bool FirstParserFault() => Interlocked.Exchange(ref _parserFaultLogged, 1) == 0;
+
     public void Dispose()
     {
         try

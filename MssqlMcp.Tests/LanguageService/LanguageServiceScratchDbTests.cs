@@ -5,6 +5,16 @@ using Mssql.McpServer.LanguageService;
 
 namespace MssqlMcp.Tests.LanguageService;
 
+/// <summary>
+/// Runs the language service DB tests alone, never in parallel with other classes: those drop their scratch databases with
+/// SET SINGLE_USER WITH ROLLBACK IMMEDIATE, which can kill an SMO session reading instance-wide catalog data (error 596).
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class LanguageServiceCollection
+{
+    public const string Name = "LanguageService (not parallel)";
+}
+
 /// <summary>One LocalDB scratch database with a small schema, shared by the language service tests and dropped at the end.</summary>
 public sealed class LanguageServiceDatabase : IAsyncLifetime
 {
@@ -48,6 +58,7 @@ public sealed class LanguageServiceDatabase : IAsyncLifetime
 /// language_service against a LocalDB scratch database: completion contexts, hover, signature help, refresh,
 /// the binding timeout, read-only profiles and cache invalidation.
 /// </summary>
+[Collection(LanguageServiceCollection.Name)]
 public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : IClassFixture<LanguageServiceDatabase>
 {
     /// <summary>Keeps the cache's warnings (type and message only), so a cacheState assertion can say why it fell back.</summary>
@@ -423,7 +434,22 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
                 await Task.Delay(100);
             }
 
-            await ScratchDatabases.ExecAsync(master, $"DROP LOGIN [{login}];");
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await ScratchDatabases.ExecAsync(master, $"DROP LOGIN [{login}];");
+                    break;
+                }
+                catch (Microsoft.Data.SqlClient.SqlException) when (attempt < 5)
+                {
+                    // Still logged in: kill only sessions of this exact temp login, re-checked in the same batch as the KILL.
+                    await ScratchDatabases.ExecAsync(
+                        master,
+                        $"DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{login}' AND session_id <> @@SPID; EXEC(@k);");
+                    await Task.Delay(200);
+                }
+            }
         }
     }
 
@@ -479,6 +505,30 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
 
         await WaitForSkippedAsync(cache, 1);
         Assert.Equal("warm", cache.Warm(main));
+    }
+
+    /// <summary>
+    /// SqlParser 180.9.0 throws a NullReferenceException in FindMethods for this scalar UDF call. Signature help returns
+    /// no signatures without a warning per keystroke, and the same entry keeps binding afterwards.
+    /// </summary>
+    [SkippableFact]
+    public async Task Signature_help_at_a_scalar_udf_call_contains_the_parser_fault()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+        await CompleteAsync(cache, main, "SELECT * FROM ", 1, 15);
+        var warningsBefore = Log.Warnings.Count;
+
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Null(await cache.SignatureHelpAsync(main, "EXEC dbo.p 1\nSELECT dbo.f(", 2, 14, CancellationToken.None));
+        }
+
+        Assert.Equal(warningsBefore, Log.Warnings.Count);
+        Assert.Equal(1, cache.EntryCount);
+        var next = await CompleteAsync(cache, main, "SELECT t. FROM dbo.T t", 1, 10);
+        Item(next, "a", "column");
+        Item(next, "b", "column");
     }
 
     private static async Task WaitForSkippedAsync(LanguageServiceCache cache, int expected)
