@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using Microsoft.SqlServer.Management.SqlParser.Intellisense;
 using Mssql.McpServer.Connections;
@@ -8,12 +11,13 @@ namespace Mssql.McpServer.LanguageService;
 
 /// <summary>
 /// SqlParser IntelliSense for the extension's language_service tool. Keeps one SMO metadata provider per
-/// (connection name, database), built lazily in the background and shared by every document. Each entry has one lock,
-/// so SqlParser (not thread-safe) only ever runs one operation per entry at a time: the idea of sqltoolsservice's
-/// binding queue, written for this server. A request waits for binding at most <see cref="CompletionTimeout"/>; after
-/// that completion falls back to keywords (<c>loading</c>) while the build carries on.
-/// Entries are dropped on connection close/removal (<see cref="ConnectionRegistry.Changed"/>), on refresh, and after
-/// <see cref="IdleTimeout"/> unused. Metadata access is read-only; logs carry counts and timings, never SQL text.
+/// (connection name, database, connection-string generation), built lazily in the background and shared by every
+/// document. Each entry has one lock, so SqlParser (not thread-safe) only ever runs one operation per entry at a time:
+/// the idea of sqltoolsservice's binding queue, written for this server. A request waits for binding at most
+/// <see cref="CompletionTimeout"/>; after that completion falls back to keywords (<c>loading</c>) while the build
+/// carries on. Entries are dropped on connection close/removal/replacement (<see cref="ConnectionRegistry.Changed"/>),
+/// on refresh, and after <see cref="IdleTimeout"/> unused. Metadata access is read-only; logs carry the profile name,
+/// counts and timings, never SQL text or connection strings.
 /// </summary>
 public sealed class LanguageServiceCache : IDisposable
 {
@@ -23,18 +27,16 @@ public sealed class LanguageServiceCache : IDisposable
     // A failed build is retried after this long, so a broken connection is not reopened on every keystroke.
     private static readonly TimeSpan FailedRetryDelay = TimeSpan.FromSeconds(30);
 
-    private readonly ISqlConnectionFactory _connectionFactory;
     private readonly ConnectionRegistry _registry;
     private readonly ILogger<LanguageServiceCache> _logger;
     private readonly TimeProvider _time;
     private readonly ITimer _idleTimer;
     private readonly Lock _gate = new();
     private readonly ConcurrentDictionary<Key, Entry> _entries = new();
+    private int _skippedOperations;
 
-    public LanguageServiceCache(
-        ISqlConnectionFactory connectionFactory, ConnectionRegistry registry, ILogger<LanguageServiceCache> logger, TimeProvider? time = null)
+    public LanguageServiceCache(ConnectionRegistry registry, ILogger<LanguageServiceCache> logger, TimeProvider? time = null)
     {
-        _connectionFactory = connectionFactory;
         _registry = registry;
         _logger = logger;
         _time = time ?? TimeProvider.System;
@@ -47,21 +49,32 @@ public sealed class LanguageServiceCache : IDisposable
 
     internal int EntryCount => _entries.Count;
 
+    /// <summary>Queued operations skipped because their request had already returned (timeout or cancellation).</summary>
+    internal int SkippedOperations => Volatile.Read(ref _skippedOperations);
+
+    /// <summary>
+    /// The dedicated SMO session's connection string: the profile's, unpooled, with <c>Persist Security Info=true</c>
+    /// so that SMO's own copies of the string (reconnects, extra connections) keep the password or Entra settings.
+    /// It stays in process memory: never log it or put it in an error.
+    /// </summary>
+    internal static string MetadataConnectionString(ConnectionProfile profile) =>
+        new SqlConnectionStringBuilder(profile.ConnectionString) { Pooling = false, PersistSecurityInfo = true }.ConnectionString;
+
     /// <summary>Completion at a 1-based line and column.</summary>
     public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var entry = GetOrStart(profile);
         var watch = Stopwatch.StartNew();
         try
         {
+            var entry = GetOrStart(profile) ?? throw new StaleProfileException();
             var items = await RunAsync(entry, ctx => Complete(ctx, text, line, column), cancellationToken).ConfigureAwait(false);
             _logger.LogDebug("language_service completion: {Count} items in {Elapsed} ms", items.Count, watch.ElapsedMilliseconds);
             return new CompletionList(items, IsIncomplete: false, CacheStates.Warm);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (ex is not TimeoutException)
+            if (ex is not (TimeoutException or StaleProfileException))
             {
                 _logger.LogWarning("language_service completion fell back to keywords: {Error}", ex.GetType().Name + ": " + ex.Message);
             }
@@ -103,11 +116,23 @@ public sealed class LanguageServiceCache : IDisposable
     internal void EvictIdle()
     {
         var now = _time.GetUtcNow();
-        foreach (var (key, entry) in _entries)
+        foreach (var pair in _entries)
         {
-            if (now - entry.LastUsed > IdleTimeout)
+            if (now - pair.Value.LastUsed <= IdleTimeout)
             {
-                Remove(key);
+                continue;
+            }
+
+            // Remove only the exact entry checked: a fresh one published under the same key in between stays.
+            bool removed;
+            lock (_gate)
+            {
+                removed = _entries.TryRemove(pair);
+            }
+
+            if (removed)
+            {
+                _ = DisposeEntryAsync(pair.Value);
             }
         }
     }
@@ -132,7 +157,7 @@ public sealed class LanguageServiceCache : IDisposable
         }
 
         var tokenText = token?.Text;
-        var items = ProcedureParameterCompletion.Create(text, line, column, Resolver.FindMethods(parsed, line, column, ctx.DisplayInfoProvider));
+        var items = ProcedureParameterCompletion.Create(text, line, column, () => Resolver.FindMethods(parsed, line, column, ctx.DisplayInfoProvider));
         var seen = new HashSet<(string, string)>(items.Select(i => (i.Label, i.Kind)));
         foreach (var declaration in Resolver.FindCompletions(parsed, line, column, ctx.DisplayInfoProvider) ?? [])
         {
@@ -178,7 +203,8 @@ public sealed class LanguageServiceCache : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            return await RunAsync(GetOrStart(profile), operation, cancellationToken).ConfigureAwait(false);
+            var entry = GetOrStart(profile);
+            return entry is null ? null : await RunAsync(entry, operation, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -193,20 +219,38 @@ public sealed class LanguageServiceCache : IDisposable
 
     /// <summary>
     /// Runs <paramref name="operation"/> on the entry's context under its lock, waiting at most <see cref="CompletionTimeout"/>.
-    /// On timeout the work keeps running (it finishes the build and warms SMO's lazy metadata) and a TimeoutException is
-    /// thrown. On cancellation the wait ends and work that has not started yet is skipped.
+    /// When the wait ends first (timeout or cancellation) the request is marked abandoned: its queued operation is skipped
+    /// when it reaches the lock, while the metadata build itself (a separate task) carries on.
     /// </summary>
     private async Task<T> RunAsync<T>(Entry entry, Func<BindingContext, T> operation, CancellationToken cancellationToken)
     {
+        var request = new RequestState();
         var work = Task.Run(
             async () =>
             {
                 var ctx = await entry.Ready.ConfigureAwait(false);
-                await entry.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (request.Abandoned || cancellationToken.IsCancellationRequested)
+                {
+                    throw Skip();
+                }
+
                 try
                 {
+                    await entry.Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw Skip();
+                }
+
+                try
+                {
+                    if (request.Abandoned || cancellationToken.IsCancellationRequested)
+                    {
+                        throw Skip();
+                    }
+
                     ObjectDisposedException.ThrowIf(entry.Disposed, typeof(BindingContext));
-                    cancellationToken.ThrowIfCancellationRequested();
                     return operation(ctx);
                 }
                 finally
@@ -216,18 +260,42 @@ public sealed class LanguageServiceCache : IDisposable
             },
             CancellationToken.None);
 
-        // Abandoned work (timeout or cancellation) must not raise unobserved task exceptions.
+        // Abandoned work must not raise unobserved task exceptions.
         _ = work.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
-        return await work.WaitAsync(CompletionTimeout, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await work.WaitAsync(CompletionTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            request.Abandoned = true;
+            throw;
+        }
     }
 
-    private Entry GetOrStart(ConnectionProfile profile)
+    private OperationCanceledException Skip()
+    {
+        _ = Interlocked.Increment(ref _skippedOperations);
+        return new OperationCanceledException("language_service request already returned.");
+    }
+
+    /// <summary>
+    /// The entry for the profile, started if needed; null when the profile is stale (closed, removed or replaced since
+    /// the request resolved it), so an old request can never publish an entry for a connection that changed.
+    /// </summary>
+    private Entry? GetOrStart(ConnectionProfile profile)
     {
         var key = KeyOf(profile);
         Entry? stale = null;
         Entry entry;
         lock (_gate)
         {
+            // Checked under the gate that OnConnectionChanged also takes, so a close cannot slip in between check and publish.
+            if (!_registry.IsOpen(profile.Name) || _registry.Find(profile.Name) != profile)
+            {
+                return null;
+            }
+
             if (!_entries.TryGetValue(key, out var existing)
                 || (existing.Ready.IsFaulted && _time.GetUtcNow() - existing.Created > FailedRetryDelay))
             {
@@ -252,32 +320,53 @@ public sealed class LanguageServiceCache : IDisposable
     private Task<BindingContext> StartBuild(ConnectionProfile profile) => Task.Run(async () =>
     {
         var watch = Stopwatch.StartNew();
-        Microsoft.Data.SqlClient.SqlConnection connection;
+        for (var attempt = 1; ; attempt++)
+        {
+            var connection = new SqlConnection(MetadataConnectionString(profile));
+            try
+            {
+                // Outside the pool. SMO closes and reopens this SqlConnection as it needs (observed: no open session between
+                // requests); Persist Security Info keeps the credentials for that and for any copy SMO makes of the string.
+                await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+                var context = BindingContext.Create(connection);
+                _logger.LogDebug("language_service metadata provider for '{Connection}' built in {Elapsed} ms", profile.Name, watch.ElapsedMilliseconds);
+                return context;
+            }
+            catch (SqlException ex) when (attempt == 1)
+            {
+                // SMO reads instance-wide catalog data; in parallel test runs the build session was occasionally killed
+                // (most likely by another test's ALTER DATABASE ... ROLLBACK IMMEDIATE; not proven). One immediate retry.
+                await connection.DisposeAsync().ConfigureAwait(false);
+                _logger.LogDebug("language_service metadata build for '{Connection}' failed once ({Number}); retrying", profile.Name, ex.Number);
+            }
+            catch (Exception ex)
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
 
-        // A dedicated session (outside the pool): SMO keeps it for the entry's lifetime.
-        using (CurrentConnection.Use(profile))
-        {
-            connection = await _connectionFactory.GetOpenUnpooledConnectionAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        try
-        {
-            var context = BindingContext.Create(connection);
-            _logger.LogDebug("language_service metadata provider for '{Connection}' built in {Elapsed} ms", profile.Name, watch.ElapsedMilliseconds);
-            return context;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning("language_service could not build metadata for '{Connection}': {Error}", profile.Name, ex.GetType().Name + ": " + ex.Message);
-            throw;
+                // SqlException messages name the server and login at most, never the password; the string itself is never logged.
+                _logger.LogWarning("language_service could not build metadata for '{Connection}': {Error}", profile.Name, ex.GetType().Name + ": " + ex.Message);
+                throw;
+            }
         }
     });
 
     private void OnConnectionChanged(object? sender, ConnectionChangedEventArgs e)
     {
-        foreach (var key in _entries.Keys.Where(k => string.Equals(k.Connection, e.Name, StringComparison.OrdinalIgnoreCase)))
+        List<Entry> removed = [];
+        lock (_gate)
         {
-            Remove(key);
+            foreach (var key in _entries.Keys.Where(k => string.Equals(k.Connection, e.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (_entries.TryRemove(key, out var entry))
+                {
+                    removed.Add(entry);
+                }
+            }
+        }
+
+        foreach (var entry in removed)
+        {
+            _ = DisposeEntryAsync(entry);
         }
     }
 
@@ -323,35 +412,57 @@ public sealed class LanguageServiceCache : IDisposable
         }
     }
 
-    private static string StateOf(Entry entry) => entry.Ready.IsCompletedSuccessfully ? CacheStates.Warm : CacheStates.Loading;
+    private static string StateOf(Entry? entry) => entry?.Ready.IsCompletedSuccessfully == true ? CacheStates.Warm : CacheStates.Loading;
 
-    /// <summary>The profile's database is its Initial Catalog (empty: the login's default database). A leading USE in the text is not followed.</summary>
+    /// <summary>
+    /// The profile's database is its Initial Catalog (empty: the login's default database); a leading USE in the text is
+    /// not followed. The generation is a hash of the connection string, kept in memory only, so a re-registered profile
+    /// with another string never shares an entry with the old one.
+    /// </summary>
     private static Key KeyOf(ConnectionProfile profile)
     {
         string database;
         try
         {
-            database = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(profile.ConnectionString).InitialCatalog ?? string.Empty;
+            database = new SqlConnectionStringBuilder(profile.ConnectionString).InitialCatalog ?? string.Empty;
         }
         catch (ArgumentException)
         {
             database = string.Empty;
         }
 
-        return new Key(profile.Name.ToUpperInvariant(), database.ToUpperInvariant());
+        var generation = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.ConnectionString)), 0, 16);
+        return new Key(profile.Name.ToUpperInvariant(), database.ToUpperInvariant(), generation);
     }
 
-    private readonly record struct Key(string Connection, string Database);
+    private readonly record struct Key(string Connection, string Database, string Generation)
+    {
+        // Never print the generation hash.
+        public override string ToString() => $"{Connection}/{Database}";
+    }
+
+    private sealed class RequestState
+    {
+        private volatile bool _abandoned;
+
+        public bool Abandoned
+        {
+            get => _abandoned;
+            set => _abandoned = value;
+        }
+    }
+
+    private sealed class StaleProfileException() : InvalidOperationException("The connection changed after this request resolved it.");
 
     private sealed class Entry(Task<BindingContext> ready, DateTimeOffset created)
     {
+        private long _lastUsedTicks = created.UtcTicks;
+
         public Task<BindingContext> Ready { get; } = ready;
 
         public DateTimeOffset Created { get; } = created;
 
         public SemaphoreSlim Lock { get; } = new(1, 1);
-
-        private long _lastUsedTicks = created.UtcTicks;
 
         public DateTimeOffset LastUsed
         {

@@ -32,6 +32,7 @@ public sealed class LanguageServiceDatabase : IAsyncLifetime
         await ScratchDatabases.ExecAsync(ConnectionString, "CREATE TABLE sales.Orders (id int, total money);");
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE PROCEDURE dbo.p @x int AS SELECT @x;');");
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE PROCEDURE dbo.p2 @x int, @y nvarchar(10) OUTPUT AS SELECT @x;');");
+        await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE FUNCTION dbo.f (@a int) RETURNS int AS BEGIN RETURN @a; END');");
     }
 
     public async Task DisposeAsync()
@@ -49,13 +50,32 @@ public sealed class LanguageServiceDatabase : IAsyncLifetime
 /// </summary>
 public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : IClassFixture<LanguageServiceDatabase>
 {
+    /// <summary>Keeps the cache's warnings (type and message only), so a cacheState assertion can say why it fell back.</summary>
+    private static readonly WarningLog Log = new();
+
+    private sealed class WarningLog : Microsoft.Extensions.Logging.ILogger<LanguageServiceCache>
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> Warnings { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => logLevel >= Microsoft.Extensions.Logging.LogLevel.Warning;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+            {
+                Warnings.Enqueue(formatter(state, exception));
+            }
+        }
+    }
     private (LanguageServiceCache Cache, ConnectionRegistry Registry, ConnectionProfile Main) Create(bool readOnly = false, TimeSpan? timeout = null, TimeProvider? time = null)
     {
         Skip.If(db.SkipReason is not null, db.SkipReason);
         var main = new ConnectionProfile("main", db.ConnectionString!, readOnly, false, ConnectionSource.Configured);
         var other = new ConnectionProfile("other", db.ConnectionString!, true, false, ConnectionSource.Configured);
         var registry = new ConnectionRegistry([main, other]);
-        var cache = new LanguageServiceCache(new SqlConnectionFactory(registry), registry, NullLogger<LanguageServiceCache>.Instance, time)
+        var cache = new LanguageServiceCache(registry, Log, time)
         {
             // Generous by default so a cold LocalDB bind cannot make a context test flaky; the timeout test sets its own.
             CompletionTimeout = timeout ?? TimeSpan.FromSeconds(60),
@@ -66,7 +86,7 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
     private static async Task<CompletionList> CompleteAsync(LanguageServiceCache cache, ConnectionProfile profile, string text, int line, int column)
     {
         var result = await cache.CompleteAsync(profile, text, line, column, CancellationToken.None);
-        Assert.Equal("warm", result.CacheState);
+        Assert.True(result.CacheState == "warm", "cacheState " + result.CacheState + "; cache warnings: " + string.Join(" | ", Log.Warnings));
         return result;
     }
 
@@ -323,6 +343,151 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
             Assert.True(ok.Success, ok.Error);
             var list = Assert.IsType<CompletionList>(ok.Data);
             Assert.Contains(list.Items, i => i.Label == "a");
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_later_statement_calling_a_scalar_udf_gets_no_parameter_items()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+
+        var list = await CompleteAsync(cache, main, "EXEC dbo.p 1\nSELECT dbo.f(", 2, 14);
+
+        Assert.DoesNotContain(list.Items, i => i.Kind == "parameter" && i.InsertText.EndsWith(" = ", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task Completion_works_in_a_later_batch()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+
+        var list = await CompleteAsync(cache, main, "SELECT 1\nGO\nSELECT t. FROM dbo.T t", 3, 10);
+        Item(list, "a", "column");
+        Item(list, "b", "column");
+    }
+
+    /// <summary>
+    /// A SQL login with only db_datareader (LocalDB is in mixed mode): the dedicated SMO session must keep the password
+    /// (PersistSecurityInfo) and completion must need nothing beyond read permissions. Login and user are dropped after.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_sql_login_with_only_db_datareader_gets_completion_and_hover()
+    {
+        Skip.If(db.SkipReason is not null, db.SkipReason);
+        var login = "McpLsReader_" + Guid.NewGuid().ToString("N")[..8];
+        var password = "Aa1!" + Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).Replace("'", "x", StringComparison.Ordinal);
+        var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(db.ConnectionString!);
+        var master = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(db.ConnectionString!) { InitialCatalog = "master" }.ConnectionString;
+        Skip.If(await ScratchDatabases.ScalarAsync<int>(master, "SELECT CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS int)") == 1, "LocalDB is in Windows-only authentication mode.");
+
+        await ScratchDatabases.ExecAsync(master, $"CREATE LOGIN [{login}] WITH PASSWORD = N'{password}', CHECK_POLICY = OFF;");
+        try
+        {
+            await ScratchDatabases.ExecAsync(db.ConnectionString!, $"CREATE USER [{login}] FOR LOGIN [{login}]; ALTER ROLE db_datareader ADD MEMBER [{login}];");
+            var sqlAuth = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder
+            {
+                DataSource = builder.DataSource,
+                InitialCatalog = builder.InitialCatalog,
+                UserID = login,
+                Password = password,
+                TrustServerCertificate = true,
+            }.ConnectionString;
+            var profile = new ConnectionProfile("reader", sqlAuth, true, false, ConnectionSource.Configured);
+            var registry = new ConnectionRegistry([profile]);
+            using var cache = new LanguageServiceCache(registry, NullLogger<LanguageServiceCache>.Instance) { CompletionTimeout = TimeSpan.FromSeconds(60) };
+
+            var list = await CompleteAsync(cache, profile, "SELECT t. FROM dbo.T t", 1, 10);
+            Item(list, "a", "column");
+            Item(await CompleteAsync(cache, profile, "SELECT * FROM ", 1, 15), "T", "table");
+            // Catalog views hide procedures from a login without VIEW DEFINITION / EXECUTE, so no EXEC check here.
+            var hover = await cache.HoverAsync(profile, "SELECT a FROM dbo.T", 1, 9, CancellationToken.None);
+            Assert.NotNull(hover);
+            Assert.Contains("int", hover.Contents, StringComparison.OrdinalIgnoreCase);
+
+            // The profile's own string is untouched.
+            Assert.False(new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(profile.ConnectionString).PersistSecurityInfo);
+        }
+        finally
+        {
+            Microsoft.Data.SqlClient.SqlConnection.ClearAllPools();
+            await ScratchDatabases.ExecAsync(db.ConnectionString!, $"IF USER_ID(N'{login}') IS NOT NULL DROP USER [{login}];");
+
+            // No KILL by session id: in a parallel test run an id can be reused by another test's session between the
+            // lookup and the KILL. The cache closed its session on dispose; wait for the server to finish the logout.
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (await ScratchDatabases.ScalarAsync<int>(master, $"SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE login_name = N'{login}'") > 0
+                   && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(100);
+            }
+
+            await ScratchDatabases.ExecAsync(master, $"DROP LOGIN [{login}];");
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_request_with_a_stale_profile_does_not_rebuild_an_entry()
+    {
+        var (cache, registry, main) = Create();
+        using var _ = cache;
+
+        await CompleteAsync(cache, main, "SELECT * FROM ", 1, 15);
+        Assert.True(registry.Close("main"));
+        Assert.Equal(0, cache.EntryCount);
+
+        // A call that resolved 'main' before the close must not bring the entry back.
+        var stale = await cache.CompleteAsync(main, "SELECT * FROM ", 1, 15, CancellationToken.None);
+        Assert.Equal("loading", stale.CacheState);
+        Assert.Equal(0, cache.EntryCount);
+
+        // Ad-hoc replacement under the same name: the old profile is stale, the new one gets its own entry.
+        var oldAdhoc = new ConnectionProfile("x", db.ConnectionString!, true, false, ConnectionSource.Adhoc);
+        registry.Register(oldAdhoc);
+        await CompleteAsync(cache, oldAdhoc, "SELECT * FROM ", 1, 15);
+        var newAdhoc = oldAdhoc with { ConnectionString = db.ConnectionString + ";Application Name=replaced" };
+        registry.Register(newAdhoc);
+        Assert.Equal(0, cache.EntryCount);
+        Assert.Equal("loading", (await cache.CompleteAsync(oldAdhoc, "SELECT * FROM ", 1, 15, CancellationToken.None)).CacheState);
+        Assert.Equal(0, cache.EntryCount);
+        Item(await CompleteAsync(cache, newAdhoc, "SELECT * FROM ", 1, 15), "T", "table");
+        Assert.Equal(1, cache.EntryCount);
+    }
+
+    [SkippableFact]
+    public async Task Cancelling_while_waiting_for_the_build_returns_at_once_and_the_work_is_skipped()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cache.CompleteAsync(main, "SELECT * FROM ", 1, 15, cts.Token));
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), watch.Elapsed.ToString());
+        await WaitForSkippedAsync(cache, 1);
+    }
+
+    [SkippableFact]
+    public async Task Work_abandoned_by_a_timeout_is_skipped_but_the_build_finishes()
+    {
+        var (cache, _, main) = Create(timeout: TimeSpan.FromMilliseconds(1));
+        using var _ = cache;
+
+        Assert.Equal("loading", (await cache.CompleteAsync(main, "SELECT * FROM ", 1, 15, CancellationToken.None)).CacheState);
+
+        await WaitForSkippedAsync(cache, 1);
+        Assert.Equal("warm", cache.Warm(main));
+    }
+
+    private static async Task WaitForSkippedAsync(LanguageServiceCache cache, int expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (cache.SkippedOperations < expected)
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"skipped {cache.SkippedOperations}, expected {expected}");
+            await Task.Delay(50);
         }
     }
 

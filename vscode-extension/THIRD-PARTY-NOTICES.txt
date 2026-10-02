@@ -102,57 +102,30 @@ It also applies even if Microsoft knew or should have known about the possibilit
 
 
 
-
 ==============================================================================================================
-
 2. Microsoft.SqlServer.SqlManagementObjects 181.37.1 and Microsoft.SqlServer.Management.SmoMetadataProvider 181.37.1
-
    https://www.nuget.org/packages/Microsoft.SqlServer.SqlManagementObjects/181.37.1
-
    https://www.nuget.org/packages/Microsoft.SqlServer.Management.SmoMetadataProvider/181.37.1
-
    Licence: MIT (Copyright (c) Microsoft Corporation)
-
-
 
 3. Code ported from microsoft/sqltoolsservice (https://github.com/microsoft/sqltoolsservice),
-
    commit 02de444481bccd4492cd4e35e44fb97738f3a770, into MssqlMcp/LanguageService/ (each file names its source).
-
    Licence: MIT (Copyright (c) Microsoft Corporation)
-
 ==============================================================================================================
-
-
 
 MIT License
 
-
-
 Copyright (c) Microsoft Corporation
 
-
-
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
-
 the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
-
 permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-
-
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-
 the Software.
 
-
-
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-
 WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -138,25 +138,26 @@ internal sealed class BindingContext : IDisposable
         return Enum.TryParse<TransactSqlVersion>($"Version{compatLevel}", out var version) ? version : TransactSqlVersion.Current;
     }
 
+    /// <summary>
+    /// The highest compat level of master (the instance's highest) and the connection's database. Adapted: one direct
+    /// catalog query instead of SMO's Databases collection, which enumerates every database on the instance.
+    /// </summary>
     private static SMO.CompatibilityLevel GetServerCompatibilityLevel(SMO.Server server)
     {
-        // Only fetch the property needed here.
-        server.SetDefaultInitFields(typeof(SMO.Database), nameof(SMO.Database.CompatibilityLevel));
         try
         {
-            // master has the highest compat level of the instance.
-            return server.Databases["master"].CompatibilityLevel;
+            var level = server.ConnectionContext.ExecuteScalar(
+                "SELECT MAX(compatibility_level) FROM sys.databases WHERE name IN (N'master', DB_NAME());");
+            if (level is not null and not DBNull)
+            {
+                return (SMO.CompatibilityLevel)Convert.ToInt32(level, System.Globalization.CultureInfo.InvariantCulture);
+            }
         }
         catch (Exception)
         {
-            try
-            {
-                return server.Databases[server.ConnectionContext.DatabaseName].CompatibilityLevel;
-            }
-            catch (Exception)
-            {
-                return Enum.GetValues<SMO.CompatibilityLevel>().Max();
-            }
+            // Fall through to the highest known level, like the original.
         }
+
+        return Enum.GetValues<SMO.CompatibilityLevel>().Max();
     }
 }

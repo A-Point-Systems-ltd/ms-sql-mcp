@@ -39,8 +39,21 @@ public sealed class ProcedureParameterCompletionTests
     [InlineData("EXEC dbo.p|")]
     [InlineData("EXEC dbo.p @x = |")]
     [InlineData("EXEC dbo.p 1; SELECT |")]
+    [InlineData("EXEC dbo.p 1\nSELECT * FROM dbo.fn(|")]
+    [InlineData("EXEC dbo.p 1\nGO\nSELECT * FROM dbo.fn(|")]
+    [InlineData("EXEC dbo.p 1\nGO\n|")]
+    [InlineData("EXEC dbo.p 1\nSELECT |")]
+    [InlineData("EXEC dbo.p 1\nSELECT dbo.f(|")]
     [InlineData("-- EXEC dbo.p\nSELECT |")]
     public void No_parameter_list_outside_an_argument_position(string text) => Assert.Null(Scan(text));
+
+    [Fact]
+    public void An_exec_spanning_lines_with_the_caret_inside_qualifies()
+    {
+        var scan = Scan("EXEC dbo.p3\n    @a = 1,\n    |,\n    @c = 2\nSELECT 1");
+        Assert.NotNull(scan);
+        Assert.Equal(["@a", "@c"], scan.Value.Named);
+    }
 
     [Fact]
     public void The_scan_stops_at_the_next_statement()

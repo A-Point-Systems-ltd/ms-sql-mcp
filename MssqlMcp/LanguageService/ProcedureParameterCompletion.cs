@@ -22,16 +22,36 @@ internal static class ProcedureParameterCompletion
     /// The parameter items for the caret, or none when the caret is not in an EXEC argument list (or is in a value).
     /// <paramref name="line"/> and <paramref name="column"/> are 1-based.
     /// </summary>
-    public static List<CompletionItemInfo> Create(string text, int line, int column, IReadOnlyList<MethodHelpText>? methods)
+    /// <remarks>
+    /// <paramref name="findMethods"/> (<c>Resolver.FindMethods</c>) runs only once the scan has found an EXEC argument
+    /// position: SqlParser 180.9.0 throws a NullReferenceException in it for some scalar function calls, and an exception
+    /// here gives no parameter items instead of failing the whole completion.
+    /// </remarks>
+    public static List<CompletionItemInfo> Create(string text, int line, int column, Func<IReadOnlyList<MethodHelpText>?> findMethods)
     {
         var items = new List<CompletionItemInfo>();
-        if (methods is not { Count: > 0 } || !TryGetOffset(text, line, column, out var caret))
+        if (!TryGetOffset(text, line, column, out var caret))
         {
             return items;
         }
 
         var context = ScanExecArguments(text, caret);
         if (context is null)
+        {
+            return items;
+        }
+
+        IReadOnlyList<MethodHelpText>? methods;
+        try
+        {
+            methods = findMethods();
+        }
+        catch (Exception ex) when (ex is NullReferenceException or InvalidOperationException or ArgumentException or IndexOutOfRangeException)
+        {
+            return items;
+        }
+
+        if (methods is not { Count: > 0 })
         {
             return items;
         }
@@ -76,11 +96,11 @@ internal static class ProcedureParameterCompletion
     {
         var tokens = Tokenize(text);
 
-        // The last EXEC/EXECUTE before the caret, with no ';' between them.
+        // The last EXEC/EXECUTE before the caret, with no ";" or GO between them.
         var exec = -1;
         for (var i = 0; i < tokens.Count && tokens[i].Start < caret; i++)
         {
-            if (tokens[i].Text == ";")
+            if (tokens[i].Text == ";" || (tokens[i].IsWord && tokens[i].Text.Equals("GO", StringComparison.OrdinalIgnoreCase)))
             {
                 exec = -1;
             }
@@ -129,6 +149,12 @@ internal static class ProcedureParameterCompletion
             var t = tokens[i];
             if (t.Text == ";" || (depth == 0 && t.IsWord && StatementStarters.Contains(t.Text)))
             {
+                // The statement ends before the caret: the caret is in a later statement, not in this EXEC.
+                if (t.Start < caret)
+                {
+                    return null;
+                }
+
                 break;
             }
 
