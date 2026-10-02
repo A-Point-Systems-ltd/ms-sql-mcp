@@ -1,8 +1,10 @@
 // The data grid's model, shared by Data View and the Results panel: column types, cell text, the sort comparator,
 // the Data View query and webview message validation. No 'vscode' import (unit-testable).
 //
-// compareGridValues and gridSortOrder are also inlined into the webview script (Function.prototype.toString), so
-// they must stay self-contained function declarations: no imports, no outer helpers.
+// BUILD NOTE: compareGridValues, gridSortOrder and tooltipText are also inlined into the webview script with
+// Function.prototype.toString (see gridHtml.gridScript). They must stay self-contained function declarations: no
+// imports, no module constants, no other helpers, nothing tsc would rewrite to `exports.x` (test/grid.test.mjs runs
+// the inlined copies in isolation to guard this).
 import { qualified, bracket } from '../explorer/sqlText';
 
 export type SortDir = 'asc' | 'desc';
@@ -60,17 +62,19 @@ export function copyText(value: unknown): string {
   return value === null || value === undefined ? '' : cellText(value);
 }
 
-/** A cell tooltip: the value, cut to {@link TOOLTIP_MAX} characters (the last one an ellipsis) when longer. */
+/** A cell tooltip: the value, cut to {@link TOOLTIP_MAX} characters (the last one an ellipsis) when longer. Inlined. */
 export function tooltipText(text: string): string {
-  return text.length > TOOLTIP_MAX ? `${text.slice(0, TOOLTIP_MAX - 1)}…` : text;
+  const max = 2000; // = TOOLTIP_MAX (kept literal: this function is inlined into the webview)
+  return text.length > max ? text.slice(0, max - 1) + '…' : text;
 }
 
 /**
  * Orders two cell values for the local sort: NULL (null) first, then numbers by value when `numeric` (exact for
  * plain decimal strings, so `decimal(38)` and big `bigint` text compare correctly), otherwise localeCompare.
- * Values of a numeric column that are not numbers fall back to localeCompare.
+ * Values of a numeric column that are not numbers fall back to the text compare. `compare` replaces localeCompare
+ * for text (the webview passes a shared Intl.Collator's compare). Inlined.
  */
-export function compareGridValues(a: string | null, b: string | null, numeric: boolean): number {
+export function compareGridValues(a: string | null, b: string | null, numeric: boolean, compare?: (x: string, y: string) => number): number {
   if (a === null || b === null) return a === b ? 0 : a === null ? -1 : 1;
   if (numeric) {
     const plain = /^\s*([-+]?)(\d+)(?:\.(\d*))?\s*$/;
@@ -100,18 +104,18 @@ export function compareGridValues(a: string | null, b: string | null, numeric: b
     const nb = Number(b);
     if (a.trim() !== '' && b.trim() !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return na < nb ? -1 : na > nb ? 1 : 0;
   }
-  return a.localeCompare(b);
+  return compare ? compare(a, b) : a.localeCompare(b);
 }
 
 /**
  * The row order of a stable sort of `values` (one per row, null = NULL): the original row indexes in display
  * order. Ascending puts NULLs first; descending reverses the order of the values but keeps equal values in their
- * original order.
+ * original order. `compare` is passed on to compareGridValues. Inlined.
  */
-export function gridSortOrder(values: (string | null)[], numeric: boolean, dir: SortDir): number[] {
+export function gridSortOrder(values: (string | null)[], numeric: boolean, dir: SortDir, compare?: (x: string, y: string) => number): number[] {
   const order = values.map((_, i) => i);
   order.sort((x, y) => {
-    const c = compareGridValues(values[x], values[y], numeric);
+    const c = compareGridValues(values[x], values[y], numeric, compare);
     return (dir === 'desc' ? -c : c) || x - y;
   });
   return order;
@@ -146,30 +150,55 @@ export function dataViewSql(object: { schema?: string; name: string }, top: numb
   return `SELECT TOP (${top + 1}) * FROM ${qualified(object.schema, object.name)}${orderBy}`;
 }
 
+/** The note shown when a reload no longer has the sorted column (the sort is then cleared). */
+export const SORT_COLUMN_GONE = 'Sort column no longer exists';
+
+/**
+ * The stored Data View sort checked against a new result's columns: kept (with the column's current type) when the
+ * column is still there and sortable, otherwise cleared with {@link SORT_COLUMN_GONE}. `col` is its index or -1.
+ */
+export function reconcileSort(sort: DataViewOrder | undefined, columns: readonly GridColumn[]): { sort?: DataViewOrder; col: number; note?: string } {
+  if (!sort) return { col: -1 };
+  const col = columns.findIndex(c => c.name === sort.column);
+  if (col < 0 || !isSortableType(columns[col].type)) return { col: -1, note: SORT_COLUMN_GONE };
+  return { sort: { ...sort, type: columns[col].type }, col };
+}
+
+/** The status bar text after a copy: it says so when the value was cut by the server's cell cap. */
+export function copiedMessage(text: string): string {
+  return TRUNCATED_SUFFIX.test(text) ? 'Copied (value truncated by the server)' : 'Copied';
+}
+
 // --- Webview messages ------------------------------------------------------------------------------------------
 
 export type DataViewMessage =
-  | { type: 'copy'; row: number; col: number }
+  | { type: 'copy'; row: number; col: number; gen: number }
   | { type: 'sort'; col: number; dir: SortDir | 'none' }
   | { type: 'reload'; top: number };
 
 export type ResultsMessage =
-  | { type: 'copy'; set: number; row: number; col: number }
+  | { type: 'copy'; set: number; row: number; col: number; gen: number }
   | { type: 'reveal'; line: number }
   | { type: 'cancel' };
 
-/** Rows and columns of one rendered grid, for index validation. */
+/**
+ * Rows and columns of one rendered grid, for index validation. Copy messages echo the render counter (`data-gen`) of
+ * the page they came from; a copy whose gen is not the current render's is ignored.
+ */
 export interface GridDims { rows: number; cols: number }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isGen = (v: unknown, gen: number): v is number => typeof v === 'number' && Number.isInteger(v) && v === gen;
 const index = (v: unknown, length: number): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < length;
 
 /** A Data View webview message, validated against the grid on screen; undefined when anything is off. */
-export function parseDataViewMessage(raw: unknown, dims: GridDims): DataViewMessage | undefined {
+export function parseDataViewMessage(raw: unknown, dims: GridDims, gen: number): DataViewMessage | undefined {
   if (!isRecord(raw)) return undefined;
   switch (raw.type) {
     case 'copy':
-      return index(raw.row, dims.rows) && index(raw.col, dims.cols) ? { type: 'copy', row: raw.row, col: raw.col } : undefined;
+      return isGen(raw.gen, gen) && index(raw.row, dims.rows) && index(raw.col, dims.cols)
+        ? { type: 'copy', row: raw.row, col: raw.col, gen: raw.gen }
+        : undefined;
     case 'sort':
       return index(raw.col, dims.cols) && (raw.dir === 'asc' || raw.dir === 'desc' || raw.dir === 'none')
         ? { type: 'sort', col: raw.col, dir: raw.dir }
@@ -184,13 +213,15 @@ export function parseDataViewMessage(raw: unknown, dims: GridDims): DataViewMess
 }
 
 /** A Results webview message, validated against the result sets on screen; undefined when anything is off. */
-export function parseResultsMessage(raw: unknown, sets: readonly GridDims[]): ResultsMessage | undefined {
+export function parseResultsMessage(raw: unknown, sets: readonly GridDims[], gen: number): ResultsMessage | undefined {
   if (!isRecord(raw)) return undefined;
   switch (raw.type) {
     case 'copy': {
-      if (!index(raw.set, sets.length)) return undefined;
+      if (!isGen(raw.gen, gen) || !index(raw.set, sets.length)) return undefined;
       const dims = sets[raw.set];
-      return index(raw.row, dims.rows) && index(raw.col, dims.cols) ? { type: 'copy', set: raw.set, row: raw.row, col: raw.col } : undefined;
+      return index(raw.row, dims.rows) && index(raw.col, dims.cols)
+        ? { type: 'copy', set: raw.set, row: raw.row, col: raw.col, gen: raw.gen }
+        : undefined;
     }
     case 'reveal':
       return typeof raw.line === 'number' && Number.isInteger(raw.line) ? { type: 'reveal', line: raw.line } : undefined;

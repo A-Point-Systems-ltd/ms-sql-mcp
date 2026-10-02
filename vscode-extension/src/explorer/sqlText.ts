@@ -10,9 +10,6 @@ export const qualified = (schema: string | undefined, name: string): string => (
 /** A T-SQL Unicode string literal: `N'...'` with every `'` doubled. */
 export const sqlString = (value: string): string => `N'${value.replace(/'/g, "''")}'`;
 
-export const previewSql = (schema: string | undefined, name: string, rows: number): string =>
-  `SELECT TOP (${Math.max(1, Math.floor(rows))}) * FROM ${qualified(schema, name)}`;
-
 const enc = encodeURIComponent;
 
 /**

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { cellAt, copyText, parseResultsMessage } from '../grid/gridModel';
+import { cellAt, copiedMessage, copyText, parseResultsMessage } from '../grid/gridModel';
 import { makeNonce } from '../webviewUtil';
 import { ResultsState, renderResults } from './resultsHtml';
 import { editorLine } from './runScript';
@@ -18,6 +18,8 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
   /** Document whose state is on screen, and that state (to skip re-rendering an unchanged view). */
   private shownKey: string | undefined;
   private shownState: ResultsState | undefined;
+  /** Render counter of the page on screen; copy messages from an older page are ignored. */
+  private gen = 0;
   /** Listeners of the current webview; disposed with it. */
   private viewSubs: vscode.Disposable[] = [];
 
@@ -70,7 +72,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       : (this.shownKey !== undefined ? this.states.get(this.shownKey) ?? EMPTY : EMPTY);
     if (!this.view || state === this.shownState) return;
     this.shownState = state;
-    this.view.webview.html = renderResults(state, makeNonce(), this.view.webview.cspSource);
+    this.view.webview.html = renderResults(state, makeNonce(), this.view.webview.cspSource, ++this.gen);
   }
 
   /**
@@ -101,7 +103,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
     if (!key) return;
     const state = this.states.get(key);
     const sets = state?.kind === 'done' ? state.result.resultSets : [];
-    const message = parseResultsMessage(raw, sets.map(s => ({ rows: s.rows.length, cols: s.columns.length })));
+    const message = parseResultsMessage(raw, sets.map(s => ({ rows: s.rows.length, cols: s.columns.length })), this.gen);
     if (!message) return;
     if (message.type === 'cancel') {
       this.onCancel(key);
@@ -111,7 +113,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider, vscode.D
       // Resolved from the stored result of the shown document; the webview only sent indexes.
       const text = copyText(cellAt(sets[message.set].rows, message.row, message.col));
       vscode.env.clipboard.writeText(text).then(
-        () => { vscode.window.setStatusBarMessage('Copied', 2000); },
+        () => { vscode.window.setStatusBarMessage(copiedMessage(text), 2000); },
         err => { void vscode.window.showWarningMessage(`APoint-ms-sql: copy failed: ${err instanceof Error ? err.message : String(err)}`); });
       return;
     }

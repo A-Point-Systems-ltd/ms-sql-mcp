@@ -1,15 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bracket, ddlUri, definitionUnavailable, hasExecutableSql, parseDdlUri, previewSql, qualified } from '../out/explorer/sqlText.js';
+import { bracket, ddlUri, definitionUnavailable, hasExecutableSql, parseDdlUri, qualified } from '../out/explorer/sqlText.js';
 
 test('bracket doubles closing brackets', () => {
   assert.equal(bracket('a]b'), '[a]]b]');
   assert.equal(qualified('dbo', 'Order Lines'), '[dbo].[Order Lines]');
   assert.equal(qualified(undefined, 't'), '[t]');
-});
-
-test('preview SQL is TOP-limited and quoted', () => {
-  assert.equal(previewSql('sales', 'x]y', 500), 'SELECT TOP (500) * FROM [sales].[x]]y]');
 });
 
 test('ddl uri round-trips names with dots, spaces and unicode', () => {

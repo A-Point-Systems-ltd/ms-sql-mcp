@@ -33,6 +33,8 @@ export interface GridSpec {
   sort?: { col: number; dir: SortDir };
   /** Results panel: the result set index, sent with copy messages. */
   set?: number;
+  /** Render counter of the page (`data-gen`); copy messages echo it so the extension can drop stale ones. */
+  gen: number;
 }
 
 const SAFE_ID = /^[A-Za-z][\w-]*$/;
@@ -72,21 +74,24 @@ export function renderGrid(spec: GridSpec): string {
   });
 
   const set = spec.set === undefined ? '' : ` data-set="${Math.floor(spec.set)}"`;
-  return `<div class="dgrid" id="${id}" data-mode="${spec.sortMode}"${set} style="${vars.join(';')}">
+  return `<div class="dgrid" id="${id}" data-mode="${spec.sortMode}"${set} data-gen="${Math.floor(spec.gen)}" style="${vars.join(';')}">
 <style>${rules.join('\n')}</style>
 <div class="gscroll"><table class="gt"><thead><tr><th class="rn" aria-label="Row number"></th>${head}</tr></thead><tbody>${body}</tbody></table>
 <button type="button" class="gcopy" title="Copy to clipboard" aria-label="Copy cell value to clipboard" style="display:none">${COPY_ICON}</button></div>
 </div>`;
 }
 
+/**
+ * One cell. Its tooltip is set lazily by the client script on hover (from textContent, capped by tooltipText), so
+ * values are not rendered twice; only a value cut by the server gets its tooltip here, with the full-size note.
+ */
 function cell(value: unknown): string {
   if (value === null || value === undefined) return '<td class="null" data-null="1">NULL</td>';
   const text = cellText(value);
   const cut = typeof value === 'string' ? TRUNCATED_SUFFIX.exec(value) : null;
-  const tip = cut
-    ? `${tooltipText(text)}\n\nTruncated by the server: the full value has ${cut[1]} ${cut[2]}.`
-    : tooltipText(text);
-  return `<td${cut ? ' class="trunc"' : ''} title="${escapeHtml(tip)}">${escapeHtml(text)}</td>`;
+  if (!cut) return `<td>${escapeHtml(text)}</td>`;
+  const tip = `${tooltipText(text)}\n\nTruncated by the server: the full value has ${cut[1]} ${cut[2]}.`;
+  return `<td class="trunc" title="${escapeHtml(tip)}">${escapeHtml(text)}</td>`;
 }
 
 /** The grid stylesheet (theme variables only). */
@@ -127,13 +132,19 @@ export const GRID_CSS = `
   .gcopy:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); }
 `;
 
+/** Functions of gridModel that the client script uses, inlined by name (see the BUILD NOTE in gridModel). */
+export const INLINED_FUNCTIONS: readonly string[] = ['compareGridValues', 'gridSortOrder', 'tooltipText'];
+
 /**
  * The grid client script: defines `initGrids(vscode)`, which wires every `.dgrid` on the page. The sort comparator
- * is the tested gridModel code, inlined. Pages call initGrids with their acquireVsCodeApi() object.
+ * and the tooltip cap are the tested gridModel code, inlined with Function.prototype.toString: they must stay
+ * self-contained (test/grid.test.mjs runs the inlined copies in isolation). Pages call initGrids with their
+ * acquireVsCodeApi() object.
  */
 export function gridScript(): string {
   return `${compareGridValues.toString()}
 ${gridSortOrder.toString()}
+${tooltipText.toString()}
 ${GRID_CLIENT}`;
 }
 
@@ -141,25 +152,32 @@ const GRID_CLIENT = String.raw`
 function initGrids(vscode) {
   var MIN_W = ${MIN_COLUMN_WIDTH}, FIT_MAX = ${FIT_MAX_WIDTH}, INIT_ROWS = ${INITIAL_FIT_ROWS}, INIT_MAX = ${INITIAL_FIT_MAX_WIDTH}, MIN_H = 16;
   var ctx = document.createElement('canvas').getContext('2d');
-  var drag = null, dragEnded = 0;
+  // One collator for every local text compare (Intl.Collator is much faster than repeated localeCompare).
+  var collator = new Intl.Collator();
+  var drag = null, dragEnded = 0, frame = 0;
+  // Drags write at most once per animation frame.
+  function applyDrag() {
+    frame = 0;
+    if (!drag || drag.value === undefined) return;
+    if (drag.kind === 'col') drag.set(drag.value);
+    else drag.tr.style.height = drag.value + 'px';
+  }
   document.addEventListener('mousemove', function (e) {
     if (!drag) return;
-    if (drag.kind === 'col') drag.set(Math.max(MIN_W, drag.start + e.clientX - drag.x));
-    else drag.tr.style.height = Math.max(MIN_H, drag.start + e.clientY - drag.y) + 'px';
+    drag.value = drag.kind === 'col'
+      ? Math.max(MIN_W, drag.start + e.clientX - drag.x)
+      : Math.max(MIN_H, drag.start + e.clientY - drag.y);
+    if (!frame) frame = requestAnimationFrame(applyDrag);
   });
   document.addEventListener('mouseup', function () {
-    if (drag) { drag = null; dragEnded = Date.now(); document.body.style.cursor = ''; }
+    if (!drag) return;
+    if (frame) { cancelAnimationFrame(frame); applyDrag(); }
+    drag = null;
+    dragEnded = Date.now();
+    document.body.style.cursor = '';
   });
   var grids = document.querySelectorAll('.dgrid');
   for (var g = 0; g < grids.length; g++) setUp(grids[g]);
-
-  function fontOf(el) {
-    var cs = getComputedStyle(el);
-    return {
-      font: cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily,
-      pad: parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)
-    };
-  }
 
   function setUp(grid) {
     var scroll = grid.querySelector('.gscroll');
@@ -168,34 +186,51 @@ function initGrids(vscode) {
     var rows = Array.prototype.slice.call(grid.querySelectorAll('tbody tr'));
     var mode = grid.getAttribute('data-mode');
     var set = grid.getAttribute('data-set');
+    var gen = Number(grid.getAttribute('data-gen'));
     var hovered = null;
+    // Computed fonts, read once per cell class for the whole grid (header cells under the key 'th').
+    var fonts = {};
 
-    function setWidth(c, w) { grid.style.setProperty('--c' + c, Math.round(w) + 'px'); }
-
-    // Widest rendered cell of column c (header included), measured with each cell's computed font plus padding.
-    function fit(c, rowLimit, cap) {
-      var head = heads[c];
-      var hf = fontOf(head);
-      ctx.font = hf.font;
-      var w = ctx.measureText(head.querySelector('.hl').textContent).width + hf.pad + 12;
-      var fonts = {}, current = '';
-      var n = Math.min(rows.length, rowLimit);
-      for (var i = 0; i < n && w < cap; i++) {
-        var tr = rows[i];
-        if (tr.style.display === 'none') continue;
-        var td = tr.children[c + 1];
-        if (!td) continue;
-        var key = td.getAttribute('class') || '';
-        var f = fonts[key] || (fonts[key] = fontOf(td));
-        if (current !== key) { ctx.font = f.font; current = key; }
-        var text = td.textContent;
-        if (text.length > 2000) text = text.slice(0, 2000);
-        var tw = ctx.measureText(text.replace(/\s+/g, ' ')).width + f.pad;
-        if (tw > w) w = tw;
-      }
-      setWidth(c, Math.min(cap, Math.max(MIN_W, Math.ceil(w) + 2)));
+    function fontOf(el, key) {
+      if (fonts[key]) return fonts[key];
+      var cs = getComputedStyle(el);
+      return (fonts[key] = {
+        font: cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily,
+        pad: parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)
+      });
     }
-    for (var c0 = 0; c0 < heads.length; c0++) fit(c0, INIT_ROWS, INIT_MAX);
+
+    // Auto-fit: measure every requested column first (style reads and measureText only), then write all widths in
+    // one pass, so the layout is not invalidated between measurements.
+    function fitColumns(cols, rowLimit, cap) {
+      var widths = [];
+      var n = Math.min(rows.length, rowLimit);
+      for (var k = 0; k < cols.length; k++) {
+        var c = cols[k];
+        var head = heads[c];
+        var hf = fontOf(head, 'th');
+        ctx.font = hf.font;
+        var current = 'th';
+        var w = ctx.measureText(head.querySelector('.hl').textContent).width + hf.pad + 12;
+        for (var i = 0; i < n && w < cap; i++) {
+          var tr = rows[i];
+          if (tr.style.display === 'none') continue;
+          var td = tr.children[c + 1];
+          if (!td) continue;
+          var key = 'td.' + (td.getAttribute('class') || '');
+          var f = fontOf(td, key);
+          if (current !== key) { ctx.font = f.font; current = key; }
+          var text = td.textContent;
+          if (text.length > 2000) text = text.slice(0, 2000);
+          var tw = ctx.measureText(text.replace(/\s+/g, ' ')).width + f.pad;
+          if (tw > w) w = tw;
+        }
+        widths.push(Math.min(cap, Math.max(MIN_W, Math.ceil(w) + 2)));
+      }
+      for (var j = 0; j < cols.length; j++) setWidth(cols[j], widths[j]);
+    }
+    function setWidth(c, w) { grid.style.setProperty('--c' + c, Math.round(w) + 'px'); }
+    fitColumns(heads.map(function (_, c) { return c; }), INIT_ROWS, INIT_MAX);
 
     function hide() { hovered = null; button.style.display = 'none'; }
 
@@ -217,7 +252,7 @@ function initGrids(vscode) {
     grid.addEventListener('dblclick', function (e) {
       var t = e.target, cls = t.getAttribute && t.getAttribute('class');
       if (cls === 'rz') {
-        fit(Number(t.parentNode.getAttribute('data-c')), rows.length, FIT_MAX);
+        fitColumns([Number(t.parentNode.getAttribute('data-c'))], rows.length, FIT_MAX);
       } else if (cls === 'rh') {
         // Fit the row to its content (wrapped, capped); a second double-click returns it to one line.
         var tr = t.parentNode.parentNode;
@@ -251,7 +286,7 @@ function initGrids(vscode) {
           var td = tr.children[col + 1];
           return !td || td.getAttribute('data-null') === '1' ? null : td.textContent;
         });
-        var order = gridSortOrder(values, th.getAttribute('data-num') === '1', next);
+        var order = gridSortOrder(values, th.getAttribute('data-num') === '1', next, collator.compare);
         for (var p = 0; p < order.length; p++) rows[order[p]].style.order = String(p);
       }
       var note = document.querySelector('[data-sortnote="' + grid.id + '"]');
@@ -264,6 +299,8 @@ function initGrids(vscode) {
       var td = e.target.closest ? e.target.closest('td') : null;
       if (!td || td === hovered) return;
       hovered = td;
+      // Lazy tooltip: the full value (capped) from the cell text, set on first hover. NULL cells get none.
+      if (!td.hasAttribute('title') && td.getAttribute('data-null') !== '1') td.setAttribute('title', tooltipText(td.textContent));
       var tr = td.parentNode;
       var sr = scroll.getBoundingClientRect(), cr = td.getBoundingClientRect();
       button.style.top = (cr.top - sr.top + scroll.scrollTop + 1) + 'px';
@@ -277,7 +314,7 @@ function initGrids(vscode) {
     button.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      var msg = { type: 'copy', row: Number(button.getAttribute('data-r')), col: Number(button.getAttribute('data-c')) };
+      var msg = { type: 'copy', row: Number(button.getAttribute('data-r')), col: Number(button.getAttribute('data-c')), gen: gen };
       if (set !== null) msg.set = Number(set);
       vscode.postMessage(msg);
     });
@@ -299,8 +336,10 @@ export interface DataViewModel {
   result?: { columns: readonly GridColumn[]; rows: readonly (readonly unknown[])[]; truncated: boolean };
   /** Server-side sort of `result` (column index). */
   sort?: { col: number; dir: SortDir };
-  /** Server warnings (e.g. a response cap), shown under the bar. */
+  /** Server warnings (e.g. a response cap) and sort notes, shown under the bar. */
   notes?: readonly string[];
+  /** Render counter (`data-gen` of the grid). */
+  gen: number;
 }
 
 /** The Data View webview document. */
@@ -313,7 +352,7 @@ export function renderDataView(model: DataViewModel, nonce: string): string {
   } else if (result) {
     const cols = result.columns.length;
     meta = `${rowCountLabel(result.rows.length, result.truncated)} · ${cols} column${cols === 1 ? '' : 's'} · read-only`;
-    content = renderGrid({ id: 'gd', columns: result.columns, rows: result.rows, sortMode: 'server', sort: model.sort })
+    content = renderGrid({ id: 'gd', columns: result.columns, rows: result.rows, sortMode: 'server', sort: model.sort, gen: model.gen })
       + (result.rows.length === 0 ? '<p class="hint">No rows.</p>' : '');
   } else {
     content = '<p class="hint">Loading…</p>';

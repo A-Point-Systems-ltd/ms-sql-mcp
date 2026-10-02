@@ -97,9 +97,9 @@ test('grid: NULL cells, numeric columns right-aligned, name and type as header t
   assert.match(html, /<th data-c="1" data-sort="" title="Name \(nvarchar\)"><span class="hl">Name<\/span>/);
   assert.match(html, /title="\(No column name\) \(int\)"><span class="hl">\(No column name\)<\/span>/);
   assert.match(html, /<td class="null" data-null="1">NULL<\/td>/);
-  assert.match(html, /<td title="1">1<\/td>/);
+  assert.match(html, /<td>1<\/td>/);
   // A decimal arrives as a string but is still a numeric column: right-aligned by a per-column rule.
-  assert.match(html, /<td title="12\.50">12\.50<\/td>/);
+  assert.match(html, /<td>12\.50<\/td>/);
   assert.match(html, /#g0 \.gt tbody tr>:nth-child\(2\)\{text-align:right/);
   assert.match(html, /#g0 \.gt tbody tr>:nth-child\(4\)\{text-align:right/);
   assert.doesNotMatch(html, /#g0 \.gt tbody tr>:nth-child\(3\)\{text-align:right/);
@@ -159,10 +159,10 @@ test('exact-number strings (decimal, money, bigint) are right-aligned by column 
   })] })));
   const right = n => html.includes(`#g0 .gt tbody tr>:nth-child(${n}){text-align:right`);
   assert.deepEqual([2, 3, 4, 5, 6].map(right), [true, true, true, false, false]);
-  assert.ok(html.includes('<td title="12345678901234.5678">12345678901234.5678</td>'));
-  assert.ok(html.includes('<td title="0x00FF10">0x00FF10</td>'));
+  assert.ok(html.includes('<td>12345678901234.5678</td>'));
+  assert.ok(html.includes('<td>0x00FF10</td>'));
   // A numeric-looking string in a text column stays left-aligned.
-  assert.ok(html.includes('<td title="42">42</td>'));
+  assert.ok(html.includes('<td>42</td>'));
 });
 
 test('a value cut by the server cap is marked and explains the full size in its tooltip', () => {
