@@ -400,13 +400,16 @@ public sealed class InsightsLayerService(
 
         // AnalyzedBeforeServerToday is computed in SQL against GETDATE(), the same clock that wrote
         // LastAnalyzed, so the once-per-day rule does not depend on the MCP host's time zone.
-        var shouldRefreshAutoMechanical = existing is not null
+        var isFreshBaseline = existing is not null
             && existingFreshness == InsightFreshness.Fresh
-            && IsAutoMechanical(existing)
+            && IsAutoMechanical(existing);
+        var shouldRefreshAutoMechanical = isFreshBaseline
             && InsightsLayerEnvironment.IsAutoPopulationRefreshEnabled
-            && existing.AnalyzedBeforeServerToday;
+            && existing!.AnalyzedBeforeServerToday;
 
-        if (existing is not null && !shouldRefreshAutoMechanical)
+        // An authored insight is returned as is. A current baseline is still checked for a restorable authored
+        // insight: databases upgraded from the archive-on-any-DDL behaviour hold many of those.
+        if (existing is not null && !isFreshBaseline)
         {
             return (existing, existingFreshness);
         }
@@ -420,8 +423,24 @@ public sealed class InsightsLayerService(
                 return await GetInsightForObjectAsync(objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
             }
 
-            var baseline = await BuildMechanicalBaselineAsync(conn, objectType, schema, objectName, live, cancellationToken).ConfigureAwait(false);
-            var upsert = await UpsertInsightAsync(baseline, cancellationToken).ConfigureAwait(false);
+            // Same structure as an earlier authored insight (drop/re-create, or a change that only touched
+            // modify_date or object_id): bring that insight back instead of asking the agent to re-author it.
+            var restorable = string.IsNullOrWhiteSpace(live.Fingerprint)
+                ? null
+                : await TryLoadAuthoredHistoryAsync(conn, objectType, schema, objectName, live.Fingerprint, cancellationToken).ConfigureAwait(false);
+            if (restorable is null && existing is not null && !shouldRefreshAutoMechanical)
+            {
+                return (existing, existingFreshness);
+            }
+
+            // A restore keeps the row count and analysis time of the original insight, so the data-populated
+            // rule and the insight's age still describe when it was really written.
+            var upsert = restorable is not null
+                ? await UpsertInsightCoreAsync(restorable, preserveAnalysisFacts: true, cancellationToken).ConfigureAwait(false)
+                : await UpsertInsightCoreAsync(
+                    await BuildMechanicalBaselineAsync(conn, objectType, schema, objectName, live, cancellationToken).ConfigureAwait(false),
+                    preserveAnalysisFacts: false,
+                    cancellationToken).ConfigureAwait(false);
             if (!upsert.Success)
             {
                 _logger.LogDebug("Auto baseline upsert skipped for {Type} {Schema}.{Object}: {Error}", objectType, schema, objectName, upsert.Error);
@@ -435,7 +454,87 @@ public sealed class InsightsLayerService(
         return await GetInsightForObjectAsync(objectType, schema, objectName, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default)
+    public async Task<InsightEnrichmentContext?> GetEnrichmentContextAsync(
+        SchemaInsight insight,
+        InsightFreshness freshness,
+        CancellationToken cancellationToken = default)
+    {
+        // A read-only connection refuses upsert_insight, so asking for one would only waste the agent's tokens.
+        if (!IsEnabled || !CanWrite)
+        {
+            return null;
+        }
+
+        var schema = NormalizeSchema(insight.SchemaName);
+        if (IsAutoMechanical(insight))
+        {
+            await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var previous = await TryLoadAuthoredHistoryAsync(conn, insight.ObjectType, schema, insight.ObjectName, fingerprint: null, cancellationToken).ConfigureAwait(false);
+            if (previous is null)
+            {
+                return new InsightEnrichmentContext(InsightEnrichmentTrigger.InitialBaselineOnly, null, Array.Empty<DdlEventSummary>(), null);
+            }
+
+            if (!string.IsNullOrWhiteSpace(previous.SchemaFingerprint)
+                && string.Equals(previous.SchemaFingerprint, insight.SchemaFingerprint, StringComparison.OrdinalIgnoreCase))
+            {
+                // The structure did not change: the restore in EnsureBaselineForObjectAsync brings this insight back,
+                // so "structure changed" would be a false reason. Nothing to ask for.
+                _logger.LogDebug("Restorable authored insight for {Type} {Schema}.{Object} was not restored.", insight.ObjectType, schema, insight.ObjectName);
+                return null;
+            }
+
+            var events = await ReadRecentDdlEventsAsync(conn, schema, insight.ObjectName, previous.LastAnalyzed, cancellationToken).ConfigureAwait(false);
+            return new InsightEnrichmentContext(InsightEnrichmentTrigger.StructureChanged, previous, events, null);
+        }
+
+        // Authored insight: only the near-empty-at-analysis case can need an update. Everything else returns
+        // here without touching the database.
+        if (freshness != InsightFreshness.Fresh
+            || !IsRowCountTracked(insight.ObjectType)
+            || insight.RowCountAtAnalysis is not { } before
+            || before >= DataPopulatedRowThreshold)
+        {
+            return null;
+        }
+
+        // Counting a view runs it, so a near-empty view is re-checked at most once per interval.
+        if (IsView(insight.ObjectType))
+        {
+            var key = $"{CursorKey}|{schema}|{insight.ObjectName}|{insight.InsightId}";
+            var now = DateTime.UtcNow;
+            if (_viewCountCheckedAt.TryGetValue(key, out var last) && now - last < ViewCountCheckInterval)
+            {
+                return null;
+            }
+
+            _viewCountCheckedAt[key] = now;
+        }
+
+        await using (var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var rowsNow = await TryReadRowCountForInsightAsync(conn, insight.ObjectType, schema, insight.ObjectName, cancellationToken).ConfigureAwait(false);
+            return IsDataPopulated(before, rowsNow)
+                ? new InsightEnrichmentContext(InsightEnrichmentTrigger.DataPopulated, insight, Array.Empty<DdlEventSummary>(), rowsNow)
+                : null;
+        }
+    }
+
+    internal static readonly TimeSpan ViewCountCheckInterval = TimeSpan.FromMinutes(10);
+
+    private readonly ConcurrentDictionary<string, DateTime> _viewCountCheckedAt = new(StringComparer.OrdinalIgnoreCase);
+
+    private static bool IsView(string? objectType) =>
+        string.Equals(objectType?.Trim(), "View", StringComparison.OrdinalIgnoreCase);
+
+    public Task<DbOperationResult> UpsertInsightAsync(SchemaInsight input, CancellationToken cancellationToken = default) =>
+        UpsertInsightCoreAsync(input, preserveAnalysisFacts: false, cancellationToken);
+
+    /// <param name="preserveAnalysisFacts">
+    /// True when restoring an archived insight: its <see cref="SchemaInsight.RowCountAtAnalysis"/> and
+    /// <see cref="SchemaInsight.LastAnalyzed"/> are kept. The live object_id, modify_date and fingerprint are always recaptured.
+    /// </param>
+    private async Task<DbOperationResult> UpsertInsightCoreAsync(SchemaInsight input, bool preserveAnalysisFacts, CancellationToken cancellationToken)
     {
         if (!IsEnabled)
         {
@@ -456,7 +555,7 @@ public sealed class InsightsLayerService(
             {
                 try
                 {
-                    await UpsertOnceAsync(input, schema, columnName, cancellationToken).ConfigureAwait(false);
+                    await UpsertOnceAsync(input, schema, columnName, preserveAnalysisFacts, cancellationToken).ConfigureAwait(false);
                     return new DbOperationResult(success: true, data: new { schema, input.ObjectName, input.ObjectType });
                 }
                 catch (SqlException ex) when (ex.Number == SqlDeadlockVictimError && attempt < MaxUpsertAttempts && !cancellationToken.IsCancellationRequested)
@@ -486,13 +585,28 @@ public sealed class InsightsLayerService(
         "AIInsights.Upsert:" + ComputeSha256Hex(
             string.Join('\u001F', objectType.Trim(), schema, objectName, columnName ?? string.Empty).ToUpperInvariant());
 
-    private async Task UpsertOnceAsync(SchemaInsight input, string schema, string? columnName, CancellationToken cancellationToken)
+    private async Task UpsertOnceAsync(SchemaInsight input, string schema, string? columnName, bool preserveAnalysisFacts, CancellationToken cancellationToken)
     {
         await using var conn = await _connectionFactory.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var live = await TryComputeLiveFingerprintAsync(conn, input.ObjectType, schema, input.ObjectName, cancellationToken).ConfigureAwait(false);
         DateTime? modifyDate = live.State == LiveObjectState.Found ? live.ModifyDate : null;
         string? fingerprint = live.State == LiveObjectState.Found ? live.Fingerprint : null;
         int? objectId = live.State == LiveObjectState.Found ? live.ObjectId : null;
+
+        // Row count at analysis time drives the data-populated rule (insight written while the object was near-empty).
+        // A baseline never counts a view: counting runs the view, and a baseline is written without the agent asking.
+        var hasRowCount = await HasRowCountColumnsAsync(conn, cancellationToken).ConfigureAwait(false);
+        long? rowCount = !hasRowCount || live.State != LiveObjectState.Found || columnName is not null
+            ? null
+            : preserveAnalysisFacts
+                ? input.RowCountAtAnalysis
+                : IsAutoMechanical(input) && IsView(input.ObjectType)
+                    ? null
+                    : await TryReadRowCountForInsightAsync(conn, input.ObjectType, schema, input.ObjectName, cancellationToken).ConfigureAwait(false);
+        DateTime? lastAnalyzed = preserveAnalysisFacts && input.LastAnalyzed != default ? input.LastAnalyzed : null;
+        var rowCountSet = hasRowCount ? ",\n                    RowCountAtAnalysis = @RowCountAtAnalysis" : string.Empty;
+        var rowCountColumn = hasRowCount ? ", RowCountAtAnalysis" : string.Empty;
+        var rowCountValue = hasRowCount ? ", @RowCountAtAnalysis" : string.Empty;
 
         await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -522,7 +636,7 @@ public sealed class InsightsLayerService(
             }
 
             await using (var updateCmd = new SqlCommand(
-                """
+                $"""
                 UPDATE AIInsights.SchemaInsights WITH (UPDLOCK, HOLDLOCK)
                 SET Description = @Description,
                     BusinessPurpose = @BusinessPurpose,
@@ -531,12 +645,12 @@ public sealed class InsightsLayerService(
                     RelatedObjects = @RelatedObjects,
                     LLMModel = @LLMModel,
                     Confidence = @Confidence,
-                    LastAnalyzed = GETDATE(),
+                    LastAnalyzed = COALESCE(@LastAnalyzed, GETDATE()),
                     AnalyzedBy = @AnalyzedBy,
                     Version = Version + 1,
                     ModifyDateAtAnalysis = @ModifyDateAtAnalysis,
                     ObjectIdAtAnalysis = @ObjectIdAtAnalysis,
-                    SchemaFingerprint = @SchemaFingerprint
+                    SchemaFingerprint = @SchemaFingerprint{rowCountSet}
                 WHERE ObjectType = @ObjectType
                   AND SchemaName = @SchemaName
                   AND ObjectName = @ObjectName
@@ -545,24 +659,24 @@ public sealed class InsightsLayerService(
                 conn,
                 tx))
             {
-                AddUpsertParameters(updateCmd, input, schema, columnName, modifyDate, objectId, fingerprint);
+                AddUpsertParameters(updateCmd, input, schema, columnName, modifyDate, objectId, fingerprint, rowCount, lastAnalyzed);
                 var updated = await updateCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 if (updated == 0)
                 {
                     await using var insertCmd = new SqlCommand(
-                        """
+                        $"""
                         INSERT INTO AIInsights.SchemaInsights (
                             ObjectType, SchemaName, ObjectName, ColumnName,
                             Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
-                            LLMModel, Confidence, AnalyzedBy, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint)
+                            LLMModel, Confidence, LastAnalyzed, AnalyzedBy, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint{rowCountColumn})
                         VALUES (
                             @ObjectType, @SchemaName, @ObjectName, @ColumnName,
                             @Description, @BusinessPurpose, @DataPatterns, @UsageGuidelines, @RelatedObjects,
-                            @LLMModel, @Confidence, @AnalyzedBy, @ModifyDateAtAnalysis, @ObjectIdAtAnalysis, @SchemaFingerprint);
+                            @LLMModel, @Confidence, COALESCE(@LastAnalyzed, GETDATE()), @AnalyzedBy, @ModifyDateAtAnalysis, @ObjectIdAtAnalysis, @SchemaFingerprint{rowCountValue});
                         """,
                         conn,
                         tx);
-                    AddUpsertParameters(insertCmd, input, schema, columnName, modifyDate, objectId, fingerprint);
+                    AddUpsertParameters(insertCmd, input, schema, columnName, modifyDate, objectId, fingerprint, rowCount, lastAnalyzed);
                     _ = await insertCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -868,8 +982,12 @@ public sealed class InsightsLayerService(
         }
     }
 
-    private static void AddUpsertParameters(SqlCommand cmd, SchemaInsight input, string schema, string? columnName, DateTime? modifyDate, int? objectId, string? fingerprint)
+    private static void AddUpsertParameters(SqlCommand cmd, SchemaInsight input, string schema, string? columnName, DateTime? modifyDate, int? objectId, string? fingerprint, long? rowCount, DateTime? lastAnalyzed)
     {
+        // Null means "now" (GETDATE() on the server clock, which wrote every other LastAnalyzed).
+        cmd.Parameters.Add("@LastAnalyzed", SqlDbType.DateTime2).Value = lastAnalyzed ?? (object)DBNull.Value;
+        // Harmless when the statement does not reference it (pre-RowCountAtAnalysis installs).
+        cmd.Parameters.Add("@RowCountAtAnalysis", SqlDbType.BigInt).Value = rowCount ?? (object)DBNull.Value;
         cmd.Parameters.AddWithValue("@ObjectType", input.ObjectType);
         cmd.Parameters.AddWithValue("@SchemaName", schema);
         cmd.Parameters.AddWithValue("@ObjectName", input.ObjectName);
@@ -986,6 +1104,122 @@ public sealed class InsightsLayerService(
         cmd.Parameters.AddWithValue("@TableName", tableName);
         var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return scalar is int i ? i : null;
+    }
+
+    /// <summary>An insight written below this many rows is re-evaluated once the object reaches it.</summary>
+    internal const long DataPopulatedRowThreshold = 100;
+
+    /// <summary>
+    /// True when an insight written against <paramref name="rowsAtAnalysis"/> rows should be re-evaluated now that
+    /// the object holds <paramref name="rowsNow"/>: it was written below the threshold and the object has reached it.
+    /// Unknown counts never trigger.
+    /// </summary>
+    internal static bool IsDataPopulated(long? rowsAtAnalysis, long? rowsNow) =>
+        rowsAtAnalysis is { } before
+        && rowsNow is { } now
+        && before < DataPopulatedRowThreshold
+        && now >= DataPopulatedRowThreshold;
+
+    internal static bool IsRowCountTracked(string objectType) =>
+        string.Equals(objectType?.Trim(), "Table", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(objectType?.Trim(), "View", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Databases installed before RowCountAtAnalysis existed keep working until install_insights_layer is re-run.
+    /// A positive answer is cached for the process lifetime; a negative one for <see cref="MissingColumnRecheckInterval"/>,
+    /// so a re-run of install_insights_layer is picked up within a minute without a restart.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, (bool Present, DateTime CheckedAtUtc)> _rowCountColumnsPresent = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static readonly TimeSpan MissingColumnRecheckInterval = TimeSpan.FromSeconds(60);
+
+    private async Task<bool> HasRowCountColumnsAsync(SqlConnection conn, CancellationToken cancellationToken)
+    {
+        var key = $"{CursorKey}|{conn.DataSource}|{conn.Database}";
+        if (_rowCountColumnsPresent.TryGetValue(key, out var cached)
+            && (cached.Present || DateTime.UtcNow - cached.CheckedAtUtc < MissingColumnRecheckInterval))
+        {
+            return cached.Present;
+        }
+
+        await using var cmd = new SqlCommand(
+            """
+            SELECT CASE WHEN COL_LENGTH(N'AIInsights.SchemaInsights', N'RowCountAtAnalysis') IS NOT NULL
+                         AND COL_LENGTH(N'AIInsights.InsightHistory', N'RowCountAtAnalysis') IS NOT NULL
+                        THEN 1 ELSE 0 END;
+            """,
+            conn);
+        var present = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is int i && i == 1;
+        _rowCountColumnsPresent[key] = (present, DateTime.UtcNow);
+        return present;
+    }
+
+    /// <summary>
+    /// Best-effort row count used by the data-populated rule: approximate for tables, capped at 101 for views
+    /// (only "below 100 or not" matters). Null for other types or on any error (permissions, timeout).
+    /// </summary>
+    private async Task<long?> TryReadRowCountForInsightAsync(
+        SqlConnection conn,
+        string objectType,
+        string schema,
+        string objectName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var type = objectType.Trim();
+            if (string.Equals(type, "Table", StringComparison.OrdinalIgnoreCase))
+            {
+                return await ReadTableApproxRowCountAsync(conn, schema, objectName, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (string.Equals(type, "View", StringComparison.OrdinalIgnoreCase))
+            {
+                return await ReadViewBoundedRowCountAsync(conn, schema, objectName, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "Row count unavailable for {Type} {Schema}.{Object}.", objectType, schema, objectName);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Runs the view with TOP (101). That bounds simple views; a view that aggregates may still be computed in
+    /// full, so callers count views only when an agent wrote the insight or asked to (never for baselines), and
+    /// re-check at most once per <see cref="ViewCountCheckInterval"/>. Short command and lock timeouts keep a
+    /// slow or blocked view from holding up the tool call; on timeout the count is simply unknown.
+    /// </summary>
+    private static async Task<long?> ReadViewBoundedRowCountAsync(SqlConnection conn, string schema, string viewName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Names are quoted server-side.
+            await using var cmd = new SqlCommand(
+                """
+                SET LOCK_TIMEOUT 1000;
+                DECLARE @Sql NVARCHAR(MAX) =
+                    N'SELECT COUNT_BIG(*) FROM (SELECT TOP (101) 1 AS x FROM ' + QUOTENAME(@Schema) + N'.' + QUOTENAME(@Name) + N') AS t;';
+                EXEC sys.sp_executesql @Sql;
+                """,
+                conn)
+            { CommandTimeout = 2 };
+            cmd.Parameters.Add("@Schema", SqlDbType.NVarChar, 128).Value = schema;
+            cmd.Parameters.Add("@Name", SqlDbType.NVarChar, 128).Value = viewName;
+            var scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return scalar is long l ? l : null;
+        }
+        finally
+        {
+            // The connection is reused for the upsert transaction that follows; restore the default (wait forever).
+            if (conn.State == ConnectionState.Open)
+            {
+                await using var reset = new SqlCommand("SET LOCK_TIMEOUT -1;", conn);
+                _ = await reset.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
     }
 
     private static async Task<long?> ReadTableApproxRowCountAsync(SqlConnection conn, string schema, string tableName, CancellationToken cancellationToken)
@@ -1260,7 +1494,7 @@ public sealed class InsightsLayerService(
 
         await using var cmd = new SqlCommand(
             """
-            SELECT InsightID, ObjectIdAtAnalysis FROM AIInsights.SchemaInsights
+            SELECT InsightID, ObjectIdAtAnalysis, ModifyDateAtAnalysis, SchemaFingerprint FROM AIInsights.SchemaInsights
             WHERE ObjectName = @ObjectName
               AND ObjectType = @ObjectType
               AND (
@@ -1274,20 +1508,54 @@ public sealed class InsightsLayerService(
         cmd.Parameters.AddWithValue("@ObjectType", matchedInsightType);
         cmd.Parameters.AddWithValue("@SchemaName", schema);
 
-        var ids = new List<(int Id, int? ObjectIdAtAnalysis)>();
+        var ids = new List<(int Id, int? ObjectIdAtAnalysis, DateTime? ModifyDateAtAnalysis, string? Fingerprint)>();
         await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                ids.Add((reader.GetInt32(0), reader.IsDBNull(1) ? null : reader.GetInt32(1)));
+                ids.Add((
+                    reader.GetInt32(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt32(1),
+                    reader.IsDBNull(2) ? null : reader.GetDateTime(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3)));
             }
         }
 
+        LiveFingerprintResult? live = null;
+        bool? missingTrusted = null;
         foreach (var candidate in ids)
         {
             if (liveObjectId.HasValue && candidate.ObjectIdAtAnalysis.HasValue && candidate.ObjectIdAtAnalysis.Value != liveObjectId.Value)
             {
                 // Rename or name reuse edge-case: this insight row points at a different object_id.
+                continue;
+            }
+
+            // The trigger logs every database-level DDL event (constraints, permissions, ENABLE TRIGGER, ...).
+            // Archive only when the structure the insight describes really changed, or the object is gone;
+            // otherwise the event is consumed and the authored insight is kept.
+            live ??= await TryComputeLiveFingerprintAsync(conn, matchedInsightType, schema, objectName, cancellationToken).ConfigureAwait(false);
+            if (live.State == LiveObjectState.Missing)
+            {
+                missingTrusted ??= await CanTrustObjectMissingAsync(conn, schema, cancellationToken).ConfigureAwait(false);
+                if (!missingTrusted.Value)
+                {
+                    continue;
+                }
+            }
+            else if (live.State is LiveObjectState.AccessDenied or LiveObjectState.DefinitionUnavailable)
+            {
+                // Cannot prove a change; the read path re-checks when the definition becomes visible.
+                continue;
+            }
+            else if (!IsStaleAgainstLive(
+                         candidate.ObjectIdAtAnalysis,
+                         candidate.ModifyDateAtAnalysis,
+                         candidate.Fingerprint,
+                         live.ObjectId,
+                         live.ModifyDate,
+                         live.Fingerprint))
+            {
                 continue;
             }
 
@@ -1605,20 +1873,21 @@ public sealed class InsightsLayerService(
 
     private async Task ArchiveInsightAsync(SqlConnection conn, int insightId, string reason, string archivedByEvent, int? sourceDdlAuditId, CancellationToken cancellationToken)
     {
+        var rowCountColumn = await HasRowCountColumnsAsync(conn, cancellationToken).ConfigureAwait(false) ? ", RowCountAtAnalysis" : string.Empty;
         await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await using (var insert = new SqlCommand(
-                """
+                $"""
                 INSERT INTO AIInsights.InsightHistory (
                     OriginalInsightID, ObjectType, SchemaName, ObjectName, ColumnName,
                     Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
-                    LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint,
+                    LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint{rowCountColumn},
                     ArchiveReason, ArchivedByEvent, SourceDdlAuditID)
                 SELECT
                     InsightID, ObjectType, SchemaName, ObjectName, ColumnName,
                     Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
-                    LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint,
+                    LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint{rowCountColumn},
                     @Reason, @ArchivedBy, @SourceId
                 FROM AIInsights.SchemaInsights
                 WHERE InsightID = @InsightId;
@@ -1648,15 +1917,32 @@ public sealed class InsightsLayerService(
         }
     }
 
-    private static async Task<SchemaInsight?> TryLoadInsightRowAsync(SqlConnection conn, string objectType, string schema, string objectName, CancellationToken cancellationToken)
+    /// <summary>
+    /// Column list read by <see cref="MapInsight"/>. History rows use the same shape: their nullable
+    /// OriginalInsightID / LastAnalyzed / Version are defaulted so the mapper stays shared.
+    /// </summary>
+    private static string InsightSelectList(bool fromHistory, bool hasRowCount)
     {
+        var id = fromHistory ? "ISNULL(OriginalInsightID, 0)" : "InsightID";
+        var analyzed = fromHistory ? "ISNULL(LastAnalyzed, ArchivedAt)" : "LastAnalyzed";
+        var version = fromHistory ? "ISNULL(Version, 1)" : "Version";
+        var rowCount = hasRowCount ? "RowCountAtAnalysis" : "CAST(NULL AS BIGINT)";
+        return $"""
+            {id}, ObjectType, SchemaName, ObjectName, ColumnName,
+            Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
+            LLMModel, Confidence, {analyzed}, AnalyzedBy, {version}, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint,
+            CASE WHEN CAST({analyzed} AS DATE) < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END AS AnalyzedBeforeServerToday,
+            {rowCount} AS RowCountAtAnalysis
+            """;
+    }
+
+    private async Task<SchemaInsight?> TryLoadInsightRowAsync(SqlConnection conn, string objectType, string schema, string objectName, CancellationToken cancellationToken)
+    {
+        var hasRowCount = await HasRowCountColumnsAsync(conn, cancellationToken).ConfigureAwait(false);
         await using var cmd = new SqlCommand(
-            """
+            $"""
             SELECT TOP (1)
-                InsightID, ObjectType, SchemaName, ObjectName, ColumnName,
-                Description, BusinessPurpose, DataPatterns, UsageGuidelines, RelatedObjects,
-                LLMModel, Confidence, LastAnalyzed, AnalyzedBy, Version, ModifyDateAtAnalysis, ObjectIdAtAnalysis, SchemaFingerprint,
-                CASE WHEN CAST(LastAnalyzed AS DATE) < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END AS AnalyzedBeforeServerToday
+                {InsightSelectList(fromHistory: false, hasRowCount)}
             FROM AIInsights.SchemaInsights
             WHERE ObjectType = @ObjectType
               AND ObjectName = @ObjectName
@@ -1676,6 +1962,115 @@ public sealed class InsightsLayerService(
         }
 
         return MapInsight(reader);
+    }
+
+    /// <summary>
+    /// Newest archived, LLM-authored, object-level insight for the object. With <paramref name="fingerprint"/>,
+    /// only one written against exactly that structure (used to restore it after a drop/re-create or an
+    /// over-eager archive); without it, any structure (used as the starting point for an update).
+    /// </summary>
+    private async Task<SchemaInsight?> TryLoadAuthoredHistoryAsync(
+        SqlConnection conn,
+        string objectType,
+        string schema,
+        string objectName,
+        string? fingerprint,
+        CancellationToken cancellationToken)
+    {
+        var hasRowCount = await HasRowCountColumnsAsync(conn, cancellationToken).ConfigureAwait(false);
+        await using var cmd = new SqlCommand(
+            $"""
+            SELECT TOP (1)
+                {InsightSelectList(fromHistory: true, hasRowCount)}
+            FROM AIInsights.InsightHistory
+            WHERE ObjectType = @ObjectType
+              AND ObjectName = @ObjectName
+              AND ColumnName IS NULL
+              AND (SchemaName = @SchemaName OR (SchemaName IS NULL AND @SchemaName = N'dbo'))
+              AND LLMModel IS NOT NULL
+              AND LLMModel <> @AutoModel
+              AND (@Fingerprint IS NULL OR SchemaFingerprint = @Fingerprint)
+            ORDER BY HistoryID DESC;
+            """,
+            conn);
+        cmd.Parameters.AddWithValue("@ObjectType", objectType);
+        cmd.Parameters.AddWithValue("@ObjectName", objectName);
+        cmd.Parameters.AddWithValue("@SchemaName", schema);
+        cmd.Parameters.AddWithValue("@AutoModel", AutoMechanicalModel);
+        cmd.Parameters.Add("@Fingerprint", SqlDbType.VarChar, 64).Value = string.IsNullOrWhiteSpace(fingerprint) ? DBNull.Value : fingerprint;
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return MapInsight(reader);
+    }
+
+    private static string Truncate(string value, int length) =>
+        value.Length <= length ? value : value[..length];
+
+    internal const int MaxStructuralEvents = 5;
+    internal const int MaxEventCommandTextLength = 300;
+
+    /// <summary>
+    /// Up to <see cref="MaxStructuralEvents"/> DDL events for the object since <paramref name="since"/>, oldest first.
+    /// Login, host and program are never read. Best-effort: a missing or differently shaped audit table yields none.
+    /// </summary>
+    private async Task<IReadOnlyList<DdlEventSummary>> ReadRecentDdlEventsAsync(
+        SqlConnection conn,
+        string schema,
+        string objectName,
+        DateTime since,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!await DdlAuditTableExistsAsync(conn, cancellationToken).ConfigureAwait(false))
+            {
+                return Array.Empty<DdlEventSummary>();
+            }
+
+            await using var cmd = new SqlCommand(
+                """
+                SELECT TOP (@Take) EventType, PostTime, LEFT(CommandText, @MaxText)
+                FROM dbo.DDL_AuditLog
+                WHERE ObjectName = @ObjectName
+                  AND (SchemaName = @Schema OR SchemaName IS NULL)
+                  AND PostTime >= @Since
+                  AND (EventType LIKE 'CREATE[_]%' OR EventType LIKE 'ALTER[_]%' OR EventType LIKE 'DROP[_]%' OR EventType = 'RENAME')
+                  AND EventType NOT LIKE '%STATISTICS%'
+                  AND EventType NOT LIKE '%AUTHORIZATION%'
+                ORDER BY ID DESC;
+                """,
+                conn);
+            cmd.Parameters.AddWithValue("@Take", MaxStructuralEvents);
+            cmd.Parameters.AddWithValue("@MaxText", MaxEventCommandTextLength);
+            // varchar(100) like the audit columns, so the comparison can seek instead of converting every row.
+            // Structural events only: GRANT/DENY/REVOKE and statistics are left out (and so are principal names).
+            cmd.Parameters.Add("@ObjectName", SqlDbType.VarChar, 100).Value = Truncate(objectName, 100);
+            cmd.Parameters.Add("@Schema", SqlDbType.VarChar, 100).Value = Truncate(schema, 100);
+            cmd.Parameters.Add("@Since", SqlDbType.DateTime2).Value = since;
+
+            var events = new List<DdlEventSummary>();
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                events.Add(new DdlEventSummary(
+                    reader.IsDBNull(0) ? null : reader.GetString(0),
+                    reader.GetDateTime(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+
+            events.Reverse();
+            return events;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "DDL events unavailable for {Schema}.{Object}.", schema, objectName);
+            return Array.Empty<DdlEventSummary>();
+        }
     }
 
     private static SchemaInsight MapInsight(SqlDataReader reader) =>
@@ -1699,7 +2094,8 @@ public sealed class InsightsLayerService(
             ModifyDateAtAnalysis = reader.IsDBNull(15) ? null : reader.GetDateTime(15),
             ObjectIdAtAnalysis = reader.IsDBNull(16) ? null : reader.GetInt32(16),
             SchemaFingerprint = reader.IsDBNull(17) ? null : reader.GetString(17),
-            AnalyzedBeforeServerToday = reader.GetInt32(18) == 1
+            AnalyzedBeforeServerToday = reader.GetInt32(18) == 1,
+            RowCountAtAnalysis = reader.IsDBNull(19) ? null : reader.GetInt64(19)
         };
 
     private static async Task<LiveFingerprintResult> TryComputeLiveFingerprintAsync(

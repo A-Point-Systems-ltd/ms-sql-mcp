@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
-using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
@@ -30,12 +29,16 @@ public partial class Tools(
         "Name of the database connection to run against (see " + ToolNames.ListConnections + "). REQUIRED whenever the server has more than one connection - " +
         "there is no default connection, and omitting it returns an error listing the valid names. May be omitted only when exactly one connection exists.";
 
+    internal const string InsightResponseNote =
+        "May include insight, insightFreshness, enrichmentSuggested and insightEnrichment; call " + ToolNames.UpsertInsight +
+        " only when insightEnrichment is present (see server instructions).";
+
     internal const string MultiConnectionNote = " With more than one connection, pass 'connection' (see " + ToolNames.ListConnections + ").";
 
     /// <summary>
     /// Best-effort: attaches cached AI insight metadata to introspection tool payloads.
     /// </summary>
-    protected async Task TryAttachInsightAsync(
+    internal async Task TryAttachInsightAsync(
         Dictionary<string, object?> result,
         string objectType,
         string? schemaName,
@@ -47,46 +50,54 @@ public partial class Tools(
             return;
         }
 
+        SchemaInsight? insight;
+        InsightFreshness freshness;
         try
         {
-            var (insight, freshness) = await _insightsLayer
+            (insight, freshness) = await _insightsLayer
                 .GetInsightForObjectAsync(objectType, schemaName, objectName, cancellationToken)
                 .ConfigureAwait(false);
+
+            // A baseline also goes through EnsureBaseline: it restores a matching authored insight from history.
             if (InsightsLayerEnvironment.IsAutoPopulationEnabled
-                && freshness is InsightFreshness.Absent or InsightFreshness.StaleArchived)
+                && (freshness is InsightFreshness.Absent or InsightFreshness.StaleArchived || IsAutoMechanical(insight)))
             {
                 (insight, freshness) = await _insightsLayer
                     .EnsureBaselineForObjectAsync(objectType, schemaName, objectName, cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            var enrichmentSuggested = IsAutoMechanical(insight);
-            result["insight"] = ProjectInsightForResponse(insight);
+            result["insight"] = ProjectInsightForResponse(insight, compact: true);
             result["insightFreshness"] = freshness.ToString();
-            result["enrichmentSuggested"] = enrichmentSuggested;
-            if (InsightsLayerEnvironment.IsEnrichmentDirectiveEnabled && enrichmentSuggested && insight is not null)
+            // false is the explicit "cached insight is current, do not call upsert_insight" signal.
+            result["enrichmentSuggested"] = false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Insight lookup skipped for {ObjectType} {Schema}.{Object}", objectType, schemaName, objectName);
+            return;
+        }
+
+        if (!InsightsLayerEnvironment.IsEnrichmentDirectiveEnabled || insight is null)
+        {
+            return;
+        }
+
+        // Separate from the lookup: a failure here must not drop the cached insight already attached.
+        try
+        {
+            var context = await _insightsLayer
+                .GetEnrichmentContextAsync(insight, freshness, cancellationToken)
+                .ConfigureAwait(false);
+            if (context is not null)
             {
-                var schema = string.IsNullOrWhiteSpace(schemaName) ? "dbo" : schemaName!.Trim();
-                var qualified = $"{schema}.{objectName}";
-                result["_agentDirective"] =
-                    $"MANDATORY: Call {ToolNames.UpsertInsight} for {qualified} (and any relatedObjectsToIntrospect) BEFORE producing your final answer. "
-                    + "The args template is in insightEnrichment.nextAction.args. Skipping this is a MCP-Insight-Enrichment-v1 protocol violation.";
-                result["pendingEnrichments"] = new[]
-                {
-                    new
-                    {
-                        tool = ToolNames.UpsertInsight,
-                        target = qualified,
-                        objectType,
-                        reason = "auto-mechanical baseline (confidence 0.30); enrich to upgrade cached insight."
-                    }
-                };
-                result["insightEnrichment"] = BuildInsightEnrichmentDirective(insight);
+                result["enrichmentSuggested"] = true;
+                result["insightEnrichment"] = BuildInsightEnrichmentDirective(insight, context);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Insight enrichment skipped for {ObjectType} {Schema}.{Object}", objectType, schemaName, objectName);
+            _logger.LogWarning(ex, "Insight enrichment context failed for {ObjectType} {Schema}.{Object}; the cached insight is returned without it.", objectType, schemaName, objectName);
         }
     }
 
@@ -98,11 +109,44 @@ public partial class Tools(
         _insightDdlProcessingQueue.RequestProcessing();
     }
 
-    private static object? ProjectInsightForResponse(SchemaInsight? insight)
+    /// <summary>
+    /// Insight as returned to the agent. <paramref name="compact"/> (introspection tools) leaves out identity
+    /// fields the parent payload already carries and bookkeeping the agent never acts on (ids, version,
+    /// fingerprint); an auto-mechanical baseline is reduced to the few facts it actually holds.
+    /// </summary>
+    internal static object? ProjectInsightForResponse(SchemaInsight? insight, bool compact = false)
     {
         if (insight is null)
         {
             return null;
+        }
+
+        if (compact)
+        {
+            if (IsAutoMechanical(insight))
+            {
+                return new
+                {
+                    llmModel = insight.LlmModel,
+                    insight.Confidence,
+                    insight.RelatedObjects,
+                    insight.RowCountAtAnalysis
+                };
+            }
+
+            return new
+            {
+                insight.Description,
+                insight.BusinessPurpose,
+                insight.DataPatterns,
+                insight.UsageGuidelines,
+                insight.RelatedObjects,
+                llmModel = insight.LlmModel,
+                insight.Confidence,
+                insight.LastAnalyzed,
+                insight.AnalyzedBy,
+                insight.RowCountAtAnalysis
+            };
         }
 
         return new
@@ -124,6 +168,7 @@ public partial class Tools(
             insight.Version,
             insight.ModifyDateAtAnalysis,
             insight.SchemaFingerprint,
+            insight.RowCountAtAnalysis,
             enrichmentSuggested = IsAutoMechanical(insight)
         };
     }
@@ -132,83 +177,91 @@ public partial class Tools(
         insight is not null
         && string.Equals(insight.LlmModel, InsightsLayerService.AutoMechanicalModel, StringComparison.OrdinalIgnoreCase);
 
-    private static object BuildInsightEnrichmentDirective(SchemaInsight insight)
+    /// <summary>
+    /// The single update request attached to an introspection response. Kept small: it says why, gives the
+    /// previous authored insight to edit (so the agent does not re-investigate), and a ready upsert payload.
+    /// </summary>
+    internal static Dictionary<string, object?> BuildInsightEnrichmentDirective(SchemaInsight insight, InsightEnrichmentContext context)
     {
         var schema = string.IsNullOrWhiteSpace(insight.SchemaName) ? "dbo" : insight.SchemaName!.Trim();
-        var qualified = $"{schema}.{insight.ObjectName}";
-        var related = ParseRelatedObjects(insight.RelatedObjects);
-        return new
+        var previous = context.PreviousInsight;
+        var directive = new Dictionary<string, object?>
         {
-            required = true,
-            priority = "MUST",
-            protocol = "MCP-Insight-Enrichment-v1",
-            reason = $"Auto-mechanical baseline only (model='{insight.LlmModel}', confidence={insight.Confidence:0.00}). Cache will not help the next agent until you upgrade it.",
-            contract = $"You MUST call {ToolNames.UpsertInsight} for {qualified} using nextAction.args (with every '<fill in: ...>' placeholder replaced) BEFORE producing your final answer to the user. This is a tool-call protocol obligation, not a suggestion.",
-            consequenceOfSkipping = "Next agent inherits a placeholder insight and wastes tokens reinvestigating this object. Cache stays at confidence 0.30 indefinitely.",
-            instructions = new[]
+            ["trigger"] = context.Trigger.ToString()
+        };
+
+        switch (context.Trigger)
+        {
+            case InsightEnrichmentTrigger.StructureChanged:
+                directive["reason"] = "The structure changed since the last authored insight.";
+                directive["instruction"] = "Edit previousInsight for the changed structure, keeping what is still true, then call " + ToolNames.UpsertInsight + " with nextAction.args.";
+                break;
+            case InsightEnrichmentTrigger.DataPopulated:
+                directive["reason"] = $"The insight was written with {previous?.RowCountAtAnalysis ?? 0} rows; the object now holds {context.RowsNow} or more.";
+                directive["instruction"] = "Check dataPatterns and usageGuidelines against the real data (a small sample is enough), edit what changed, then call " + ToolNames.UpsertInsight + " with nextAction.args.";
+                break;
+            default:
+                directive["reason"] = "Only an auto-generated baseline exists for this object.";
+                directive["instruction"] = "Fill the placeholders in nextAction.args from this response, then call " + ToolNames.UpsertInsight + ".";
+                break;
+        }
+
+        if (previous is not null)
+        {
+            directive["previousInsight"] = new
             {
-                "1. Replace every '<fill in: ...>' placeholder in nextAction.args using the metadata you just received in this response.",
-                $"2. Call {ToolNames.UpsertInsight} with the completed args. Do NOT reuse llmModel='auto-mechanical' and do NOT pass confidence<=0.30 - those values indicate a placeholder, not a real authored insight.",
-                $"3. For each entry in relatedObjectsToIntrospect, call the matching introspection tool ({ToolNames.DescribeTable} / {ToolNames.DescribeView} / {ToolNames.GetObject}) and complete the same enrichment loop for it.",
-                "4. Only AFTER every enrichment call, produce the final user-facing answer."
-            },
-            completionCriteria = $"AIInsights.SchemaInsights row for {qualified} updated with LLMModel != 'auto-mechanical' and Confidence > 0.30.",
-            relatedObjectsToIntrospect = related,
-            nextAction = new
-            {
-                tool = ToolNames.UpsertInsight,
-                args = new Dictionary<string, object?>
+                previous.Description,
+                previous.BusinessPurpose,
+                previous.DataPatterns,
+                previous.UsageGuidelines,
+                previous.RelatedObjects,
+                previous.LastAnalyzed,
+                previous.RowCountAtAnalysis
+            };
+        }
+
+        if (context.StructuralEvents.Count > 0)
+        {
+            directive["structuralEvents"] = context.StructuralEvents
+                .Take(InsightsLayerService.MaxStructuralEvents)
+                .Select(e => new
                 {
-                    ["objectType"] = insight.ObjectType,
-                    ["schemaName"] = schema,
-                    ["objectName"] = insight.ObjectName,
-                    ["description"] = "<fill in: one short sentence>",
-                    ["businessPurpose"] = "<fill in: why this object exists>",
-                    ["dataPatterns"] = "<fill in: volume/keys/hot filters>",
-                    ["usageGuidelines"] = "<fill in: preferred joins/filters and gotchas>",
-                    ["relatedObjects"] = string.IsNullOrWhiteSpace(insight.RelatedObjects) ? "[]" : insight.RelatedObjects,
-                    ["llmModel"] = "<fill in: model id (NOT 'auto-mechanical')>",
-                    ["confidence"] = 0.85m,
-                    ["analyzedBy"] = "<fill in: agent name>",
-                    ["columnName"] = null
-                }
+                    eventType = e.EventType,
+                    postTime = e.PostTime,
+                    commandText = e.CommandText is { Length: > InsightsLayerService.MaxEventCommandTextLength } text
+                        ? text[..InsightsLayerService.MaxEventCommandTextLength]
+                        : e.CommandText
+                })
+                .ToList();
+        }
+
+        if (context.RowsNow is { } rowsNow)
+        {
+            directive["rowsNow"] = rowsNow;
+        }
+
+        var relatedObjects = previous?.RelatedObjects ?? insight.RelatedObjects;
+        directive["nextAction"] = new
+        {
+            tool = ToolNames.UpsertInsight,
+            args = new Dictionary<string, object?>
+            {
+                ["objectType"] = insight.ObjectType,
+                ["schemaName"] = schema,
+                ["objectName"] = insight.ObjectName,
+                ["description"] = previous?.Description ?? "<fill in: one short sentence>",
+                ["businessPurpose"] = previous?.BusinessPurpose ?? "<fill in: why this object exists>",
+                ["dataPatterns"] = previous?.DataPatterns ?? "<fill in: volume/keys/hot filters>",
+                ["usageGuidelines"] = previous?.UsageGuidelines ?? "<fill in: preferred joins/filters and gotchas>",
+                ["relatedObjects"] = string.IsNullOrWhiteSpace(relatedObjects) ? "[]" : relatedObjects,
+                ["llmModel"] = "<your model id>",
+                ["confidence"] = 0.85m,
+                ["analyzedBy"] = "<agent name>",
+                ["columnName"] = null
             }
         };
-    }
 
-    private static IReadOnlyList<string> ParseRelatedObjects(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                return Array.Empty<string>();
-            }
-
-            var list = new List<string>(doc.RootElement.GetArrayLength());
-            foreach (var item in doc.RootElement.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.String)
-                {
-                    var value = item.GetString();
-                    if (!string.IsNullOrWhiteSpace(value))
-                    {
-                        list.Add(value!);
-                    }
-                }
-            }
-            return list;
-        }
-        catch (JsonException)
-        {
-            return Array.Empty<string>();
-        }
+        return directive;
     }
 
     private static string? BuildNameLikePattern(string? partialName)

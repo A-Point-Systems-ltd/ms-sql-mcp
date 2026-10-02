@@ -60,6 +60,12 @@ public sealed class NoOpInsightsLayerService : IInsightsLayerService
         return Task.FromResult(new DbOperationResult(success: false, error: "AI Insights layer is disabled."));
     }
 
+    public Task<InsightEnrichmentContext?> GetEnrichmentContextAsync(
+        SchemaInsight insight,
+        InsightFreshness freshness,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<InsightEnrichmentContext?>(null);
+
     public Task<bool> ProcessDdlChangesAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
     public Task<DbOperationResult> ListInsightsAsync(string? schemaName, string? objectType, int take, CancellationToken cancellationToken = default)

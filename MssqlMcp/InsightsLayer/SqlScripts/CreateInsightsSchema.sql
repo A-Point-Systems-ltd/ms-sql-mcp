@@ -44,6 +44,7 @@ BEGIN
         ModifyDateAtAnalysis DATETIME2 NULL,
         ObjectIdAtAnalysis INT NULL,
         SchemaFingerprint VARCHAR(64) NULL,
+        RowCountAtAnalysis BIGINT NULL,
         CONSTRAINT CK_SchemaInsights_Confidence CHECK (Confidence IS NULL OR (Confidence >= 0 AND Confidence <= 1))
     );
 END
@@ -57,6 +58,9 @@ IF COL_LENGTH('AIInsights.SchemaInsights', 'ObjectIdAtAnalysis') IS NULL
 GO
 IF COL_LENGTH('AIInsights.SchemaInsights', 'SchemaFingerprint') IS NULL
     ALTER TABLE AIInsights.SchemaInsights ADD SchemaFingerprint VARCHAR(64) NULL;
+GO
+IF COL_LENGTH('AIInsights.SchemaInsights', 'RowCountAtAnalysis') IS NULL
+    ALTER TABLE AIInsights.SchemaInsights ADD RowCountAtAnalysis BIGINT NULL;
 GO
 
 /* ---- Ensure LastAnalyzed default uses local server time (GETDATE) on existing installs ---- */
@@ -135,6 +139,7 @@ BEGIN
         ModifyDateAtAnalysis DATETIME2 NULL,
         ObjectIdAtAnalysis INT NULL,
         SchemaFingerprint VARCHAR(64) NULL,
+        RowCountAtAnalysis BIGINT NULL,
         ArchivedAt DATETIME2 NOT NULL CONSTRAINT DF_InsightHistory_Archived DEFAULT (SYSUTCDATETIME()),
         ArchiveReason NVARCHAR(200) NULL,
         ArchivedByEvent NVARCHAR(64) NULL,
@@ -144,6 +149,9 @@ END
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_InsightHistory_Object' AND object_id = OBJECT_ID('AIInsights.InsightHistory'))
     CREATE INDEX IX_InsightHistory_Object ON AIInsights.InsightHistory(SchemaName, ObjectName, ObjectType);
+GO
+IF COL_LENGTH('AIInsights.InsightHistory', 'RowCountAtAnalysis') IS NULL
+    ALTER TABLE AIInsights.InsightHistory ADD RowCountAtAnalysis BIGINT NULL;
 GO
 
 IF OBJECT_ID('AIInsights.DdlChangeWatermark', 'U') IS NULL
@@ -184,6 +192,10 @@ BEGIN
     ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY];
 
     ALTER TABLE [dbo].[DDL_AuditLog] ADD  DEFAULT (getdate()) FOR [PostTime];
+
+    -- Insight DDL-event lookups and the trigger's "last modified" lookup filter by ObjectName.
+    -- Only a table created here gets it; an existing (possibly client-owned) table is never altered.
+    CREATE NONCLUSTERED INDEX [IX_DDL_AuditLog_ObjectName] ON [dbo].[DDL_AuditLog] ([ObjectName], [ID]) INCLUDE ([SchemaName], [LoginName], [PostTime]);
 END
 GO
 
