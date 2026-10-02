@@ -3,8 +3,18 @@
 // webview only chooses rows and columns by index. Nothing here logs or sends anything.
 import { copyText } from './gridModel';
 
-/** A column as the builders need it. */
-export interface ExportColumn { name: string }
+/** A column as the builders need it (the type decides formula neutralization in CSV). */
+export interface ExportColumn { name: string; type?: string }
+
+/** Text types whose values a spreadsheet could read as a formula. */
+const TEXT_TYPES = new Set(['char', 'varchar', 'nchar', 'nvarchar', 'text', 'ntext', 'sysname', 'xml']);
+
+export function isTextColumn(type: string | undefined): boolean {
+  return TEXT_TYPES.has((type ?? '').trim().toLowerCase());
+}
+
+/** Values starting with one of these could run as a spreadsheet formula (CSV injection, OWASP). */
+const FORMULA_START = /^[=+\-@\t\r]/;
 
 /** The UTF-8 byte order mark, so Excel opens the CSV as UTF-8 (Hebrew and other non-Latin text). */
 export const UTF8_BOM = String.fromCharCode(0xfeff);
@@ -35,9 +45,23 @@ export function csvField(value: unknown): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-/** A CSV file: BOM, a header row, then one record per row, every line ending in CRLF (RFC 4180). */
-export function buildCsv(columns: readonly ExportColumn[], rows: readonly (readonly unknown[])[]): string {
-  const lines = [columns.map(c => csvField(headerName(c))), ...rows.map(r => r.map(csvField))].map(f => f.join(','));
+/**
+ * One CSV field of a text column with formula neutralization: a value starting with = + - @ tab or CR is written as
+ * ' + value and always quoted, so a spreadsheet shows it as text instead of running it. Other values as csvField.
+ */
+export function neutralizedCsvField(value: unknown): string {
+  const text = copyText(value);
+  if (value === null || value === undefined || !FORMULA_START.test(text)) return csvField(value);
+  return `"'${text.replace(/"/g, '""')}"`;
+}
+
+/**
+ * A CSV file: BOM, a header row, then one record per row, every line ending in CRLF (RFC 4180). With `neutralize`
+ * (the default), text-typed columns get formula neutralization; numeric, date and binary columns are unchanged.
+ */
+export function buildCsv(columns: readonly ExportColumn[], rows: readonly (readonly unknown[])[], neutralize = true): string {
+  const field = columns.map(c => (neutralize && isTextColumn(c.type) ? neutralizedCsvField : csvField));
+  const lines = [columns.map(c => csvField(headerName(c))), ...rows.map(r => r.map((v, i) => (field[i] ?? csvField)(v)))].map(f => f.join(','));
   return `${UTF8_BOM}${lines.join('\r\n')}\r\n`;
 }
 
@@ -57,9 +81,13 @@ export function buildJsonRow(columns: readonly ExportColumn[], values: readonly 
   return JSON.stringify(obj, null, 2);
 }
 
+/** The sentence the export confirmation adds while formula neutralization is on. */
+export const NEUTRALIZE_NOTE = "Text values that start with = + - @ are prefixed with ' so Excel does not run them as formulas.";
+
 /** The confirmation every Export CSV asks first (modal). */
-export function exportConfirmText(rows: number): string {
-  return `Export ${rows.toLocaleString('en-US')} ${rows === 1 ? 'row' : 'rows'} to a CSV file? The data may contain personal information; keep the file inside the company.`;
+export function exportConfirmText(rows: number, neutralize = true): string {
+  return `Export ${rows.toLocaleString('en-US')} ${rows === 1 ? 'row' : 'rows'} to a CSV file? The data may contain personal information; keep the file inside the company.`
+    + (neutralize ? ` ${NEUTRALIZE_NOTE}` : '');
 }
 
 export function exportedMessage(rows: number, file: string): string {

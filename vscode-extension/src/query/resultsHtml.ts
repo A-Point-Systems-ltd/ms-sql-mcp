@@ -1,7 +1,8 @@
 // HTML of the query results panel. No 'vscode' import (unit-testable).
 // Each result set renders with the shared data grid (grid/gridHtml: resize, copy button, local sort); the page script
 // also switches tabs, posts link / cancel clicks and ticks the timer.
-// Rows can hold client personal data: everything is escaped, nothing is loaded from the network, no export.
+// Rows can hold client personal data: everything is escaped and nothing is loaded from the network. Rows leave the
+// panel only through the user's copy actions and Export CSV (modal confirmation), resolved on the extension side.
 import { GRID_CSS, gridScript, renderGrid } from '../grid/gridHtml';
 import type { GridViewState } from '../grid/gridModel';
 import { escapeHtml } from '../webviewUtil';

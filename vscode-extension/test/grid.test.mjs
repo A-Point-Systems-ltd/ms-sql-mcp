@@ -126,7 +126,8 @@ test('Data View page: nonce CSP, TOP box and Reload, no innerHTML, no network, e
   assert.match(html, /data-sort="asc"/);
   assert.match(html, /<div class="note">Sort column no longer exists<\/div>/);
   assert.match(html, /<div class="note">&lt;script&gt;/);
-  assert.match(html, /type: 'reload', top: n/);
+  assert.ok(html.includes("type: 'reload', gen: Number(document.body.getAttribute('data-gen')), top: n"));
+  assert.match(html, /<body data-gen="3">/);
   assert.match(html, /TOP must be a whole number from 1 to 10000\./);
   assert.ok(html.includes('/^\\d+$/.test(v)'), 'the TOP check regex survives the template literal');
   const script = html.slice(html.indexOf(`<script nonce="${NONCE}">`) + `<script nonce="${NONCE}">`.length, html.lastIndexOf('</script>'));
@@ -250,15 +251,15 @@ test('copy status: says when the server truncated the value', () => {
 test('Data View message validation: type allow-list, integer indexes in range, copy gen must be current', () => {
   const dims = { rows: 3, cols: 2 };
   assert.deepEqual(parseDataViewMessage({ type: 'copy', row: 2, col: 1, gen: 4 }, dims, 4), { type: 'copy', row: 2, col: 1 });
-  assert.deepEqual(parseDataViewMessage({ type: 'sort', col: 0, dir: 'asc' }, dims, 4), { type: 'sort', col: 0, dir: 'asc' });
-  assert.deepEqual(parseDataViewMessage({ type: 'sort', col: 1, dir: 'none' }, dims, 4), { type: 'sort', col: 1, dir: 'none' });
-  assert.deepEqual(parseDataViewMessage({ type: 'reload', top: 500 }, dims, 4), { type: 'reload', top: 500 });
+  assert.deepEqual(parseDataViewMessage({ type: 'sort', gen: 4, col: 0, dir: 'asc' }, dims, 4), { type: 'sort', col: 0, dir: 'asc' });
+  assert.deepEqual(parseDataViewMessage({ type: 'sort', gen: 4, col: 1, dir: 'none' }, dims, 4), { type: 'sort', col: 1, dir: 'none' });
+  assert.deepEqual(parseDataViewMessage({ type: 'reload', gen: 4, top: 500 }, dims, 4), { type: 'reload', top: 500 });
   const bad = [
     null, 'copy', [], { type: 'copy', row: 3, col: 0, gen: 4 }, { type: 'copy', row: -1, col: 0, gen: 4 }, { type: 'copy', row: 0.5, col: 0, gen: 4 },
     { type: 'copy', row: '0', col: 0, gen: 4 }, { type: 'copy', row: 0, col: 2, gen: 4 },
     { type: 'copy', row: 0, col: 0 }, { type: 'copy', row: 0, col: 0, gen: 3 }, { type: 'copy', row: 0, col: 0, gen: '4' }, { type: 'copy', row: 0, col: 0, gen: 4.5 },
-    { type: 'sort', col: 0, dir: 'up' }, { type: 'sort', col: 9, dir: 'asc' },
-    { type: 'reload', top: 0 }, { type: 'reload', top: 10001 }, { type: 'reload', top: '200' }, { type: 'reload', top: 1.5 },
+    { type: 'sort', gen: 4, col: 0, dir: 'up' }, { type: 'sort', col: 0, dir: 'asc' }, { type: 'sort', gen: 3, col: 0, dir: 'asc' }, { type: 'sort', col: 9, dir: 'asc' },
+    { type: 'reload', top: 200 }, { type: 'reload', gen: 3, top: 200 }, { type: 'reload', gen: 4, top: 0 }, { type: 'reload', top: 10001 }, { type: 'reload', top: '200' }, { type: 'reload', top: 1.5 },
     { type: 'eval', code: 'x' }, { type: 'cancel' }, { type: 'reveal', line: 1 },
   ];
   for (const m of bad) assert.equal(parseDataViewMessage(m, dims, 4), undefined, JSON.stringify(m));

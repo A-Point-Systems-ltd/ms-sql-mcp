@@ -204,8 +204,8 @@ test('projection follows hidden columns and display order; JSON row keys and nul
 });
 
 test('export texts and the default file name', () => {
-  assert.equal(exportConfirmText(1200), 'Export 1,200 rows to a CSV file? The data may contain personal information; keep the file inside the company.');
-  assert.equal(exportConfirmText(1), 'Export 1 row to a CSV file? The data may contain personal information; keep the file inside the company.');
+  assert.equal(exportConfirmText(1200), "Export 1,200 rows to a CSV file? The data may contain personal information; keep the file inside the company. Text values that start with = + - @ are prefixed with ' so Excel does not run them as formulas.");
+  assert.equal(exportConfirmText(1, false), 'Export 1 row to a CSV file? The data may contain personal information; keep the file inside the company.');
   assert.equal(exportedMessage(3, 'C:\\x\\a.csv'), 'Exported 3 rows to C:\\x\\a.csv');
   const d = new Date(2026, 9, 2, 7, 5);
   assert.equal(exportFileName('dbo.Orders', d), 'dbo.Orders_20261002_0705.csv');
@@ -356,4 +356,67 @@ test('client script: menus, selection, filters, search and export post only inde
   for (const banned of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'appendChild', 'createElement(\'div', 'eval(']) {
     assert.ok(!s.includes(banned), banned);
   }
+});
+
+// --- Fix round 1 ---------------------------------------------------------------------------------------------------
+
+import { NO_PK_NOTE, displayedParams, errorNamesKey, nextPageRequest, pagingNote, sortIndicator } from '../out/grid/gridModel.js';
+import { isTextColumn, neutralizedCsvField } from '../out/grid/gridExport.js';
+
+test('first query fails: the old parameters stay shown, and Load more pages with them from the old offset', () => {
+  const columns = cols(['Id', 'int'], 'Name', 'City');
+  const loadedWith = { sort: { column: 'Name', type: 'nvarchar', dir: 'asc' }, filters: [f('City', 'eq', 'Haifa')], pk: ['Id'], top: 50 };
+  // The user sorted by City desc and filtered on a bad value; that query failed.
+  const requested = { sort: { column: 'City', type: 'nvarchar', dir: 'desc' }, filters: [f('City', 'contains', 'x')] };
+  const shown = displayedParams(requested, loadedWith, true);
+  assert.deepEqual(shown, { sort: loadedWith.sort, filters: loadedWith.filters });
+  assert.deepEqual(sortIndicator(shown.sort, columns), { col: 1, dir: 'asc' }, 'the indicator matches the loaded rows');
+  // A success shows what was asked for; without loaded rows a failure keeps it too.
+  assert.deepEqual(displayedParams(requested, loadedWith, false), requested);
+  assert.deepEqual(displayedParams(requested, undefined, true), requested);
+  // 120 rows on screen: the next page is 121..171 (one extra row), maxRows 50, with the loaded rows' sort and filter.
+  const page = nextPageRequest(T, loadedWith, 120);
+  assert.deepEqual({ from: page.from, to: page.to, maxRows: page.maxRows }, { from: 121, to: 171, maxRows: 50 });
+  assert.equal(page.script, "SELECT * FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY [Name] ASC, [Id] ASC) AS [__apms_rn] FROM [dbo].[Orders]"
+    + " WHERE CAST([City] AS NVARCHAR(MAX)) = N'Haifa') AS q WHERE [__apms_rn] BETWEEN 121 AND 171 ORDER BY [__apms_rn]");
+  assert.ok(!page.script.includes("N'%x%'") && !page.script.includes('[City] DESC'), 'never the failed parameters');
+  assert.equal(nextPageRequest(T, loadedWith, 9980).maxRows, 20, 'the last page stops at the cap');
+  assert.equal(nextPageRequest(T, loadedWith, 10000), undefined);
+  assert.equal(sortIndicator(undefined, columns), undefined);
+  assert.equal(sortIndicator({ column: 'Gone', type: 'int', dir: 'asc' }, columns), undefined);
+});
+
+test('paging notes: none with a primary key; the overlap note without one, sorted or not', () => {
+  assert.equal(pagingNote({ column: 'Name', type: 'nvarchar', dir: 'asc' }, ['Id']), undefined);
+  assert.equal(pagingNote({ column: 'Name', type: 'nvarchar', dir: 'asc' }, []), NO_PK_NOTE);
+  assert.equal(NO_PK_NOTE, 'Without a primary key, rows with equal sort values may repeat or be skipped between pages.');
+  assert.equal(pagingNote(undefined, []), NO_ORDER_NOTE);
+});
+
+test('the primary key is dropped from a retry only when the error names a key column', () => {
+  assert.ok(errorNamesKey("Invalid column name 'Order,Id'.", ['Order', 'Id']));
+  assert.ok(errorNamesKey("Invalid column name 'ORDERID'.", ['OrderId']));
+  assert.ok(!errorNamesKey('Arithmetic overflow error converting expression.', ['OrderId']));
+  assert.ok(!errorNamesKey('anything', []));
+});
+
+test('CSV formula neutralization: text columns only, quoted with a leading quote; others raw', () => {
+  const columns = [{ name: 'Note', type: 'nvarchar' }, { name: 'Amount', type: 'decimal' }, { name: 'When', type: 'datetime2' }, { name: 'Bin', type: 'varbinary' }];
+  const csv = buildCsv(columns, [['=1+2', '-5.00', '2026-10-02', '0x00'], ['+cmd', '-1', '-x', '0x01'], ['@SUM(A1)', null, null, null], ['\tx', null, null, null], ['\rx', null, null, null], ['plain', null, null, null], ['a=b', null, null, null]]);
+  const lines = csv.slice(1).split('\r\n');
+  assert.equal(lines[1], '"\'=1+2",-5.00,2026-10-02,0x00');
+  assert.equal(lines[2], '"\'+cmd",-1,-x,0x01', 'a date / numeric / binary column is never prefixed');
+  assert.equal(lines[3], '"\'@SUM(A1)",,,');
+  assert.equal(lines[4], '"\'\tx",,,');
+  assert.equal(lines[5], '"\'\rx",,,');
+  assert.equal(lines[6], 'plain,,,');
+  assert.equal(lines[7], 'a=b,,,', 'only a leading character counts');
+  assert.equal(neutralizedCsvField('-"q"'), '"\'-""q"""');
+  assert.equal(neutralizedCsvField(null), '');
+  // Turned off: raw values.
+  assert.equal(buildCsv(columns, [['=1+2', '1', '', '']], false).slice(1).split('\r\n')[1], '=1+2,1,,');
+  for (const t of ['nvarchar', 'VARCHAR', 'char', 'nchar', 'text', 'ntext', 'sysname', 'xml']) assert.ok(isTextColumn(t), t);
+  for (const t of ['int', 'decimal', 'datetime', 'date', 'varbinary', 'uniqueidentifier', undefined]) assert.ok(!isTextColumn(t), String(t));
+  // TSV copy stays raw.
+  assert.equal(buildTsv(undefined, [['=1+2', '@x']]), '=1+2\t@x');
 });

@@ -208,7 +208,54 @@ export const ROW_NUMBER_COLUMN = '__apms_rn';
 /** At most this many rows are loaded into one Data View (first page plus Load more). */
 export const MAX_LOADED_ROWS = 10_000;
 export const NO_ORDER_NOTE = 'Row order is not guaranteed without a primary key or sort; pages may overlap.';
+/** Shown instead of NO_ORDER_NOTE when there is a sort but no primary key to break ties. */
+export const NO_PK_NOTE = 'Without a primary key, rows with equal sort values may repeat or be skipped between pages.';
 export const LOAD_CAP_NOTE = 'Refine the filter to see more.';
+
+/** The paging note for a Data View without a primary key (undefined when it has one). */
+export function pagingNote(order: DataViewOrder | undefined, pk: readonly string[]): string | undefined {
+  if (pk.length) return undefined;
+  return orderKeys(order, []).length ? NO_PK_NOTE : NO_ORDER_NOTE;
+}
+
+/** The parameters the loaded rows of a Data View were queried with. Load more pages only with these. */
+export interface LoadedWith { sort?: DataViewOrder; filters: DataViewFilter[]; pk: string[]; top: number }
+
+/**
+ * The sort and filters to show (sort indicator, filter row) after a query: the requested ones when it succeeded,
+ * those of the rows still on screen (`loadedWith`) when it failed. Without loaded rows the requested ones stay.
+ */
+export function displayedParams(
+  requested: { sort?: DataViewOrder; filters: DataViewFilter[] }, loadedWith: LoadedWith | undefined, failed: boolean,
+): { sort?: DataViewOrder; filters: DataViewFilter[] } {
+  if (!failed || !loadedWith) return { ...(requested.sort ? { sort: requested.sort } : {}), filters: [...requested.filters] };
+  return { ...(loadedWith.sort ? { sort: loadedWith.sort } : {}), filters: [...loadedWith.filters] };
+}
+
+/** The sort indicator (column index and direction) of `sort` over `columns`, or undefined. */
+export function sortIndicator(sort: DataViewOrder | undefined, columns: readonly GridColumn[]): { col: number; dir: SortDir } | undefined {
+  if (!sort) return undefined;
+  const col = columns.findIndex(c => c.name === sort.column);
+  return col >= 0 ? { col, dir: sort.dir } : undefined;
+}
+
+/**
+ * The next Load more page for `loaded` rows already on screen, built only from `loadedWith`: rows loaded+1 ..
+ * loaded+size+1 (one extra row tells whether more exist; run with maxRows = size). Undefined at the load cap.
+ */
+export function nextPageRequest(object: { schema?: string; name: string }, loadedWith: LoadedWith, loaded: number): { script: string; maxRows: number; from: number; to: number } | undefined {
+  const size = Math.min(loadedWith.top, MAX_LOADED_ROWS - loaded);
+  if (size <= 0) return undefined;
+  const from = loaded + 1;
+  const to = loaded + size + 1;
+  return { script: dataViewPageSql(object, from, to, loadedWith.sort, { pk: loadedWith.pk, filters: loadedWith.filters }), maxRows: size, from, to };
+}
+
+/** Whether a query error names one of the primary-key columns (then it is worth retrying without the key). */
+export function errorNamesKey(error: string, pk: readonly string[]): boolean {
+  const e = error.toLowerCase();
+  return pk.some(k => k.length > 0 && e.includes(k.toLowerCase()));
+}
 
 /** Extra parts of a Data View query: primary-key tie-breakers and filters. */
 export interface DataViewQueryOptions { pk?: readonly string[]; filters?: readonly DataViewFilter[] }
@@ -542,10 +589,11 @@ export function parseDataViewMessage(raw: unknown, dims: GridDims, gen: number, 
   if (!isRecord(raw)) return undefined;
   switch (raw.type) {
     case 'sort':
-      return index(raw.col, dims.cols) && (raw.dir === 'asc' || raw.dir === 'desc' || raw.dir === 'none')
+      return isGen(raw.gen, gen) && index(raw.col, dims.cols) && (raw.dir === 'asc' || raw.dir === 'desc' || raw.dir === 'none')
         ? { type: 'sort', col: raw.col, dir: raw.dir }
         : undefined;
     case 'reload': {
+      if (!isGen(raw.gen, gen)) return undefined;
       const top = typeof raw.top === 'number' ? parseTop(raw.top) : undefined;
       return top === undefined ? undefined : { type: 'reload', top };
     }

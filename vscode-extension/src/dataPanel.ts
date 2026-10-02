@@ -7,8 +7,9 @@ import type { CellViewer } from './grid/cellViewer';
 import { runGridAction } from './grid/gridActions';
 import { renderDataView } from './grid/gridHtml';
 import {
-  DataViewFilter, DataViewOrder, GridColumn, GridViewState, LOAD_CAP_NOTE, MAX_LOADED_ROWS, NO_ORDER_NOTE, dataViewPageSql, dataViewSql,
-  isSortableType, orderKeys, parseDataViewMessage, parsePrimaryKey, reconcileFilters, reconcileSort, stripRowNumber, usablePrimaryKey,
+  DataViewFilter, DataViewOrder, GridColumn, GridViewState, LOAD_CAP_NOTE, LoadedWith, MAX_LOADED_ROWS, dataViewSql, displayedParams,
+  errorNamesKey, isSortableType, nextPageRequest, pagingNote, parseDataViewMessage, parsePrimaryKey, reconcileFilters, reconcileSort,
+  sortIndicator, stripRowNumber, usablePrimaryKey,
 } from './grid/gridModel';
 import type { Logger } from './logger';
 import { RunScriptResultSet, parseRunScriptResult } from './query/runScript';
@@ -29,10 +30,10 @@ interface DataViewSession {
   /** Primary-key columns (tie-breakers for ORDER BY and paging); [] when unknown or not usable. */
   pk: string[];
   result?: Loaded;
+  /** The parameters `result` was queried with; Load more pages only with these, and a failed query restores them. */
+  loadedWith?: LoadedWith;
   /** More rows exist beyond the loaded ones (and the load cap is not reached). */
   more: boolean;
-  /** Load more pages were fetched without any ORDER BY key. */
-  pagedWithoutKeys: boolean;
   capped: boolean;
   notes: string[];
   error?: string;
@@ -69,7 +70,7 @@ const columnsKey = (columns: readonly GridColumn[]): string => JSON.stringify(co
 export async function showDataView(ref: ObjectRef, top: number, d: Deps): Promise<void> {
   deps = d;
   const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
-  session = { ref, title, top, filters: [], pk: [], more: false, pagedWithoutKeys: false, capped: false, notes: [], seq: 0 };
+  session = { ref, title, top, filters: [], pk: [], more: false, capped: false, notes: [], seq: 0 };
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'msSqlMcp.dataView',
@@ -101,10 +102,14 @@ export function disposeDataPanel(): void {
 
 const panelTitle = (s: DataViewSession): string => `Data: ${s.title} (${s.ref.connection})`;
 
-/** The table's primary-key columns (describe_table through the read-only explorer), cached per object. */
-async function primaryKey(ref: ObjectRef): Promise<string[]> {
+/**
+ * The table's primary-key columns (describe_table through the read-only explorer), cached per object. `refresh`
+ * (Reload) reads it again.
+ */
+async function primaryKey(ref: ObjectRef, refresh = false): Promise<string[]> {
   if (ref.scriptType !== 'Table' || !deps) return [];
   const key = JSON.stringify([ref.connection, ref.schema ?? '', ref.name]);
+  if (refresh) pkCache.delete(key);
   const cached = pkCache.get(key);
   if (cached) return cached;
   try {
@@ -121,13 +126,16 @@ function render(loading = false): void {
   if (!panel || !session) return;
   const s = session;
   const columns = s.result?.columns ?? [];
-  const col = s.sort ? columns.findIndex(c => c.name === s.sort!.column) : -1;
+  const indicator = sortIndicator(s.sort, columns);
   const filters = s.filters.flatMap(f => {
     const i = columns.findIndex(c => c.name === f.column);
     return i >= 0 ? [{ col: i, op: f.op, value: f.value }] : [];
   });
   const notes = [...s.notes];
-  if (s.pagedWithoutKeys) notes.push(NO_ORDER_NOTE);
+  // Paging without a primary key may repeat or skip rows: say so whenever more pages can be (or were) loaded.
+  const paging = s.loadedWith && (s.more || s.capped || (s.result && s.result.rows.length > s.loadedWith.top))
+    ? pagingNote(s.loadedWith.sort, s.loadedWith.pk) : undefined;
+  if (paging) notes.push(paging);
   if (s.capped) notes.push(LOAD_CAP_NOTE);
   const view = s.view && s.viewKey === columnsKey(columns) ? s.view : undefined;
   panel.webview.html = renderDataView({
@@ -137,7 +145,7 @@ function render(loading = false): void {
     loading,
     ...(s.error !== undefined ? { error: s.error } : {}),
     ...(s.result ? { result: s.result } : {}),
-    ...(s.sort && col >= 0 ? { sort: { col, dir: s.sort.dir } } : {}),
+    ...(indicator ? { sort: indicator } : {}),
     filters,
     canLoadMore: s.more,
     notes,
@@ -170,11 +178,12 @@ async function query(ref: ObjectRef, script: string, maxRows: number): Promise<Q
 
 /**
  * Runs the Data View query for the current session state and shows its result or error.
- * - 'first': TOP (n) with the filters, ORDER BY the stored sort and the primary key. A failure is retried without
- *   the primary key (a key that cannot be used, e.g. a column name holding ','), then without the sort: if that
- *   result no longer has the sorted column, the sort is cleared with a note; otherwise the error is shown.
- * - 'more': the next n rows (ROW_NUMBER paging, same filters and order), appended; at most MAX_LOADED_ROWS in all.
- * On an error the previously loaded rows stay on screen (with their filter row) under the error text.
+ * - 'first': TOP (n) with the filters, ORDER BY the stored sort and the primary key. A failure whose message names a
+ *   primary-key column is retried without the key (e.g. a column name holding ','); a failure with a sort is retried
+ *   without it: if that result no longer has the sorted column, the sort is cleared with a note.
+ * - 'more': the next n rows of the loaded rows' own parameters (loadedWith), appended; at most MAX_LOADED_ROWS.
+ * On an error the previously loaded rows stay on screen under the error text, and the sort, filters and TOP shown
+ * go back to the ones those rows were queried with.
  */
 async function load(kind: 'first' | 'more'): Promise<void> {
   const s = session;
@@ -188,7 +197,7 @@ async function load(kind: 'first' | 'more'): Promise<void> {
   let pk = s.pk;
   let sort = s.sort;
   let outcome = await run(sort, pk);
-  if (outcome.error !== undefined && pk.length) {
+  if (outcome.error !== undefined && pk.length && errorNamesKey(outcome.error, pk)) {
     const withoutPk = await run(sort, []);
     if (withoutPk.error === undefined) { outcome = withoutPk; pk = []; }
   }
@@ -205,32 +214,39 @@ async function load(kind: 'first' | 'more'): Promise<void> {
     s.pk = usablePrimaryKey(pk, columns);
     s.filters = reconcileFilters(s.filters, columns);
     s.result = { columns, rows, truncated };
+    s.loadedWith = { ...(sort ? { sort } : {}), filters: [...s.filters], pk: [...s.pk], top: s.top };
     s.more = truncated && rows.length < MAX_LOADED_ROWS;
     s.capped = truncated && rows.length >= MAX_LOADED_ROWS;
-    s.pagedWithoutKeys = false;
     s.notes = reconciled.note ? [reconciled.note, ...outcome.notes] : outcome.notes;
     s.error = undefined;
   } else {
     s.error = outcome.error;
-    s.notes = [];
+    if (s.result && s.loadedWith) {
+      // The old rows stay: show the sort, filters and TOP they were queried with.
+      const shown = displayedParams({ sort: s.sort, filters: s.filters }, s.loadedWith, true);
+      s.sort = shown.sort;
+      s.filters = shown.filters;
+      s.top = s.loadedWith.top;
+    } else {
+      s.notes = [];
+    }
   }
   render();
 }
 
 async function loadMore(s: DataViewSession, seq: number): Promise<void> {
   const loaded = s.result;
-  if (!loaded || !s.more) return;
-  const size = Math.min(s.top, MAX_LOADED_ROWS - loaded.rows.length);
-  if (size <= 0) {
+  const lw = s.loadedWith;
+  if (!loaded || !lw || !s.more) return;
+  // Only the parameters the loaded rows were queried with (never a sort / filter whose query failed).
+  const page = nextPageRequest(s.ref, lw, loaded.rows.length);
+  if (!page) {
     s.more = false;
     s.capped = true;
     render();
     return;
   }
-  const from = loaded.rows.length + 1;
-  // One extra row tells whether there are more (the server keeps `size` and reports truncated).
-  const to = loaded.rows.length + size + 1;
-  const outcome = await query(s.ref, dataViewPageSql(s.ref, from, to, s.sort, { pk: s.pk, filters: s.filters }), size);
+  const outcome = await query(s.ref, page.script, page.maxRows);
   if (session !== s || seq !== s.seq) return;
   if (outcome.result && columnsKey(outcome.result.columns) !== columnsKey(loaded.columns)) {
     outcome.error = 'The columns of the object changed. Reload the view.';
@@ -243,7 +259,6 @@ async function loadMore(s: DataViewSession, seq: number): Promise<void> {
     s.result = { columns: loaded.columns, rows, truncated };
     s.more = truncated && rows.length < MAX_LOADED_ROWS;
     s.capped = truncated && rows.length >= MAX_LOADED_ROWS;
-    if (!orderKeys(s.sort, s.pk).length) s.pagedWithoutKeys = true;
     s.notes = outcome.notes;
     s.error = undefined;
   }
@@ -296,7 +311,11 @@ function onMessage(raw: unknown): void {
     case 'reload':
       s.top = message.top;
       dropWidths(s);
-      void requery('first');
+      // Reload also reads the primary key again (it may have changed since the view opened).
+      void vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, async () => {
+        s.pk = await primaryKey(s.ref, true);
+        await load('first');
+      });
       return;
     case 'loadMore':
       s.scroll = message.scroll;

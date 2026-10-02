@@ -787,7 +787,7 @@ function initGrids(vscode) {
         if (th.getAttribute('data-nosort') === '1') return;
         var status = document.getElementById('gstatus');
         if (status) status.textContent = 'Loading…';
-        vscode.postMessage({ type: 'sort', col: col, dir: next || 'none' });
+        vscode.postMessage({ type: 'sort', gen: gen, col: col, dir: next || 'none' });
         return;
       }
       for (var h = 0; h < heads.length; h++) heads[h].setAttribute('data-sort', heads[h] === th ? next : '');
@@ -1045,7 +1045,7 @@ export function renderDataView(model: DataViewModel, nonce: string): string {
 ${GRID_CSS}
 </style>
 </head>
-<body>
+<body data-gen="${Math.floor(model.gen)}">
   <div class="bar">
     <span class="name">${escapeHtml(model.objectName)}</span>
     <span class="meta" title="Connection">${escapeHtml(model.connection)}</span>
@@ -1073,7 +1073,7 @@ ${gridScript()}
     err.textContent = '';
     top.setAttribute('aria-invalid', 'false');
     document.getElementById('gstatus').textContent = 'Loading…';
-    vscode.postMessage({ type: 'reload', top: n });
+    vscode.postMessage({ type: 'reload', gen: Number(document.body.getAttribute('data-gen')), top: n });
   }
   document.getElementById('reload').addEventListener('click', reload);
   top.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); reload(); } });

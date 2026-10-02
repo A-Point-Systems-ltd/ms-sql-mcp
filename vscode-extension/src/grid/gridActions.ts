@@ -53,7 +53,8 @@ export async function runGridAction(action: Exclude<GridAction, { type: 'viewSta
     }
     case 'export': {
       const n = action.rows.length;
-      const ok = await vscode.window.showWarningMessage(exportConfirmText(n), { modal: true }, EXPORT);
+      const neutralize = vscode.workspace.getConfiguration('msSqlMcp').get<boolean>('export.neutralizeFormulas', true) !== false;
+      const ok = await vscode.window.showWarningMessage(exportConfirmText(n, neutralize), { modal: true }, EXPORT);
       if (ok !== EXPORT) return;
       const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
       const target = await vscode.window.showSaveDialog({
@@ -62,7 +63,7 @@ export async function runGridAction(action: Exclude<GridAction, { type: 'viewSta
         saveLabel: 'Export',
       });
       if (!target) return;
-      const csv = buildCsv(cols(action.cols), project(data.rows, action.rows, action.cols));
+      const csv = buildCsv(cols(action.cols), project(data.rows, action.rows, action.cols), neutralize);
       await vscode.workspace.fs.writeFile(target, Buffer.from(csv, 'utf8'));
       void vscode.window.showInformationMessage(exportedMessage(n, target.fsPath));
       return;

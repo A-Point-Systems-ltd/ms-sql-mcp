@@ -353,6 +353,11 @@
           "maximum": 10000,
           "description": "Rows Data View loads first (its TOP; the panel's TOP box changes it per view)."
         },
+        "msSqlMcp.export.neutralizeFormulas": {
+          "type": "boolean",
+          "default": true,
+          "description": "Export CSV: prefix text values that start with = + - @ (or a tab / CR) with ' so spreadsheets do not run them as formulas."
+        },
         "msSqlMcp.query.maxRows": {
           "type": "number",
           "default": 1000,
