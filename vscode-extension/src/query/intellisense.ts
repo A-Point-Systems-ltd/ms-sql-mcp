@@ -227,18 +227,68 @@ export function parseSignatureHelpResult(payload: unknown): LsSignatureHelp | un
 const WORD_CHAR = /[A-Za-z0-9_$#@À-￿]/;
 
 /**
+ * Where the caret sits on its line, scanning the text before it: inside a `'...'` string (`''` escapes), after `--`,
+ * inside a bracketed name (`[...`, `]]` escapes; its `[` position), or in plain code.
+ */
+function caretContext(lineText: string, caret: number): { kind: 'code' | 'string' | 'comment' } | { kind: 'bracket'; open: number } {
+  let i = 0;
+  while (i < caret) {
+    const ch = lineText[i];
+    if (ch === '-' && lineText[i + 1] === '-' && i + 1 < caret) return { kind: 'comment' };
+    if (ch === "'") {
+      i++;
+      for (;;) {
+        if (i >= caret) return { kind: 'string' };
+        if (lineText[i] === "'") {
+          if (lineText[i + 1] === "'" && i + 1 < caret) { i += 2; continue; }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '[') {
+      const open = i;
+      i++;
+      for (;;) {
+        if (i >= caret) return { kind: 'bracket', open };
+        if (lineText[i] === ']') {
+          if (lineText[i + 1] === ']' && i + 1 < caret) { i += 2; continue; }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+  return { kind: 'code' };
+}
+
+/**
  * Where the completion's replace range starts on the caret's line (0-based character): the identifier being typed,
- * including a leading `@`, `@@` or `#`, and an opening `[` before it. VS Code's default word range would leave those
- * out, so `@x = ` would be inserted after an `@` already typed.
+ * including a leading `@`, `@@` or `#`, or from the `[` of an unclosed bracketed name (which may hold spaces). A `[`
+ * inside a string literal or a `--` comment is ignored. VS Code's default word range would leave `@` and `[` out,
+ * so `@x = ` would be inserted after an `@` already typed.
  */
 export function replaceStart(lineText: string, character: number): number {
-  let start = Math.min(character, lineText.length);
-  const caret = start;
+  const caret = Math.min(character, lineText.length);
+  const ctx = caretContext(lineText, caret);
+  if (ctx.kind === 'bracket') return ctx.open;
+  let start = caret;
   while (start > 0 && WORD_CHAR.test(lineText[start - 1])) start--;
-  // Inside an unclosed bracketed name (`[My Ta|`), which may hold spaces: from its `[`.
-  const open = lineText.lastIndexOf('[', start - 1);
-  if (open >= 0 && !lineText.slice(open, caret).includes(']')) return open;
   return start;
+}
+
+/**
+ * Where the replacing range ends: past an auto-closed `]` right after the caret when the range starts at `[`, so
+ * accepting `[T]` at `FROM [|]` gives `FROM [T]`, not `[T]]`. Otherwise the caret.
+ */
+export function replaceEnd(lineText: string, character: number, start: number): number {
+  const caret = Math.min(character, lineText.length);
+  return lineText[start] === '[' && lineText[caret] === ']' ? caret + 1 : caret;
 }
 
 /**

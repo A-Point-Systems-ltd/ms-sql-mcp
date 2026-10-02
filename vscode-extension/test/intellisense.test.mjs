@@ -5,7 +5,7 @@ import {
   COMPLETION_TRIGGER_CHARACTERS, LANGUAGE_SERVICE_TIMEOUT_MS, SIGNATURE_RETRIGGER_CHARACTERS, SIGNATURE_TRIGGER_CHARACTERS,
   TYPING_DEBOUNCE_MS, TYPING_WINDOW_MS, WARM_INTERVAL_MS, WarmTracker, buildPositionRequest, completionKindName,
   intellisenseDocs, intellisenseEnabled, isExplicitCompletion, loadingMessage, parseCompletionResult, parseHoverResult,
-  parseSignatureHelpResult, refreshedMessage, replaceStart, requestDelayMs, warmKey,
+  parseSignatureHelpResult, refreshedMessage, replaceEnd, replaceStart, requestDelayMs, warmKey,
 } from '../out/query/intellisense.js';
 import { traceableArguments, traceablePayload } from '../out/client/parse.js';
 
@@ -164,6 +164,37 @@ test('replaceStart covers the word being typed, with a leading @, @@, # or [', (
   assert.equal(replaceStart('', 0), 0);
   assert.equal(replaceStart('SELECT [a].', 11), 11);
   assert.equal(replaceStart('SELECT [a], b', 13), 12);
+});
+
+test('replace range over an auto-closed ]: replacing covers it, inserting ends at the caret', () => {
+  // FROM [|]
+  assert.equal(replaceStart('FROM []', 6), 5);
+  assert.equal(replaceEnd('FROM []', 6, 5), 7);
+  // FROM [My Ta|]
+  assert.equal(replaceStart('FROM [My Ta]', 11), 5);
+  assert.equal(replaceEnd('FROM [My Ta]', 11, 5), 12);
+  // FROM [| with no closer
+  assert.equal(replaceStart('FROM [', 6), 5);
+  assert.equal(replaceEnd('FROM [', 6, 5), 6);
+  // EXEC p @| (no bracket: the end is the caret even before a ])
+  assert.equal(replaceStart('EXEC p @', 8), 7);
+  assert.equal(replaceEnd('EXEC p @', 8, 7), 8);
+  assert.equal(replaceEnd('SELECT a]', 8, 7), 8);
+});
+
+test('replaceStart ignores [ inside string literals and -- comments', () => {
+  const like = "WHERE x LIKE '[a-z' + co";
+  assert.equal(replaceStart(like, like.length), like.length - 2);
+  const escaped = "WHERE x = 'it''s [' + co";
+  assert.equal(replaceStart(escaped, escaped.length), escaped.length - 2);
+  const comment = 'SELECT co -- see [notes';
+  assert.equal(replaceStart(comment, comment.length), comment.length - 5);
+  // A real bracket after a closed string still counts.
+  const after = "SELECT 'a[b', [My Co";
+  assert.equal(replaceStart(after, after.length), after.indexOf('[My'));
+  // ]] escapes inside a bracketed name.
+  const esc = 'FROM [a]]b c';
+  assert.equal(replaceStart(esc, esc.length), 5);
 });
 
 test('intellisenseDocs lists bound documents whose connection exists and is open', () => {

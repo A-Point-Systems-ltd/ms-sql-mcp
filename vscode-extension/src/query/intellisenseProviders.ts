@@ -9,7 +9,7 @@ import {
   COMPLETION_TRIGGER_CHARACTERS, CompletionTrigger, INTELLISENSE_SETTING, LANGUAGE_SERVICE_TIMEOUT_MS, LANGUAGE_SERVICE_TOOL,
   SIGNATURE_RETRIGGER_CHARACTERS, SIGNATURE_TRIGGER_CHARACTERS, WarmTracker, buildPositionRequest, completionKindName,
   intellisenseDocs, intellisenseEnabled, isExplicitCompletion, loadingMessage, parseCompletionResult, parseHoverResult,
-  parseSignatureHelpResult, refreshedMessage, replaceStart, requestDelayMs, warmKey,
+  parseSignatureHelpResult, refreshedMessage, replaceEnd, replaceStart, requestDelayMs, warmKey,
 } from './intellisense';
 import { QueryDocuments, isNeverBound } from './queryDocuments';
 import { contextSetter } from './queryCommands';
@@ -113,8 +113,14 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
       const list = parseCompletionResult(payload);
       if (!list || token.isCancellationRequested) return undefined;
       if (list.cacheState === 'loading') showLoading(profile);
-      const start = replaceStart(document.lineAt(position.line).text, position.character);
-      const range = new vscode.Range(position.line, start, position.line, position.character);
+      const lineText = document.lineAt(position.line).text;
+      const start = replaceStart(lineText, position.character);
+      const end = replaceEnd(lineText, position.character, start);
+      // Inserting ends at the caret; replacing also covers an auto-closed `]` after it.
+      const range = {
+        inserting: new vscode.Range(position.line, start, position.line, position.character),
+        replacing: new vscode.Range(position.line, start, position.line, end),
+      };
       const items = list.items.map(i => {
         const item = new vscode.CompletionItem(i.label, vscode.CompletionItemKind[completionKindName(i.kind)]);
         item.detail = i.detail;

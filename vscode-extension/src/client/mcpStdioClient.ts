@@ -162,7 +162,9 @@ export class McpStdioClient implements McpClient {
       return;
     }
     if (typeof message.id !== 'number') {
-      this.log.trace('rpc', 'Notification or unmatched message', message);
+      // Never the body: a notification or late message can carry document text or result data.
+      const method = (message as { method?: unknown }).method;
+      this.log.trace('rpc', `Notification or unmatched message (${typeof method === 'string' ? `method ${method}` : `id ${String(message.id)}`})`);
       return;
     }
     const pending = this.pending.get(message.id);
