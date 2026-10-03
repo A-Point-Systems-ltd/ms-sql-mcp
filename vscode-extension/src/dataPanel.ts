@@ -5,6 +5,10 @@ import type { ObjectRef } from './explorer/catalog';
 import type { ExplorerClient } from './explorer/explorerClient';
 import { qualified } from './explorer/sqlText';
 import type { CellViewer } from './grid/cellViewer';
+import {
+  CellProblem, ColumnMeta, EditCapabilities, PendingChanges, applyEdit, buildSaveScript, columnMetaSql, deleteRows, editCapabilities, effectiveRows,
+  emptyPending, parseColumnMeta, parseEditMessage, pendingCount, pendingProblems, revertRows, validateValue, writableColumns,
+} from './grid/editModel';
 import { runGridAction } from './grid/gridActions';
 import { renderDataView } from './grid/gridHtml';
 import {
@@ -46,6 +50,13 @@ interface DataViewSession {
   scroll?: [number, number];
   /** Number of the latest query; an older query's answer is dropped. */
   seq: number;
+  /** Column facts for editing (tables on read-write connections); undefined when not read. */
+  meta?: ColumnMeta[];
+  pending: PendingChanges;
+  /** Pending values that failed the pre-save check, shown on their cells. */
+  problems: CellProblem[];
+  /** A save is running: edits are refused meanwhile. */
+  saving?: boolean;
 }
 
 export interface DataViewDeps {
@@ -55,6 +66,8 @@ export interface DataViewDeps {
   log: Logger;
   /** The connection's color (tab icon and header accent), when it has one. */
   colorOf?: (connection: string) => ConnectionColor | undefined;
+  /** Whether the connection is read-only (no editing); unknown connections count as read-only. */
+  isReadOnly?: (connection: string) => boolean;
   extensionUri?: vscode.Uri;
 }
 
@@ -95,7 +108,7 @@ const columnsKey = (columns: readonly GridColumn[]): string => JSON.stringify(co
 export async function showDataView(ref: ObjectRef, top: number, d: DataViewDeps, opts: DataViewOptions = {}): Promise<void> {
   deps = d;
   const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
-  const session: DataViewSession = { ref, title, top, filters: [], pk: [], more: false, capped: false, notes: [], seq: 0 };
+  const session: DataViewSession = { ref, title, top, filters: [], pk: [], more: false, capped: false, notes: [], seq: 0, pending: emptyPending(), problems: [] };
   if (!opts.replace) {
     const open = [...views].find(x => x.session && sameObject(x.session.ref, ref));
     if (open) {
@@ -104,6 +117,7 @@ export async function showDataView(ref: ObjectRef, top: number, d: DataViewDeps,
     }
   }
   let v = opts.replace ? lastActive : undefined;
+  if (v && !(await confirmLeave(v, `open ${title}`))) return;
   if (!v) {
     const panel = vscode.window.createWebviewPanel(
       'msSqlMcp.dataView',
@@ -115,6 +129,8 @@ export async function showDataView(ref: ObjectRef, top: number, d: DataViewDeps,
     views.add(created);
     panel.onDidDispose(() => {
       views.delete(created);
+      const lost = created.session ? pendingCount(created.session.pending) : 0;
+      if (lost) void vscode.window.showWarningMessage(`APoint-ms-sql: ${lost} unsaved row change(s) in ${created.session!.title} were discarded (the Data View was closed).`);
       created.session = undefined;
       if (lastActive === created) lastActive = undefined;
     });
@@ -131,6 +147,7 @@ export async function showDataView(ref: ObjectRef, top: number, d: DataViewDeps,
   const view = v;
   await vscode.window.withProgress({ location: { viewId: 'msSqlMcp.explorer' }, title: `Loading ${title}` }, async () => {
     session.pk = await primaryKey(ref);
+    session.meta = await columnMeta(ref);
     await load(view, 'first');
   });
 }
@@ -184,6 +201,40 @@ async function primaryKey(ref: ObjectRef, refresh = false): Promise<string[]> {
   }
 }
 
+/** Column facts for editing: tables on read-write connections only (one read-only SELECT on sys.columns). */
+async function columnMeta(ref: ObjectRef): Promise<ColumnMeta[] | undefined> {
+  if (ref.scriptType !== 'Table' || !deps || readOnly(ref.connection)) return undefined;
+  const outcome = await query(ref, columnMetaSql(ref), 5000);
+  if (!outcome.result) {
+    deps.log.warn('dataView', `Column information for editing failed: ${outcome.error ?? 'no result'}`);
+    return undefined;
+  }
+  const meta = parseColumnMeta(outcome.result.rows);
+  return meta.length ? meta : undefined;
+}
+
+const readOnly = (connection: string): boolean => deps?.isReadOnly?.(connection) ?? true;
+
+function capabilities(s: DataViewSession): EditCapabilities {
+  return editCapabilities({ isTable: s.ref.scriptType === 'Table', readOnly: readOnly(s.ref.connection), pk: s.pk, metaLoaded: !!s.meta?.length });
+}
+
+/** Asks before an action that would drop unsaved changes (sort, filter, reload, Replace Current Tab). */
+async function confirmLeave(v: DataView, action: string): Promise<boolean> {
+  const s = v.session;
+  const n = s ? pendingCount(s.pending) : 0;
+  if (!s || !n) return true;
+  const choice = await vscode.window.showWarningMessage(
+    `${s.title} has ${n} unsaved row change(s). Save them before you ${action}?`, { modal: true }, 'Save', 'Discard');
+  if (choice === 'Discard') {
+    s.pending = emptyPending();
+    s.problems = [];
+    return true;
+  }
+  if (choice === 'Save') return save(v);
+  return false;
+}
+
 function render(v: DataView, loading = false): void {
   const s = v.session;
   if (!s) return;
@@ -201,6 +252,10 @@ function render(v: DataView, loading = false): void {
   if (s.capped) notes.push(LOAD_CAP_NOTE);
   const view = s.view && s.viewKey === columnsKey(columns) ? s.view : undefined;
   const color = colorOf(s.ref.connection);
+  const caps = capabilities(s);
+  const editing = s.result && (caps.update || caps.insert || caps.delete) ? caps : undefined;
+  const writable = editing ? writableColumns(columns, s.meta ?? []) : [];
+  const auto = columns.map(c => { const m = s.meta?.find(x => x.name === c.name); return !!m && (m.identity || m.computed); });
   v.panel.webview.html = renderDataView({
     objectName: s.title,
     connection: s.ref.connection,
@@ -217,6 +272,10 @@ function render(v: DataView, loading = false): void {
     ...(view ? { view } : {}),
     ...(s.focus !== undefined ? { focus: s.focus } : {}),
     ...(s.scroll ? { scroll: s.scroll } : {}),
+    ...(editing ? {
+      edit: { ...editing, writable, auto, edits: s.pending.edits, deletes: s.pending.deletes, inserts: s.pending.inserts, problems: s.problems },
+      pending: pendingCount(s.pending),
+    } : s.result && caps.reason ? { readOnlyReason: caps.reason } : {}),
   }, makeNonce());
   s.focus = undefined;
   s.scroll = undefined;
@@ -345,6 +404,7 @@ function onMessage(v: DataView, raw: unknown): void {
   const s = v.session;
   if (!s || !deps) return;
   const columns = s.result?.columns ?? [];
+  if (s.result && onEditMessage(v, s, raw)) return;
   const message = parseDataViewMessage(raw, { rows: s.result?.rows.length ?? 0, cols: columns.length }, v.gen, columns.map(c => c.type));
   if (!message) return;
   switch (message.type) {
@@ -353,7 +413,7 @@ function onMessage(v: DataView, raw: unknown): void {
     case 'copySelection':
     case 'openCell':
     case 'export':
-      runGridAction(message, { columns, rows: s.result!.rows, objectName: s.title }, deps.viewer).catch(err => {
+      runGridAction(message, { columns, rows: effectiveRows(s.result!.rows, s.pending), objectName: s.title }, deps.viewer).catch(err => {
         void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
       });
       return;
@@ -364,18 +424,21 @@ function onMessage(v: DataView, raw: unknown): void {
     case 'sort': {
       const column = columns[message.col];
       if (!isSortableType(column.type)) return;
+      if (pendingCount(s.pending)) { void confirmLeave(v, 'sort').then(ok => (ok ? onMessage(v, { ...(raw as object), gen: v.gen }) : render(v))); return; }
       s.sort = message.dir === 'none' ? undefined : { column: column.name, type: column.type, dir: message.dir };
       dropWidths(s);
       void requery(v, 'first');
       return;
     }
     case 'filter':
+      if (pendingCount(s.pending)) { void confirmLeave(v, 'filter').then(ok => (ok ? onMessage(v, { ...(raw as object), gen: v.gen }) : render(v))); return; }
       s.filters = message.filters.map(f => ({ column: columns[f.col].name, type: columns[f.col].type, op: f.op, value: f.value }));
       s.focus = message.focus;
       dropWidths(s);
       void requery(v, 'first');
       return;
     case 'reload': {
+      if (pendingCount(s.pending)) { void confirmLeave(v, 'reload').then(ok => (ok ? onMessage(v, { ...(raw as object), gen: v.gen }) : render(v))); return; }
       // Reload re-reads at least as many rows as are loaded now (Load more pages included), with the same sort and
       // filters, and keeps the scroll position, so rows changed or added within that range show up in place.
       const loadedRows = s.result && s.loadedWith && s.loadedWith.top === message.top ? s.result.rows.length : 0;
@@ -392,6 +455,120 @@ function onMessage(v: DataView, raw: unknown): void {
       s.scroll = message.scroll;
       void requery(v, 'more');
       return;
+  }
+}
+
+/** Handles an editing message; false when `raw` is not one. */
+function onEditMessage(v: DataView, s: DataViewSession, raw: unknown): boolean {
+  const type = (raw as { type?: unknown } | undefined)?.type;
+  if (type !== 'edit' && type !== 'deleteRows' && type !== 'revertRows' && type !== 'addRow' && type !== 'save' && type !== 'discard') return false;
+  const result = s.result!;
+  const caps = capabilities(s);
+  const m = parseEditMessage(raw, {
+    gen: v.gen, loaded: result.rows.length, inserted: s.pending.inserts.length, writable: writableColumns(result.columns, s.meta ?? []), caps,
+  });
+  if (!m || s.saving) return true;
+  const loaded = result.rows.length;
+  switch (m.type) {
+    case 'edit': {
+      applyEdit(s.pending, result.rows, m.row, m.col, m.value);
+      const nullable = s.meta?.find(x => x.name === result.columns[m.col].name)?.nullable ?? true;
+      const error = validateValue(result.columns[m.col].type, m.value, nullable);
+      s.problems = s.problems.filter(p => p.row !== m.row || p.col !== m.col);
+      if (error) s.problems.push({ row: m.row, col: m.col, message: error });
+      const reverted = m.row < loaded && !s.pending.edits.get(m.row)?.has(m.col);
+      void v.panel.webview.postMessage({ type: 'pending', count: pendingCount(s.pending), row: m.row, col: m.col, ...(error ? { error } : {}), ...(reverted ? { reverted: true } : {}) });
+      return true;
+    }
+    case 'deleteRows':
+      deleteRows(s.pending, loaded, m.rows);
+      break;
+    case 'revertRows':
+      revertRows(s.pending, loaded, m.rows);
+      break;
+    case 'addRow':
+      s.pending.inserts.push(result.columns.map(() => undefined));
+      s.scroll = [10_000_000, 0];
+      render(v);
+      return true;
+    case 'discard':
+      s.pending = emptyPending();
+      break;
+    case 'save':
+      if (m.scroll) s.scroll = m.scroll;
+      void save(v);
+      return true;
+  }
+  // Row indexes of new rows shift when one is removed: re-check what is still pending.
+  s.problems = pendingProblems(s.pending, result.columns, s.meta ?? [], loaded);
+  if ('scroll' in m && m.scroll) s.scroll = m.scroll;
+  render(v);
+  return true;
+}
+
+/**
+ * Saves the pending changes in one transaction through the runner (the connection must still be read-write). Deletes
+ * are confirmed first. On success the rows are reloaded (as many as were loaded, same scroll); on an error nothing is
+ * saved and the changes stay pending. Returns true when everything was saved.
+ */
+async function save(v: DataView): Promise<boolean> {
+  const s = v.session;
+  if (!s || !s.result || !deps || s.saving) return false;
+  const count = pendingCount(s.pending);
+  if (!count) return true;
+  if (readOnly(s.ref.connection)) {
+    void vscode.window.showErrorMessage(`APoint-ms-sql: '${s.ref.connection}' is read-only; changes cannot be saved.`);
+    return false;
+  }
+  const { columns, rows } = s.result;
+  s.problems = pendingProblems(s.pending, columns, s.meta ?? [], rows.length);
+  if (s.problems.length) {
+    render(v);
+    const first = s.problems[0];
+    void vscode.window.showErrorMessage(`APoint-ms-sql: ${s.problems.length} value(s) cannot be saved - row ${first.row < rows.length ? first.row + 1 : 'new'}, ${columns[first.col].name}: ${first.message}`);
+    return false;
+  }
+  let built;
+  try { built = buildSaveScript(s.ref, columns, rows, s.pk, s.pending); }
+  catch (err) { void vscode.window.showErrorMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`); return false; }
+  if (built.deleted) {
+    const ok = await vscode.window.showWarningMessage(
+      `Delete ${built.deleted} row(s) from ${s.title} on '${s.ref.connection}'?`, { modal: true, detail: 'All changes are saved together in one transaction.' }, 'Save and Delete');
+    if (ok !== 'Save and Delete') return false;
+  }
+  s.saving = true;
+  try {
+    deps.log.info('dataView', `Saving ${s.title} on '${s.ref.connection}': ${built.updated} update(s), ${built.deleted} delete(s), ${built.inserted} insert(s)`);
+    const outcome = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: saving changes' },
+      () => saveQuery(s.ref, built.script));
+    if (v.session !== s) return false;
+    if (outcome.error !== undefined) {
+      s.error = `Nothing was saved: ${outcome.error}`;
+      render(v);
+      return false;
+    }
+    const loadedRows = rows.length;
+    s.pending = emptyPending();
+    s.problems = [];
+    s.error = undefined;
+    const parts = [built.updated && `${built.updated} updated`, built.inserted && `${built.inserted} added`, built.deleted && `${built.deleted} deleted`].filter(Boolean);
+    void vscode.window.setStatusBarMessage(`APoint-ms-sql: ${s.title} saved (${parts.join(', ')})`, 5000);
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' },
+      () => load(v, 'first', loadedRows + built.inserted));
+    return true;
+  } finally {
+    s.saving = false;
+  }
+}
+
+/** Runs the save script; the error text (server errors joined) or nothing. */
+async function saveQuery(ref: ObjectRef, script: string): Promise<{ error?: string }> {
+  try {
+    const parsed = parseRunScriptResult(await deps!.runner.callResult(ref.connection, 'run_script', { script, maxRows: 1 }));
+    const errors = parsed.messages.filter(m => m.kind === 'error').map(m => m.text);
+    return errors.length ? { error: errors.join('\n') } : {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
   }
 }
 

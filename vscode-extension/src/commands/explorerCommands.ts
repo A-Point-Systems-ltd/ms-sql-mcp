@@ -81,6 +81,7 @@ export function registerExplorerCommands(
     // names and types even for zero rows, and exact value encodings. Errors show in the panel.
     await showDataView(ref, dataViewRows(), {
       runner, explorer, viewer, log, extensionUri: context.extensionUri, colorOf: name => findProfile(store.list(), name)?.color,
+      isReadOnly: name => findProfile(store.list(), name)?.readOnly ?? true,
     }, { replace });
   };
   // Show Data opens a new tab (or the one already showing the object); Replace Current Tab reuses the last active one.
