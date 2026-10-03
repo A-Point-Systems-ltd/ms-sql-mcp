@@ -7,3 +7,6 @@ bin/
 .env
 .env.*
 !.env.example
+
+# Staged from ../.cursor/skills at packaging time (scripts/stage-skill.mjs)
+skills/
