@@ -139,11 +139,64 @@ export interface DataViewOrder { column: string; type: string; dir: SortDir }
 
 // --- Filters -----------------------------------------------------------------------------------------------------
 
-export type FilterOp = 'contains' | 'eq' | 'starts' | 'null' | 'notnull';
-export const FILTER_OPS: readonly FilterOp[] = ['contains', 'eq', 'starts', 'null', 'notnull'];
+export type FilterOp = 'contains' | 'eq' | 'starts' | 'null' | 'notnull' | 'period';
+export const FILTER_OPS: readonly FilterOp[] = ['contains', 'eq', 'starts', 'period', 'null', 'notnull'];
 export const FILTER_OP_LABELS: Readonly<Record<FilterOp, string>> = {
-  contains: 'contains', eq: '=', starts: 'starts with', null: 'is null', notnull: 'is not null',
+  contains: 'contains', eq: '=', starts: 'starts with', null: 'is null', notnull: 'is not null', period: 'from / to',
 };
+
+/** Date and time types: they offer the period (from / to date) filter. */
+const DATE_TYPES = new Set(['date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset']);
+/** Types whose filter defaults to = (contains is rarely what is meant for a number or a flag). */
+const EQ_DEFAULT_TYPES = new Set(['bigint', 'int', 'smallint', 'tinyint', 'bit']);
+
+export function isDateType(type: string): boolean {
+  return DATE_TYPES.has(typeKey(type));
+}
+
+/** The operator a column's filter starts with: = for integers and bit, from / to for dates, else contains. */
+export function defaultFilterOp(type: string): FilterOp {
+  const key = typeKey(type);
+  if (EQ_DEFAULT_TYPES.has(key)) return 'eq';
+  if (DATE_TYPES.has(key)) return 'period';
+  return 'contains';
+}
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** A real calendar date in YYYY-MM-DD form (years 1..9999), else undefined. */
+function isoDate(text: string): { y: number; m: number; d: number } | undefined {
+  const m = ISO_DATE.exec(text);
+  if (!m) return undefined;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = new Date(0);
+  t.setUTCFullYear(y, mo - 1, d);
+  return y >= 1 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d ? { y, m: mo, d } : undefined;
+}
+
+/**
+ * A period filter value, `from..to` (both YYYY-MM-DD, either may be empty, both inclusive): the parts, or undefined
+ * when malformed. `{}` (both empty) is an inactive filter.
+ */
+export function parsePeriod(value: string): { from?: string; to?: string } | undefined {
+  const sep = value.indexOf('..');
+  if (sep < 0 || value.indexOf('..', sep + 2) >= 0) return undefined;
+  const from = value.slice(0, sep);
+  const to = value.slice(sep + 2);
+  if ((from && !isoDate(from)) || (to && !isoDate(to))) return undefined;
+  return { ...(from ? { from } : {}), ...(to ? { to } : {}) };
+}
+
+/** YYYYMMDD of a YYYY-MM-DD date plus `days` (the unseparated form SQL Server reads the same in every language). */
+function compactDate(iso: string, days = 0): string | undefined {
+  const p = isoDate(iso);
+  if (!p) return undefined;
+  const t = new Date(0);
+  t.setUTCFullYear(p.y, p.m - 1, p.d + days);
+  const y = t.getUTCFullYear();
+  if (y < 1 || y > 9999) return undefined;
+  return String(y).padStart(4, '0') + String(t.getUTCMonth() + 1).padStart(2, '0') + String(t.getUTCDate()).padStart(2, '0');
+}
 /** Longest filter value accepted from the webview. */
 export const MAX_FILTER_VALUE = 4000;
 
@@ -173,12 +226,30 @@ export function filterPredicate(f: DataViewFilter): string | undefined {
   switch (f.op) {
     case 'null': return `${col} IS NULL`;
     case 'notnull': return `${col} IS NOT NULL`;
+    case 'period': {
+      // Inclusive dates: col >= from AND col < the day after `to`, as date literals (sargable, no CAST of the column).
+      const p = isDateType(f.type) ? parsePeriod(f.value) : undefined;
+      if (!p) return undefined;
+      const parts: string[] = [];
+      const from = p.from ? compactDate(p.from) : undefined;
+      if (from) parts.push(`${col} >= '${from}'`);
+      if (p.to) {
+        const next = compactDate(p.to, 1);
+        // The day after 9999-12-31 does not exist: `to` is then no bound at all.
+        if (next) parts.push(`${col} < '${next}'`);
+      }
+      return parts.length ? parts.join(' AND ') : undefined;
+    }
     case 'contains':
     case 'starts':
     case 'eq': {
       if (f.value === '' || !isTextFilterable(f.type)) return undefined;
       const text = `CAST(${col} AS NVARCHAR(MAX))`;
-      if (f.op === 'eq') return `${text} = ${sqlString(f.value)}`;
+      if (f.op === 'eq') {
+        // A bit column reads as true / false in the grid but casts to 1 / 0.
+        const bit = typeKey(f.type) === 'bit' ? ({ true: '1', false: '0' } as Record<string, string>)[f.value.trim().toLowerCase()] : undefined;
+        return `${text} = ${sqlString(bit ?? f.value)}`;
+      }
       const pattern = f.op === 'contains' ? `%${likeEscape(f.value)}%` : `${likeEscape(f.value)}%`;
       return `${text} LIKE ${sqlString(pattern)} ESCAPE ${sqlString('\\')}`;
     }
@@ -374,12 +445,24 @@ export function countMatches(texts: readonly string[], query: string): number {
 
 /**
  * The local (Results panel) filter test for one cell: `value` is the display text or null for NULL. contains /
- * starts with / = compare case-insensitively; an empty operand makes them inactive (match). Inlined.
+ * starts with / = compare case-insensitively; an empty operand makes them inactive (match). `period` takes
+ * `from..to` dates (YYYY-MM-DD, inclusive, either may be empty) and compares the value's leading date. Inlined.
  */
 export function filterMatches(value: string | null, op: string, operand: string): boolean {
   if (op === 'null') return value === null;
   if (op === 'notnull') return value !== null;
   if (operand === '') return true;
+  if (op === 'period') {
+    // from..to (YYYY-MM-DD, inclusive) against the date part of an ISO date / time text.
+    const sep = operand.indexOf('..');
+    const from = sep < 0 ? '' : operand.slice(0, sep);
+    const to = sep < 0 ? '' : operand.slice(sep + 2);
+    if (!from && !to) return true;
+    if (value === null) return false;
+    const day = value.trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+    return (!from || day >= from) && (!to || day <= to);
+  }
   if (value === null) return false;
   const v = value.toLowerCase();
   const o = operand.toLowerCase();
@@ -501,7 +584,7 @@ export interface DataViewFilterInput { col: number; op: FilterOp; value: string 
 export type DataViewMessage =
   | GridAction
   | { type: 'sort'; col: number; dir: SortDir | 'none' }
-  | { type: 'reload'; top: number }
+  | { type: 'reload'; top: number; scroll?: [number, number] }
   | { type: 'loadMore'; scroll: [number, number] }
   | { type: 'filter'; filters: DataViewFilterInput[]; focus?: number };
 
@@ -599,13 +682,12 @@ export function parseDataViewMessage(raw: unknown, dims: GridDims, gen: number, 
     case 'reload': {
       if (!isGen(raw.gen, gen)) return undefined;
       const top = typeof raw.top === 'number' ? parseTop(raw.top) : undefined;
-      return top === undefined ? undefined : { type: 'reload', top };
+      const scroll = scrollPair(raw.scroll);
+      return top === undefined ? undefined : { type: 'reload', top, ...(scroll ? { scroll } : {}) };
     }
     case 'loadMore': {
       if (!isGen(raw.gen, gen)) return undefined;
-      const s = raw.scroll;
-      const okScroll = Array.isArray(s) && s.length === 2 && s.every(n => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 10_000_000);
-      return { type: 'loadMore', scroll: okScroll ? [s[0] as number, s[1] as number] : [0, 0] };
+      return { type: 'loadMore', scroll: scrollPair(raw.scroll) ?? [0, 0] };
     }
     case 'filter': {
       if (!isGen(raw.gen, gen) || !Array.isArray(raw.filters) || raw.filters.length > dims.cols) return undefined;
@@ -618,8 +700,9 @@ export function parseDataViewMessage(raw: unknown, dims: GridDims, gen: number, 
         const op = f.op as FilterOp;
         const textOp = op === 'contains' || op === 'eq' || op === 'starts';
         if (textOp && f.value !== '' && types[f.col] !== undefined && !isTextFilterable(types[f.col])) return undefined;
+        if (op === 'period' && ((types[f.col] !== undefined && !isDateType(types[f.col])) || !parsePeriod(f.value))) return undefined;
         seen.add(f.col);
-        filters.push({ col: f.col, op, value: textOp ? f.value : '' });
+        filters.push({ col: f.col, op, value: textOp || op === 'period' ? f.value : '' });
       }
       const focus = raw.focus === undefined ? undefined : index(raw.focus, dims.cols) ? raw.focus : undefined;
       return { type: 'filter', filters, ...(focus !== undefined ? { focus } : {}) };
@@ -627,6 +710,12 @@ export function parseDataViewMessage(raw: unknown, dims: GridDims, gen: number, 
     default:
       return parseGridAction(raw, dims, gen);
   }
+}
+
+/** A [top, left] scroll offset pair from the webview, or undefined. */
+function scrollPair(s: unknown): [number, number] | undefined {
+  return Array.isArray(s) && s.length === 2 && s.every(n => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 10_000_000)
+    ? [s[0] as number, s[1] as number] : undefined;
 }
 
 /** A Results webview message, validated against the result sets on screen; undefined when anything is off. */

@@ -11,9 +11,10 @@ import { rowCountLabel } from '../dataTable';
 import { escapeHtml } from '../webviewUtil';
 import {
   FILTER_OPS, FILTER_OP_LABELS, FilterOp, GridColumn, GridViewState, MAX_TOP, MIN_TOP, SortDir, TRUNCATED_SUFFIX, cellMatches,
-  cellText, compareGridValues, countMatches, filterMatches, gridSortOrder, isNumericType, isSortableType, isTextFilterable,
-  numericStats, tooltipText,
+  cellText, compareGridValues, countMatches, defaultFilterOp, filterMatches, gridSortOrder, isDateType, isNumericType, isSortableType,
+  isTextFilterable, numericStats, parsePeriod, tooltipText,
 } from './gridModel';
+import type { ConnectionColor } from '../connections/profile';
 
 /** Column widths before the client script fits them (px), and the auto-fit limits it applies. */
 export const DEFAULT_COLUMN_WIDTH = 120;
@@ -26,6 +27,8 @@ export const INITIAL_FIT_MAX_WIDTH = 300;
 export const ROW_FIT_MAX_HEIGHT = 400;
 /** Data View filters are applied after this pause in typing (or at once with Enter). */
 export const SERVER_FILTER_DEBOUNCE_MS = 400;
+/** A column whose filter is a from / to period is at least this wide, so both date pickers fit. */
+export const PERIOD_FILTER_WIDTH = 250;
 
 /** A filter as the filter row shows it (column index, operator, value). */
 export interface GridFilterInput { col: number; op: FilterOp; value: string }
@@ -107,15 +110,22 @@ export function renderGrid(spec: GridSpec): string {
   const filterRow = columns.map((c, i) => {
     const current = spec.filters?.find(f => f.col === i);
     const textless = spec.sortMode === 'server' && !isTextFilterable(c.type);
-    const op: FilterOp = current?.op ?? 'contains';
+    const date = isDateType(c.type);
+    const op: FilterOp = current?.op ?? (textless ? 'contains' : defaultFilterOp(c.type));
     const options = FILTER_OPS
-      .filter(o => !textless || o === 'contains' || o === 'null' || o === 'notnull')
+      .filter(o => (!textless || o === 'contains' || o === 'null' || o === 'notnull') && (o !== 'period' || date))
       .map(o => `<option value="${o}"${o === op ? ' selected' : ''}>${escapeHtml(textless && o === 'contains' ? 'any' : FILTER_OP_LABELS[o])}</option>`)
       .join('');
     const disabled = textless || op === 'null' || op === 'notnull';
     const label = escapeHtml(name(c));
-    return `<th class="fc" data-fc="${i}"${textless ? ' data-textless="1"' : ''}><select aria-label="Filter operator for ${label}">${options}</select>`
-      + `<input type="text" data-c="${i}" aria-label="Filter ${label}" placeholder="filter" value="${escapeHtml(current?.value ?? '')}"${disabled ? ' disabled' : ''}></th>`;
+    const text = op === 'period' ? '' : current?.value ?? '';
+    const period = op === 'period' && current ? parsePeriod(current.value) ?? {} : {};
+    const dates = date
+      ? `<span class="gper"><input type="date" data-p="from" aria-label="${label} from" title="From (inclusive)" min="0001-01-01" max="9999-12-31" value="${escapeHtml(period.from ?? '')}">`
+        + `<input type="date" data-p="to" aria-label="${label} to" title="To (inclusive)" min="0001-01-01" max="9999-12-31" value="${escapeHtml(period.to ?? '')}"></span>`
+      : '';
+    return `<th class="fc" data-fc="${i}" data-op="${op}"${textless ? ' data-textless="1"' : ''}><select aria-label="Filter operator for ${label}">${options}</select>`
+      + `<input type="text" data-c="${i}" aria-label="Filter ${label}" placeholder="filter" value="${escapeHtml(text)}"${disabled ? ' disabled' : ''}>${dates}</th>`;
   }).join('');
 
   const body = rows.map((row, r) =>
@@ -230,6 +240,10 @@ export const GRID_CSS = `
     background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); outline: none; }
   .gt thead tr.gf input:focus { border-color: var(--vscode-focusBorder); }
   .gt thead tr.gf input:disabled { opacity: 0.5; }
+  .gt thead tr.gf th[data-op="period"] > input[type="text"], .gt thead tr.gf th:not([data-op="period"]) .gper { display: none; }
+  .gt thead tr.gf .gper { display: flex; flex: 1 1 auto; gap: 2px; min-width: 0; }
+  .gt thead tr.gf .gper input { flex: 1 1 0; padding: 0 2px; }
+  body.vscode-dark .gt thead tr.gf .gper input, body.vscode-high-contrast:not(.vscode-high-contrast-light) .gt thead tr.gf .gper input { color-scheme: dark; }
   .gt .si { margin-left: 4px; font-size: 9px; }
   .gt th[data-sort="asc"] .si::after { content: "\\25B2"; }
   .gt th[data-sort="desc"] .si::after { content: "\\25BC"; }
@@ -278,7 +292,7 @@ ${GRID_CLIENT}`;
 const GRID_CLIENT = String.raw`
 function initGrids(vscode) {
   var MIN_W = ${MIN_COLUMN_WIDTH}, FIT_MAX = ${FIT_MAX_WIDTH}, INIT_ROWS = ${INITIAL_FIT_ROWS}, INIT_MAX = ${INITIAL_FIT_MAX_WIDTH};
-  var MIN_H = 16, SERVER_DEBOUNCE = ${SERVER_FILTER_DEBOUNCE_MS}, LOCAL_DEBOUNCE = 150;
+  var MIN_H = 16, SERVER_DEBOUNCE = ${SERVER_FILTER_DEBOUNCE_MS}, LOCAL_DEBOUNCE = 150, PERIOD_W = ${PERIOD_FILTER_WIDTH};
   var ctx = document.createElement('canvas').getContext('2d');
   // One collator for every local text compare (Intl.Collator is much faster than repeated localeCompare).
   var collator = new Intl.Collator();
@@ -477,7 +491,8 @@ function initGrids(vscode) {
           var tw = ctx.measureText(text.replace(/\s+/g, ' ')).width + f.pad;
           if (tw > w) w = tw;
         }
-        result.push(Math.min(cap, Math.max(MIN_W, Math.ceil(w) + 2)));
+        var fit = Math.min(cap, Math.max(MIN_W, Math.ceil(w) + 2));
+        result.push(isPeriod(c) ? Math.max(fit, PERIOD_W) : fit);
       }
       for (var j = 0; j < cols.length; j++) setWidth(cols[j], result[j]);
     }
@@ -544,9 +559,19 @@ function initGrids(vscode) {
 
     // --- Local filters and quick search ------------------------------------------------------------------------------
     function filterCells() { return Array.prototype.slice.call(grid.querySelectorAll('thead tr.gf th[data-fc]')); }
+    function isPeriod(c) {
+      var fc = grid.querySelector('thead tr.gf th[data-fc="' + c + '"]');
+      return !!fc && fc.getAttribute('data-op') === 'period';
+    }
     function readFilters() {
       return filterCells().map(function (fc) {
-        return { col: Number(fc.getAttribute('data-fc')), op: fc.querySelector('select').value, value: fc.querySelector('input').value };
+        var op = fc.querySelector('select').value;
+        var value = fc.querySelector('input[type="text"]').value;
+        if (op === 'period') {
+          var from = fc.querySelector('input[data-p="from"]').value, to = fc.querySelector('input[data-p="to"]').value;
+          value = from || to ? from + '..' + to : '';
+        }
+        return { col: Number(fc.getAttribute('data-fc')), op: op, value: value };
       }).filter(function (f) { return f.op === 'null' || f.op === 'notnull' || f.value !== ''; });
     }
     function applyLocalFilters() {
@@ -721,14 +746,20 @@ function initGrids(vscode) {
     // --- Filter row --------------------------------------------------------------------------------------------------
     filterCells().forEach(function (fc) {
       var col = Number(fc.getAttribute('data-fc'));
-      var input = fc.querySelector('input');
+      var input = fc.querySelector('input[type="text"]');
       var select = fc.querySelector('select');
       input.addEventListener('input', function () { onFilterInput(col, false); });
       input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); onFilterInput(col, true); } });
+      Array.prototype.forEach.call(fc.querySelectorAll('.gper input'), function (d) {
+        d.addEventListener('change', function () { onFilterInput(col, true); });
+        d.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); onFilterInput(col, true); } });
+      });
       select.addEventListener('change', function () {
         var nullOp = select.value === 'null' || select.value === 'notnull';
         if (nullOp || fc.getAttribute('data-textless') === '1') input.setAttribute('disabled', '');
         else input.removeAttribute('disabled');
+        fc.setAttribute('data-op', select.value);
+        if (select.value === 'period' && (widths[col] || 0) < PERIOD_W) { setWidth(col, PERIOD_W); restyle(); postView(); }
         onFilterInput(col, true);
       });
     });
@@ -972,6 +1003,8 @@ export interface DataViewModel {
   /** `schema.name` of the table or view. */
   objectName: string;
   connection: string;
+  /** The connection's color: the connection name in the header is drawn in it. */
+  connectionColor?: ConnectionColor;
   /** The TOP the rows were (or are being) queried with. */
   top: number;
   loading?: boolean;
@@ -1042,13 +1075,15 @@ export function renderDataView(model: DataViewModel, nonce: string): string {
   #top[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }
   #toperr { color: var(--vscode-errorForeground); font-size: 12px; }
   .dgrid { flex: 1; }
+  .meta.conn { color: var(--conn); font-weight: 600; }
+  .meta.conn::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; background: var(--conn); }
 ${GRID_CSS}
 </style>
 </head>
 <body data-gen="${Math.floor(model.gen)}">
   <div class="bar">
     <span class="name">${escapeHtml(model.objectName)}</span>
-    <span class="meta" title="Connection">${escapeHtml(model.connection)}</span>
+    <span class="meta${model.connectionColor ? ' conn' : ''}" title="Connection"${model.connectionColor ? ` style="--conn: var(--vscode-charts-${model.connectionColor})"` : ''}>${escapeHtml(model.connection)}</span>
     <span class="meta">${escapeHtml(meta)}</span>
   </div>
   ${error}
@@ -1073,7 +1108,10 @@ ${gridScript()}
     err.textContent = '';
     top.setAttribute('aria-invalid', 'false');
     document.getElementById('gstatus').textContent = 'Loading…';
-    vscode.postMessage({ type: 'reload', gen: Number(document.body.getAttribute('data-gen')), top: n });
+    var msg = { type: 'reload', gen: Number(document.body.getAttribute('data-gen')), top: n };
+    var sc = document.querySelector('#gd .gscroll');
+    if (sc) msg.scroll = [Math.round(sc.scrollTop), Math.round(sc.scrollLeft)];
+    vscode.postMessage(msg);
   }
   document.getElementById('reload').addEventListener('click', reload);
   top.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); reload(); } });

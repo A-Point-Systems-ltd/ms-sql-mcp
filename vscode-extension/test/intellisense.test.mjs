@@ -217,7 +217,7 @@ test('intellisenseEnabled defaults to true and is false only for false', () => {
 
 test('messages name the database (loading) and server/database (refresh)', () => {
   assert.equal(loadingMessage(profile()), 'APoint-ms-sql: loading IntelliSense for db1…');
-  assert.equal(refreshedMessage(profile()), 'IntelliSense cache refreshed for DC\\DEV/db1');
+  assert.equal(refreshedMessage(profile()), 'IntelliSense cache refreshed for DC\\DEV\\db1');
   const raw = profile({ name: 'rawconn', auth: 'raw', server: '', database: '' });
   assert.equal(loadingMessage(raw), 'APoint-ms-sql: loading IntelliSense for rawconn…');
   assert.equal(refreshedMessage(raw), 'IntelliSense cache refreshed for rawconn');

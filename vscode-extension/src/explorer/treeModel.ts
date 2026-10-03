@@ -1,7 +1,7 @@
 // Object-tree node model: node kinds, labels, contextValues, ids, script_object arguments and DDL text.
 // No 'vscode' import — unit-testable with plain Node; explorerTree.ts maps ItemSpec onto vscode.TreeItem.
 import { pick } from '../client/parse';
-import type { ConnectionProfile } from '../connections/profile';
+import { CONNECTION_COLORS, ConnectionProfile } from '../connections/profile';
 import { supportsHistory } from '../history/historyModel';
 import { matchesFilter } from '../tree/filter';
 import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
@@ -31,6 +31,18 @@ export interface ItemSpec {
   icon: string;
   /** Click command; it receives the node as its argument. */
   command?: 'msSqlMcp.showDdl';
+  /** Theme color id of the icon (a colored connection). */
+  iconColor?: string;
+  /** Connections: a {@link CONNECTION_COLOR_SCHEME} uri, so the color decoration can paint the label. */
+  resourceUri?: string;
+}
+
+/** Scheme of the tree's connection resource uris (label color decorations only; never opened). */
+export const CONNECTION_COLOR_SCHEME = 'mssql-conn';
+export const connectionColorUri = (connection: string): string => `${CONNECTION_COLOR_SCHEME}:/${encodeURIComponent(connection)}`;
+/** The connection name of a {@link connectionColorUri} path ('/name'); undefined when it does not decode. */
+export function connectionOfColorUri(path: string): string | undefined {
+  try { return decodeURIComponent(path.replace(/^\//, '')) || undefined; } catch { return undefined; }
 }
 
 export const CLOSED_MESSAGE = 'Closed - right-click › Open to browse';
@@ -63,7 +75,7 @@ export const childrenKey = (connection: string, schema: string | undefined, name
 const display = (ref: { schema?: string; name: string }): string => (ref.schema ? `${ref.schema}.${ref.name}` : ref.name);
 
 export function connectionDescription(p: ConnectionProfile): string {
-  const target = p.auth === 'raw' ? 'connection string' : `${p.server}/${p.database}`;
+  const target = p.auth === 'raw' ? 'connection string' : `${p.server}\\${p.database}`;
   return [target, p.readOnly ? 'read-only' : undefined, p.open ? undefined : 'closed'].filter(Boolean).join(' · ');
 }
 
@@ -180,7 +192,8 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
       return {
         id, label: p.name, description: connectionDescription(p), tooltip: `${p.name}: ${connectionDescription(p)}`,
         contextValue: p.open ? 'msSqlMcp.conn.open' : 'msSqlMcp.conn.closed', collapsible: true,
-        icon: p.open ? 'database' : 'circle-slash',
+        icon: p.open ? 'database' : 'circle-slash', resourceUri: connectionColorUri(p.name),
+        ...(p.color && CONNECTION_COLORS[p.color] ? { iconColor: CONNECTION_COLORS[p.color].themeColor } : {}),
       };
     }
     case 'category':

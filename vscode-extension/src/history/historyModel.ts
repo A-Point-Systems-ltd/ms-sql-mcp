@@ -52,20 +52,20 @@ export const readOnlyWarning = (where: string): string =>
 export const setUpMessage = (where: string): string => `DDL history is set up on ${where}.`;
 export const noHistoryMessage = (obj: string, connection: string): string => `No DDL history recorded for ${obj} on '${connection}'.`;
 
-/** `<server>/<database>` of a profile, as in its tab titles (raw connection strings are parsed best-effort). */
+/** `<server>\<database>` of a profile, as in its tab titles (raw connection strings are parsed best-effort). */
 export function targetText(profile: ConnectionProfile): string {
   const t = profileTarget(profile, profile.name);
-  return `${t.server}/${t.database}`;
+  return `${t.server}\\${t.database}`;
 }
 
 /**
- * `<server>/<db>` as the server reports them (`ddl_history status`: @@SERVERNAME and DB_NAME()), so messages name the
+ * `<server>\<db>` as the server reports them (`ddl_history status`: @@SERVERNAME and DB_NAME()), so messages name the
  * database the connection actually reached. A part the status lacks falls back to the profile (see {@link targetText}).
  */
 export function statusTargetText(status: Pick<HistoryStatus, 'serverName' | 'databaseName'>, profile: ConnectionProfile): string {
-  if (status.serverName && status.databaseName) return `${status.serverName}/${status.databaseName}`;
+  if (status.serverName && status.databaseName) return `${status.serverName}\\${status.databaseName}`;
   const t = profileTarget(profile, profile.name);
-  return `${status.serverName ?? t.server}/${status.databaseName ?? t.database}`;
+  return `${status.serverName ?? t.server}\\${status.databaseName ?? t.database}`;
 }
 
 /** Whether the oldest listed entry may have an earlier one that was not loaded: the server returned a full page. */

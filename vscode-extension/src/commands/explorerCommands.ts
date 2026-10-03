@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ServerProcessClient } from '../client/serverProcessClient';
-import { showDataView } from '../dataPanel';
+import { refreshDataViewColors, showDataView } from '../dataPanel';
 import type { CellViewer } from '../grid/cellViewer';
 import type { ObjectRef } from '../explorer/catalog';
 import { openEditableDdl } from '../explorer/editableDdl';
@@ -15,7 +15,9 @@ import type { ExplorerNode, ExplorerTreeProvider } from '../explorer/explorerTre
 import { DDL_SCHEME, ddlUri } from '../explorer/sqlText';
 import { DEFAULT_TOP, clampTop } from '../grid/gridModel';
 import { Logger } from '../logger';
-import type { ObjectFilterViewProvider } from '../tree/filterView';
+
+/** The filter is applied after this pause in typing (or at once with Enter). */
+const FILTER_DEBOUNCE_MS = 200;
 
 /** The object an explorer command acts on (object and child nodes only). */
 function refOf(node: unknown): ObjectRef | undefined {
@@ -32,7 +34,7 @@ export function registerExplorerCommands(
   context: vscode.ExtensionContext,
   tree: ExplorerTreeProvider,
   explorer: ExplorerClient,
-  filterView: ObjectFilterViewProvider,
+  treeView: vscode.TreeView<ExplorerNode>,
   ddl: DdlDocumentProvider,
   docs: QueryDocuments,
   store: ConnectionStore,
@@ -50,7 +52,7 @@ export function registerExplorerCommands(
       }
     }));
 
-  reg('showDdl', async arg => {
+  const showDdl = async (arg: unknown, newTab: boolean): Promise<void> => {
     const ref = refOf(arg);
     if (!ref) {
       void vscode.window.showInformationMessage('APoint-ms-sql: select an object in the APoint-ms-sql tree.');
@@ -63,10 +65,13 @@ export function registerExplorerCommands(
       && await openEditableDdl(sqlDocs, explorer, docs, log, ref, findProfile(store.list(), ref.connection))) return;
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(ddlUri(ref)));
     const sqlDoc = await vscode.languages.setTextDocumentLanguage(doc, 'sql');
-    await vscode.window.showTextDocument(sqlDoc, { preview: true });
-  });
+    // A preview tab is replaced by the next Show DDL; "New Tab" keeps it open.
+    await vscode.window.showTextDocument(sqlDoc, { preview: !newTab });
+  };
+  reg('showDdl', arg => showDdl(arg, false));
+  reg('showDdlNewTab', arg => showDdl(arg, true));
 
-  reg('dataView', async arg => {
+  const dataView = async (arg: unknown, replace: boolean): Promise<void> => {
     const ref = refOf(arg);
     if (!ref || (ref.scriptType !== 'Table' && ref.scriptType !== 'View')) {
       void vscode.window.showInformationMessage('APoint-ms-sql: select a table or view in the APoint-ms-sql tree.');
@@ -74,8 +79,14 @@ export function registerExplorerCommands(
     }
     // The runner's run_script (a single generated SELECT, allowed on read-only connections too) returns column
     // names and types even for zero rows, and exact value encodings. Errors show in the panel.
-    await showDataView(ref, dataViewRows(), { runner, explorer, viewer, log });
-  });
+    await showDataView(ref, dataViewRows(), {
+      runner, explorer, viewer, log, extensionUri: context.extensionUri, colorOf: name => findProfile(store.list(), name)?.color,
+    }, { replace });
+  };
+  // Show Data opens a new tab (or the one already showing the object); Replace Current Tab reuses the last active one.
+  reg('dataView', arg => dataView(arg, false));
+  reg('dataViewReplace', arg => dataView(arg, true));
+  context.subscriptions.push(store.onDidChange(refreshDataViewColors));
 
   // Refresh: from a DDL editor's title (arg = its Uri) it re-scripts that document; from the tree it clears
   // the node's cache. Without an argument (tree title bar, palette) it refreshes the tree and an active DDL editor.
@@ -89,8 +100,38 @@ export function registerExplorerCommands(
     if (!arg && active?.scheme === DDL_SCHEME) ddl.reload(active);
   });
 
+  // The object filter: a title-bar button (or Ctrl+F in the tree) opens an input that filters as you type. The tree
+  // view shows the active term in its title, and Clear Filter appears while one is set.
+  const showFilter = () => {
+    const term = tree.filter;
+    treeView.description = term ? `filter: ${term}` : undefined;
+    void vscode.commands.executeCommand('setContext', 'msSqlMcp.filterActive', term.length > 0);
+  };
+  showFilter();
+
+  reg('filter', () => {
+    const box = vscode.window.createInputBox();
+    box.title = 'Filter objects by name';
+    box.placeholder = 'Part of a name, e.g. Customer or dbo.Order (Esc keeps the filter, empty clears it)';
+    box.value = tree.filter;
+    let timer: NodeJS.Timeout | undefined;
+    const apply = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      tree.setFilter(box.value);
+      showFilter();
+    };
+    box.onDidChangeValue(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(apply, FILTER_DEBOUNCE_MS);
+    });
+    box.onDidAccept(() => { apply(); box.hide(); });
+    box.onDidHide(() => { if (timer) apply(); box.dispose(); });
+    box.show();
+  });
+
   reg('clearFilter', () => {
     tree.setFilter('');
-    filterView.sync('');
+    showFilter();
   });
 }

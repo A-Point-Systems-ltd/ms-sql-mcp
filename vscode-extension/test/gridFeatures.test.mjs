@@ -302,7 +302,7 @@ test('toolbar, filter row, columns checklist and menus: escaped, keyboard-access
   assert.match(html, /<option value="starts" selected>starts with<\/option>/);
   assert.ok(html.includes(`value="&lt;script&gt;alert(1)&lt;/script&gt;&quot;&#39;&amp;"`));
   // A varbinary column offers only any / is null / is not null, its input disabled.
-  assert.match(html, /<th class="fc" data-fc="1" data-textless="1"><select aria-label="Filter operator for Bin"><option value="contains">any<\/option><option value="null" selected>is null<\/option><option value="notnull">is not null<\/option><\/select><input type="text" data-c="1" aria-label="Filter Bin" placeholder="filter" value="" disabled><\/th>/);
+  assert.match(html, /<th class="fc" data-fc="1" data-op="null" data-textless="1"><select aria-label="Filter operator for Bin"><option value="contains">any<\/option><option value="null" selected>is null<\/option><option value="notnull">is not null<\/option><\/select><input type="text" data-c="1" aria-label="Filter Bin" placeholder="filter" value="" disabled><\/th>/);
   // Columns checklist and menu items.
   assert.ok(html.includes(`<label><input type="checkbox" data-col="0" checked> &lt;script&gt;alert(1)&lt;/script&gt;&quot;&#39;&amp;</label>`));
   assert.match(html, /<button type="button" data-act="showall">Show all<\/button>/);
@@ -428,4 +428,55 @@ test('CSV formula neutralization: text columns only, quoted with a leading quote
   for (const t of ['int', 'decimal', 'datetime', 'date', 'varbinary', 'uniqueidentifier', undefined]) assert.ok(!isTextColumn(t), String(t));
   // TSV copy stays raw.
   assert.equal(buildTsv(undefined, [['=1+2', '@x']]), '=1+2\t@x');
+});
+
+// --- Filter defaults and the date period filter ----------------------------------------------------------------------
+
+import { defaultFilterOp, isDateType, parsePeriod } from '../out/grid/gridModel.js';
+
+test('filter defaults: = for integers and bit, from / to for dates, contains for the rest', () => {
+  for (const t of ['int', 'BIGINT', 'smallint', 'tinyint', 'bit']) assert.equal(defaultFilterOp(t), 'eq', t);
+  for (const t of ['date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset']) assert.equal(defaultFilterOp(t), 'period', t);
+  for (const t of ['nvarchar', 'decimal', 'uniqueidentifier', '']) assert.equal(defaultFilterOp(t), 'contains', t);
+  assert.ok(isDateType('DateTime2') && !isDateType('time'));
+  const html = renderGrid({ id: 'gd', gen: 1, sortMode: 'server', columns: cols(['Id', 'int'], ['Name', 'nvarchar'], ['At', 'datetime']), rows: [] });
+  assert.match(html, /data-fc="0" data-op="eq">/);
+  assert.match(html, /data-fc="1" data-op="contains">/);
+  assert.match(html, /data-fc="2" data-op="period">.*<option value="period" selected>from \/ to<\/option>.*<input type="date" data-p="from"/);
+  assert.ok(!/data-fc="1"[^]*?<option value="period"[^]*?data-fc="2"/.test(html), 'period is offered on date columns only');
+});
+
+test('bit = accepts true / false', () => {
+  assert.equal(filterPredicate(f('On', 'eq', 'true', 'bit')), "CAST([On] AS NVARCHAR(MAX)) = N'1'");
+  assert.equal(filterPredicate(f('On', 'eq', ' FALSE ', 'bit')), "CAST([On] AS NVARCHAR(MAX)) = N'0'");
+  assert.equal(filterPredicate(f('On', 'eq', '1', 'bit')), "CAST([On] AS NVARCHAR(MAX)) = N'1'");
+});
+
+test('period: inclusive date range as unseparated literals; malformed or non-date columns are inactive', () => {
+  assert.deepEqual(parsePeriod('2024-01-01..2024-01-31'), { from: '2024-01-01', to: '2024-01-31' });
+  assert.deepEqual(parsePeriod('..2024-02-29'), { to: '2024-02-29' });
+  assert.deepEqual(parsePeriod('..'), {});
+  for (const bad of ['2024-02-30..', '2024-1-1..', "2024-01-01'..", '2024-01-01', '..2024-01-01..', 'x..y']) assert.equal(parsePeriod(bad), undefined, bad);
+  assert.equal(filterPredicate(f('At', 'period', '2024-01-01..2024-12-31', 'datetime')), "[At] >= '20240101' AND [At] < '20250101'");
+  assert.equal(filterPredicate(f('At', 'period', '2024-02-28..', 'date')), "[At] >= '20240228'");
+  assert.equal(filterPredicate(f('At', 'period', '..2024-02-28', 'date')), "[At] < '20240229'");
+  assert.equal(filterPredicate(f('At', 'period', '..9999-12-31', 'datetime2')), undefined, 'no day after the last one');
+  assert.equal(filterPredicate(f('At', 'period', '..', 'date')), undefined);
+  assert.equal(filterPredicate(f('At', 'period', "2024-01-01'; --..", 'date')), undefined);
+  assert.equal(filterPredicate(f('Name', 'period', '2024-01-01..', 'nvarchar')), undefined);
+  const dims = { rows: 1, cols: 2 };
+  const types = ['nvarchar', 'date'];
+  assert.deepEqual(parseDataViewMessage({ type: 'filter', gen: 1, filters: [{ col: 1, op: 'period', value: '2024-01-01..' }] }, dims, 1, types),
+    { type: 'filter', filters: [{ col: 1, op: 'period', value: '2024-01-01..' }] });
+  assert.equal(parseDataViewMessage({ type: 'filter', gen: 1, filters: [{ col: 0, op: 'period', value: '2024-01-01..' }] }, dims, 1, types), undefined);
+  assert.equal(parseDataViewMessage({ type: 'filter', gen: 1, filters: [{ col: 1, op: 'period', value: 'bad' }] }, dims, 1, types), undefined);
+  assert.ok(filterMatches('2024-01-15T10:00:00', 'period', '2024-01-01..2024-01-15'));
+  assert.ok(!filterMatches('2024-01-16T00:00:00', 'period', '2024-01-01..2024-01-15'));
+  assert.ok(!filterMatches(null, 'period', '2024-01-01..'));
+  assert.ok(filterMatches(null, 'period', ''), 'empty is inactive');
+});
+
+test('reload keeps a valid scroll position', () => {
+  assert.deepEqual(parseDataViewMessage({ type: 'reload', gen: 1, top: 50, scroll: [120, 0] }, { rows: 0, cols: 0 }, 1), { type: 'reload', top: 50, scroll: [120, 0] });
+  assert.deepEqual(parseDataViewMessage({ type: 'reload', gen: 1, top: 50, scroll: [-1, 0] }, { rows: 0, cols: 0 }, 1), { type: 'reload', top: 50 });
 });

@@ -58,10 +58,10 @@ export function targetMismatch(stored: ScriptTarget | undefined, profile: Connec
   return norm(stored.server) !== norm(current.server) || norm(stored.database) !== norm(current.database);
 }
 
-/** `server/db` for messages; `an unknown server` for a raw or missing target. */
+/** `server\db` for messages; `an unknown server` for a raw or missing target. */
 export function describeTarget(target: ScriptTarget | undefined): string {
   if (!target || 'raw' in target) return 'an unknown server';
-  return `${target.server}/${target.database}`;
+  return `${target.server}\\${target.database}`;
 }
 
 /** The fields of an object document's association the guard reads. */

@@ -1,7 +1,7 @@
 // HTML of the add / edit connection form. No 'vscode' import (unit-testable).
 
 import { escapeHtml } from '../webviewUtil';
-import { AUTH_OPTIONS, DDL_HISTORY_HELP, DDL_HISTORY_LABEL, ENCRYPTION_HELP, ENCRYPTION_OPTIONS, FormValues, TRUST_HELP } from './connectionFormModel';
+import { AUTH_OPTIONS, COLOR_HELP, COLOR_OPTIONS, DDL_HISTORY_HELP, DDL_HISTORY_LABEL, ENCRYPTION_HELP, ENCRYPTION_OPTIONS, FormValues, TRUST_HELP } from './connectionFormModel';
 
 export interface RenderOptions {
   mode: 'add' | 'edit';
@@ -53,6 +53,8 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
     .map(o => `<div class="hint${o.value === v.encrypt ? '' : ' hidden'}" data-enc="${o.value}">${e(ENCRYPTION_HELP[o.value])}</div>`)
     .join('');
 
+  const colorOptions = COLOR_OPTIONS.map(o => `<option value="${o.value}"${o.value === v.color ? ' selected' : ''}>${e(o.label)}</option>`).join('');
+
   const title = edit ? `Edit connection '${v.name}'` : 'Add connection';
   const passwordPlaceholder = edit && opts.hasSavedPassword ? 'Saved - leave empty to keep' : '';
 
@@ -84,7 +86,8 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
   input:focus,select:focus,textarea:focus{border-color:var(--vscode-focusBorder)}
   input[readonly]{opacity:.7}
   .row{display:flex;gap:8px;align-items:center}
-  .row input{flex:1}
+  .row input,.row select{flex:1}
+  .swatch{flex:0 0 auto;width:14px;height:14px;border-radius:50%;border:1px solid var(--vscode-panel-border)}
   .hint{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}
   .indent{margin:2px 0 12px 22px}
   .err{margin-top:4px;color:var(--vscode-errorForeground);font-size:.9em}
@@ -121,6 +124,7 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
     ${encHelp}
     <div style="margin-top:8px">${check('trustServerCertificate', 'Trust server certificate', e(TRUST_HELP))}</div>
   </div>
+  ${plain('color', 'Color', `<div class="row"><span id="swatch" class="swatch"></span><select id="color">${colorOptions}</select></div>`, e(COLOR_HELP))}
   <div class="field" data-field="flags">
     ${check('readOnly', 'Read-only', 'Refuses write tools and connects with ApplicationIntent=ReadOnly.')}
     ${check('insights', 'AI Insights', 'Adds schema-insight tools for agents (also requires the msSqlMcp.insights setting).')}
@@ -147,7 +151,7 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
         user: el('user').value, password: el('password').value, rawConnectionString: el('rawConnectionString').value,
         encrypt: el('encrypt').value, trustServerCertificate: el('trustServerCertificate').checked,
         readOnly: el('readOnly').checked, insights: el('insights').checked, open: el('open').checked,
-        ddlHistory: el('ddlHistory').checked
+        ddlHistory: el('ddlHistory').checked, color: el('color').value
       };
     }
     function applyAuth() {
@@ -176,6 +180,11 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
 
     el('auth').addEventListener('change', applyAuth);
     el('encrypt').addEventListener('change', applyEncryption);
+    function applyColor() {
+      var c = el('color').value;
+      el('swatch').style.background = c ? 'var(--vscode-charts-' + c + ')' : 'transparent';
+    }
+    el('color').addEventListener('change', applyColor);
     el('form').addEventListener('submit', function (ev) { ev.preventDefault(); send('save'); });
     el('test').addEventListener('click', function () { send('test'); });
     el('listDatabases').addEventListener('click', function () { send('listDatabases'); });
@@ -215,6 +224,7 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
 
     applyAuth();
     applyEncryption();
+    applyColor();
   })();
 </script>
 </body>

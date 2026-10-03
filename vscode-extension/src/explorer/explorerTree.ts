@@ -185,9 +185,9 @@ function toTreeItem(node: ExplorerNode, spec: ItemSpec): vscode.TreeItem {
   if (spec.description) item.description = spec.description;
   if (spec.tooltip) item.tooltip = spec.tooltip;
   item.contextValue = spec.contextValue;
-  item.iconPath = node.kind === 'message' && node.isError
-    ? new vscode.ThemeIcon(spec.icon, new vscode.ThemeColor('errorForeground'))
-    : new vscode.ThemeIcon(spec.icon);
+  if (spec.resourceUri) item.resourceUri = vscode.Uri.parse(spec.resourceUri);
+  const iconColor = node.kind === 'message' && node.isError ? 'errorForeground' : spec.iconColor;
+  item.iconPath = iconColor ? new vscode.ThemeIcon(spec.icon, new vscode.ThemeColor(iconColor)) : new vscode.ThemeIcon(spec.icon);
   if (spec.command) item.command = { command: spec.command, title: 'Show DDL', arguments: [node] };
   return item;
 }

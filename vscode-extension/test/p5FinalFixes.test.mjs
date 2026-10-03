@@ -82,11 +82,11 @@ test('parseHistoryStatus reads serverName / databaseName; blank ones are left ou
 
 test('statusTargetText: the server-reported names first, the profile only for what is missing', () => {
   const raw = profile('r', { auth: 'raw', server: '', database: '', rawConnectionString: 'not parseable' });
-  assert.equal(statusTargetText({ serverName: 'SRV1', databaseName: 'ClientB' }, raw), 'SRV1/ClientB');
-  assert.equal(statusTargetText({}, raw), 'connection string/default');
-  assert.equal(statusTargetText({}, profile('a')), 'DC\\DEV/Sales');
-  assert.equal(statusTargetText({ serverName: 'SRV1' }, profile('a', { database: '' })), 'SRV1/default');
-  assert.equal(statusTargetText({ databaseName: 'Real' }, profile('a')), 'DC\\DEV/Real');
+  assert.equal(statusTargetText({ serverName: 'SRV1', databaseName: 'ClientB' }, raw), 'SRV1\\ClientB');
+  assert.equal(statusTargetText({}, raw), 'connection string\\default');
+  assert.equal(statusTargetText({}, profile('a')), 'DC\\DEV\\Sales');
+  assert.equal(statusTargetText({ serverName: 'SRV1' }, profile('a', { database: '' })), 'SRV1\\default');
+  assert.equal(statusTargetText({ databaseName: 'Real' }, profile('a')), 'DC\\DEV\\Real');
 });
 
 test('installPrompt detail names DDL_Audit_Writer, the rollback-by-another-trigger exception and how to remove it (RI1)', () => {
