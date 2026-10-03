@@ -318,6 +318,6 @@ export function loadingMessage(profile: ConnectionProfile): string {
 
 /** Shown after Refresh IntelliSense Cache. */
 export function refreshedMessage(profile: ConnectionProfile): string {
-  const target = profile.auth === 'raw' || !profile.server ? profile.name : `${profile.server}/${profile.database}`;
+  const target = profile.auth === 'raw' || !profile.server ? profile.name : `${profile.server}\\${profile.database}`;
   return `IntelliSense cache refreshed for ${target}`;
 }

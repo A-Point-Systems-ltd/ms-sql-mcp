@@ -145,8 +145,8 @@ test('installPrompt names server/db and lists only what is missing', () => {
 });
 
 test('targetText: server/db from the profile, raw connection strings parsed', () => {
-  assert.equal(targetText(profile('a')), 'DC\\DEV/Sales');
-  assert.equal(targetText(profile('r', { auth: 'raw', server: '', database: '', rawConnectionString: 'Data Source=S1;Initial Catalog=D1' })), 'S1/D1');
+  assert.equal(targetText(profile('a')), 'DC\\DEV\\Sales');
+  assert.equal(targetText(profile('r', { auth: 'raw', server: '', database: '', rawConnectionString: 'Data Source=S1;Initial Catalog=D1' })), 'S1\\D1');
 });
 
 test('runsHistorySetup: only when ddlHistory is on and new or toggled on (relative to the form baseline)', () => {

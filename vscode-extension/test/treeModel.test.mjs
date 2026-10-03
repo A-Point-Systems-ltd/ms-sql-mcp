@@ -10,8 +10,8 @@ const cat = id => CATEGORIES.find(c => c.id === id);
 const profile = (over = {}) => ({ name: 'dev', server: 'DC\\DEV', database: 'db1', auth: 'windows', readOnly: true, insights: false, open: true, encrypt: 'mandatory', trustServerCertificate: true, ...over });
 
 test('connection item: description, contextValue, collapsible by open state', () => {
-  assert.equal(connectionDescription(profile()), 'DC\\DEV/db1 · read-only');
-  assert.equal(connectionDescription(profile({ open: false, readOnly: false })), 'DC\\DEV/db1 · closed');
+  assert.equal(connectionDescription(profile()), 'DC\\DEV\\db1 · read-only');
+  assert.equal(connectionDescription(profile({ open: false, readOnly: false })), 'DC\\DEV\\db1 · closed');
   assert.equal(connectionDescription(profile({ auth: 'raw', rawConnectionString: 'x', server: '', database: '' })), 'connection string · read-only');
   const open = describeNode({ kind: 'connection', profile: profile() });
   assert.equal(open.label, 'dev');

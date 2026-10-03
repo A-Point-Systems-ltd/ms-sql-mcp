@@ -17,6 +17,24 @@ export interface ConnectionProfile {
    * without it is treated as false. Extension-only: not part of the agent server env nor of its definition version.
    */
   ddlHistory?: boolean;
+  /** Label / tab color that tells connections apart (e.g. prod vs dev). Extension-only, like `ddlHistory`. */
+  color?: ConnectionColor;
+}
+
+export type ConnectionColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple';
+
+/** The connection colors: theme color id (tree labels, editor tabs) and a fixed hex (Data View tab icon). */
+export const CONNECTION_COLORS: Readonly<Record<ConnectionColor, { label: string; themeColor: string; hex: string }>> = {
+  red: { label: 'Red', themeColor: 'charts.red', hex: '#f14c4c' },
+  orange: { label: 'Orange', themeColor: 'charts.orange', hex: '#d18616' },
+  yellow: { label: 'Yellow', themeColor: 'charts.yellow', hex: '#cca700' },
+  green: { label: 'Green', themeColor: 'charts.green', hex: '#388a34' },
+  blue: { label: 'Blue', themeColor: 'charts.blue', hex: '#3794ff' },
+  purple: { label: 'Purple', themeColor: 'charts.purple', hex: '#b180d7' },
+};
+
+export function isConnectionColor(v: unknown): v is ConnectionColor {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(CONNECTION_COLORS, v);
 }
 
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;

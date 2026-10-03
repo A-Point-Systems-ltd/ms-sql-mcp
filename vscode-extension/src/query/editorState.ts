@@ -45,7 +45,7 @@ export function editorRunState(assoc: QueryAssociation | undefined, profile: Con
       reason,
     };
   }
-  const target = profile.auth === 'raw' ? 'connection string' : `${profile.server}/${profile.database}`;
+  const target = profile.auth === 'raw' ? 'connection string' : `${profile.server}\\${profile.database}`;
   const mode = profile.readOnly ? 'read-only' : 'read-write';
   const statusText = `$(database) ${profile.name}${profile.readOnly ? ' $(lock)' : ''}`;
   const head = `APoint-ms-sql: ${profile.name} - ${target} - ${mode}`;

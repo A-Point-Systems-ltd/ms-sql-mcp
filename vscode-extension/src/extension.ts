@@ -4,6 +4,7 @@ import { registerExplorerCommands } from './commands/explorerCommands';
 import { disposeDataPanel } from './dataPanel';
 import { registerConnectionCommands } from './connections/connectionCommands';
 import { ConnectionStore } from './connections/store';
+import { ConnectionColorDecorations } from './connections/colorDecorations';
 import { PROVIDER_ID } from './constants';
 import { DdlDocumentProvider } from './explorer/ddlDocuments';
 import { ExplorerClient } from './explorer/explorerClient';
@@ -22,7 +23,6 @@ import { SqlDocFileSystem } from './query/sqlDocFs';
 import { SQL_DOC_SCHEME } from './query/sqlDocNames';
 import { cursorConfigPath } from './register/clientPaths';
 import { registerClientCommand } from './register/registerClients';
-import { FILTER_VIEW_ID, ObjectFilterViewProvider } from './tree/filterView';
 
 export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel('APoint-ms-sql');
@@ -54,19 +54,22 @@ export function activate(context: vscode.ExtensionContext): void {
   // SQL completion, hover and signature help for documents bound to an open connection (runner's language_service).
   registerIntelliSense(context, { runner, docs: queryDocs, store, log });
   const ddlProvider = new DdlDocumentProvider(explorer, log);
-  const filterView = new ObjectFilterViewProvider(() => tree.filter, term => tree.setFilter(term));
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
   updateHasConnections();
+  const treeView = vscode.window.createTreeView('msSqlMcp.explorer', { treeDataProvider: tree, showCollapseAll: true });
+  // Connection colors: connection labels in the tree and the tab titles of their documents.
+  const colors = new ConnectionColorDecorations(store, queryDocs);
   context.subscriptions.push(
     tree,
-    vscode.window.createTreeView('msSqlMcp.explorer', { treeDataProvider: tree, showCollapseAll: true }),
-    vscode.window.registerWebviewViewProvider(FILTER_VIEW_ID, filterView),
+    treeView,
+    colors,
+    vscode.window.registerFileDecorationProvider(colors),
     ddlProvider,
     vscode.workspace.registerTextDocumentContentProvider(DDL_SCHEME, ddlProvider),
     store.onDidChange(updateHasConnections),
     { dispose: disposeDataPanel },
   );
-  registerExplorerCommands(context, tree, explorer, filterView, ddlProvider, queryDocs, store, log, sqlDocs, runner, viewer);
+  registerExplorerCommands(context, tree, explorer, treeView, ddlProvider, queryDocs, store, log, sqlDocs, runner, viewer);
   registerHistoryCommands(context, { store, docs: queryDocs, runner, explorer, log });
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.

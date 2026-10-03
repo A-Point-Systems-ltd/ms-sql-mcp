@@ -9,7 +9,7 @@ const filled = (over = {}) => ({ ...defaultFormValues(), name: 'dev', server: 'D
 test('defaults', () => {
   assert.deepEqual(defaultFormValues(), {
     name: '', auth: 'windows', server: '', database: '', user: '', password: '', rawConnectionString: '',
-    encrypt: 'mandatory', trustServerCertificate: true, readOnly: true, insights: true, open: true, ddlHistory: false,
+    encrypt: 'optional', trustServerCertificate: true, readOnly: true, insights: true, open: true, ddlHistory: false, color: '',
   });
   assert.deepEqual(AUTH_OPTIONS.map(a => a.kind), ['windows', 'sql', 'entraInteractive', 'entraDefault', 'raw']);
   assert.deepEqual(Object.keys(ENCRYPTION_HELP).sort(), ['mandatory', 'optional', 'strict']);
@@ -21,8 +21,9 @@ test('a valid windows form becomes a profile without a password', () => {
   assert.equal(r.password, undefined);
   assert.deepEqual(r.profile, {
     name: 'dev', server: 'DC\\DEV', database: 'Sales', auth: 'windows', user: undefined, readOnly: true, insights: true, open: true,
-    encrypt: 'mandatory', trustServerCertificate: true, rawConnectionString: undefined, ddlHistory: false,
+    encrypt: 'optional', trustServerCertificate: true, rawConnectionString: undefined, ddlHistory: false,
   });
+  assert.equal(formToProfile(filled({ color: 'red' }), ctx()).profile.color, 'red');
 });
 
 test('missing server, database, user and password give per-field errors', () => {
@@ -99,7 +100,7 @@ test('profileToFormValues never carries a password and round-trips the profile',
   const p = { name: 'p', server: 's', database: 'd', auth: 'sql', user: 'u', readOnly: false, insights: false, open: false, encrypt: 'strict', trustServerCertificate: false };
   const v = profileToFormValues(p);
   assert.equal(v.password, '');
-  assert.deepEqual(v, { name: 'p', auth: 'sql', server: 's', database: 'd', user: 'u', password: '', rawConnectionString: '', encrypt: 'strict', trustServerCertificate: false, readOnly: false, insights: false, open: false, ddlHistory: false });
+  assert.deepEqual(v, { name: 'p', auth: 'sql', server: 's', database: 'd', user: 'u', password: '', rawConnectionString: '', encrypt: 'strict', trustServerCertificate: false, readOnly: false, insights: false, open: false, ddlHistory: false, color: '' });
   assert.equal(profileToFormValues({ ...p, ddlHistory: true }).ddlHistory, true);
 });
 

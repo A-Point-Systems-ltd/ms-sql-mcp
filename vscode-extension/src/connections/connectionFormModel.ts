@@ -1,6 +1,6 @@
 // Connection form values <-> profile. No 'vscode' import (unit-testable).
 
-import { AuthKind, ConnectionProfile, envPlaceholderError, validateProfile } from './profile';
+import { AuthKind, CONNECTION_COLORS, ConnectionColor, ConnectionProfile, envPlaceholderError, isConnectionColor, validateProfile } from './profile';
 
 export interface FormValues {
   name: string;
@@ -17,6 +17,8 @@ export interface FormValues {
   insights: boolean;
   open: boolean;
   ddlHistory: boolean;
+  /** '' = no color. */
+  color: ConnectionColor | '';
 }
 
 export type FormErrors = Partial<Record<keyof FormValues, string>>;
@@ -52,6 +54,13 @@ export const ENCRYPTION_HELP: Record<ConnectionProfile['encrypt'], string> = {
 
 export const TRUST_HELP = 'Skips certificate verification (self-signed / on-prem servers).';
 
+export const COLOR_OPTIONS: ReadonlyArray<{ value: ConnectionColor | ''; label: string }> = [
+  { value: '', label: 'None' },
+  ...(Object.keys(CONNECTION_COLORS) as ConnectionColor[]).map(c => ({ value: c, label: CONNECTION_COLORS[c].label })),
+];
+
+export const COLOR_HELP = 'Colors the connection name in the tree and the tabs of its query, DDL and data windows (e.g. red for production).';
+
 export const DDL_HISTORY_LABEL = 'DDL history (audit trigger)';
 export const DDL_HISTORY_HELP = "Records every schema change in dbo.DDL_AuditLog via the DDL_Audit database trigger, so you can diff an object's history. If they are missing, they are created on read-write connections (you are asked first).";
 
@@ -61,7 +70,7 @@ const ENCRYPT_KINDS = ENCRYPTION_OPTIONS.map(o => o.value);
 export function defaultFormValues(): FormValues {
   return {
     name: '', auth: 'windows', server: '', database: '', user: '', password: '', rawConnectionString: '',
-    encrypt: 'mandatory', trustServerCertificate: true, readOnly: true, insights: true, open: true, ddlHistory: false,
+    encrypt: 'optional', trustServerCertificate: true, readOnly: true, insights: true, open: true, ddlHistory: false, color: '',
   };
 }
 
@@ -71,6 +80,7 @@ export function profileToFormValues(p: ConnectionProfile): FormValues {
     rawConnectionString: p.rawConnectionString ?? '',
     encrypt: p.encrypt, trustServerCertificate: p.trustServerCertificate,
     readOnly: p.readOnly, insights: p.insights, open: p.open, ddlHistory: p.ddlHistory === true,
+    color: isConnectionColor(p.color) ? p.color : '',
   };
 }
 
@@ -141,6 +151,7 @@ export function formToProfile(v: FormValues, ctx: FormContext): { profile?: Conn
     trustServerCertificate: v.trustServerCertificate,
     rawConnectionString: v.auth === 'raw' ? raw : undefined,
     ddlHistory: v.ddlHistory,
+    ...(v.color ? { color: v.color } : {}),
   };
   // Final guard: the store throws on a profile validateProfile rejects.
   const leftover = validateProfile(profile);
@@ -179,12 +190,15 @@ export function parseFormMessage(raw: unknown): FormMessage | undefined {
   if (!BOOL_FIELDS.every(k => typeof v[k] === 'boolean')) return undefined;
   if (!AUTH_KINDS.includes(v.auth as AuthKind)) return undefined;
   if (!ENCRYPT_KINDS.includes(v.encrypt as ConnectionProfile['encrypt'])) return undefined;
+  // An older form page sends no color: treat it as none.
+  const color = v.color === undefined || v.color === '' ? '' : isConnectionColor(v.color) ? v.color : undefined;
+  if (color === undefined) return undefined;
   const values: FormValues = {
     name: v.name as string, auth: v.auth as AuthKind, server: v.server as string, database: v.database as string,
     user: v.user as string, password: v.password as string, rawConnectionString: v.rawConnectionString as string,
     encrypt: v.encrypt as ConnectionProfile['encrypt'], trustServerCertificate: v.trustServerCertificate as boolean,
     readOnly: v.readOnly as boolean, insights: v.insights as boolean, open: v.open as boolean,
-    ddlHistory: v.ddlHistory as boolean,
+    ddlHistory: v.ddlHistory as boolean, color,
   };
   return { type: m.type, values };
 }

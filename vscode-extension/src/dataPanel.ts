@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { ServerProcessClient } from './client/serverProcessClient';
+import type { ConnectionColor } from './connections/profile';
 import type { ObjectRef } from './explorer/catalog';
 import type { ExplorerClient } from './explorer/explorerClient';
 import { qualified } from './explorer/sqlText';
@@ -7,7 +8,7 @@ import type { CellViewer } from './grid/cellViewer';
 import { runGridAction } from './grid/gridActions';
 import { renderDataView } from './grid/gridHtml';
 import {
-  DataViewFilter, DataViewOrder, GridColumn, GridViewState, LOAD_CAP_NOTE, LoadedWith, MAX_LOADED_ROWS, dataViewSql, displayedParams,
+  DataViewFilter, DataViewOrder, GridColumn, GridViewState, LOAD_CAP_NOTE, LoadedWith, MAX_LOADED_ROWS, MAX_TOP, dataViewSql, displayedParams,
   errorNamesKey, isSortableType, nextPageRequest, pagingNote, parseDataViewMessage, parsePrimaryKey, reconcileFilters, reconcileSort,
   sortIndicator, stripRowNumber, usablePrimaryKey,
 } from './grid/gridModel';
@@ -18,7 +19,7 @@ import { makeNonce } from './webviewUtil';
 /** The loaded rows of a Data View (first page plus Load more pages). */
 interface Loaded { columns: GridColumn[]; rows: unknown[][]; truncated: boolean }
 
-/** What the open Data View shows; kept until the panel is reused for another object (or closed). */
+/** What a Data View panel shows; kept until the panel is reused for another object (or closed). */
 interface DataViewSession {
   ref: ObjectRef;
   title: string;
@@ -47,60 +48,121 @@ interface DataViewSession {
   seq: number;
 }
 
-interface Deps { runner: ServerProcessClient; explorer: ExplorerClient; viewer: CellViewer; log: Logger }
+export interface DataViewDeps {
+  runner: ServerProcessClient;
+  explorer: ExplorerClient;
+  viewer: CellViewer;
+  log: Logger;
+  /** The connection's color (tab icon and header accent), when it has one. */
+  colorOf?: (connection: string) => ConnectionColor | undefined;
+  extensionUri?: vscode.Uri;
+}
+
+export interface DataViewOptions {
+  /**
+   * Show the object in the last active Data View panel instead of a new one ("Replace Current Tab"). By default a
+   * new panel opens, unless one already shows this object: that one is revealed.
+   */
+  replace?: boolean;
+}
 
 /** One run_script of a Data View query: the result set without the paging column, or the error text. */
 interface QueryOutcome { result?: RunScriptResultSet; notes: string[]; error?: string }
 
-let panel: vscode.WebviewPanel | undefined;
-let session: DataViewSession | undefined;
-let deps: Deps | undefined;
-/** Render counter of the page on screen (`data-gen`); grid messages from an older page are ignored. */
-let gen = 0;
+/** One Data View webview panel and the object it shows. */
+interface DataView {
+  panel: vscode.WebviewPanel;
+  session?: DataViewSession;
+  /** Render counter of the page on screen (`data-gen`); grid messages from an older page are ignored. */
+  gen: number;
+}
+
+/** The last active Data View panel (the one "Replace Current Tab" reuses). */
+let lastActive: DataView | undefined;
+const views = new Set<DataView>();
+let deps: DataViewDeps | undefined;
 /** Primary keys per object (connection, schema, name), fetched once through the read-only explorer. */
 const pkCache = new Map<string, string[]>();
 
 const columnsKey = (columns: readonly GridColumn[]): string => JSON.stringify(columns.map(c => c.name));
 
 /**
- * Opens (or reuses) the Data View panel for a table or view and loads TOP `top` rows through the runner's
- * run_script. Rows can hold client personal data: they stay in this panel, except what the user copies or exports
- * (Export asks first, every time). Copy, selection, the viewer and Export resolve values here from the loaded rows.
+ * Opens a Data View panel for a table or view (reusing the last plain one unless `opts.newTab`) and loads TOP `top`
+ * rows through the runner's run_script. Rows can hold client personal data: they stay in the panel, except what the
+ * user copies or exports (Export asks first, every time). Copy, selection, the viewer and Export resolve values here
+ * from the loaded rows.
  */
-export async function showDataView(ref: ObjectRef, top: number, d: Deps): Promise<void> {
+export async function showDataView(ref: ObjectRef, top: number, d: DataViewDeps, opts: DataViewOptions = {}): Promise<void> {
   deps = d;
   const title = ref.schema ? `${ref.schema}.${ref.name}` : ref.name;
-  session = { ref, title, top, filters: [], pk: [], more: false, capped: false, notes: [], seq: 0 };
-  if (!panel) {
-    panel = vscode.window.createWebviewPanel(
+  const session: DataViewSession = { ref, title, top, filters: [], pk: [], more: false, capped: false, notes: [], seq: 0 };
+  if (!opts.replace) {
+    const open = [...views].find(x => x.session && sameObject(x.session.ref, ref));
+    if (open) {
+      open.panel.reveal(open.panel.viewColumn ?? vscode.ViewColumn.Active);
+      return;
+    }
+  }
+  let v = opts.replace ? lastActive : undefined;
+  if (!v) {
+    const panel = vscode.window.createWebviewPanel(
       'msSqlMcp.dataView',
       panelTitle(session),
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
     );
+    const created: DataView = { panel, gen: 0 };
+    views.add(created);
     panel.onDidDispose(() => {
-      panel = undefined;
-      session = undefined;
+      views.delete(created);
+      created.session = undefined;
+      if (lastActive === created) lastActive = undefined;
     });
-    panel.webview.onDidReceiveMessage(onMessage);
+    panel.onDidChangeViewState(e => { if (e.webviewPanel.active) lastActive = created; });
+    panel.webview.onDidReceiveMessage(raw => onMessage(created, raw));
+    lastActive = created;
+    v = created;
   }
-  panel.title = panelTitle(session);
-  render(true);
-  panel.reveal(panel.viewColumn ?? vscode.ViewColumn.Active);
-  const s = session;
+  v.session = session;
+  v.panel.title = panelTitle(session);
+  v.panel.iconPath = tabIcon(ref.connection);
+  render(v, true);
+  v.panel.reveal(v.panel.viewColumn ?? vscode.ViewColumn.Active);
+  const view = v;
   await vscode.window.withProgress({ location: { viewId: 'msSqlMcp.explorer' }, title: `Loading ${title}` }, async () => {
-    s.pk = await primaryKey(ref);
-    await load('first');
+    session.pk = await primaryKey(ref);
+    await load(view, 'first');
   });
 }
 
 export function disposeDataPanel(): void {
-  panel?.dispose();
-  panel = undefined;
-  session = undefined;
+  for (const v of [...views]) v.panel.dispose();
+  views.clear();
+  lastActive = undefined;
 }
 
+/** Re-applies connection colors (tab icon and header) after the connection list changed. */
+export function refreshDataViewColors(): void {
+  for (const v of views) {
+    if (!v.session) continue;
+    v.panel.iconPath = tabIcon(v.session.ref.connection);
+    render(v);
+  }
+}
+
+const sameObject = (a: ObjectRef, b: ObjectRef): boolean =>
+  a.connection.toLowerCase() === b.connection.toLowerCase() && (a.schema ?? '') === (b.schema ?? '') && a.name === b.name;
+
 const panelTitle = (s: DataViewSession): string => `Data: ${s.title} (${s.ref.connection})`;
+
+const colorOf = (connection: string): ConnectionColor | undefined => deps?.colorOf?.(connection);
+
+/** A colored database icon for the tab of a colored connection (webview tabs cannot color their text). */
+function tabIcon(connection: string): vscode.Uri | undefined {
+  const color = colorOf(connection);
+  if (!color || !deps?.extensionUri) return undefined;
+  return vscode.Uri.joinPath(deps.extensionUri, 'media', `db-${color}.svg`);
+}
 
 /**
  * The table's primary-key columns (describe_table through the read-only explorer), cached per object. `refresh`
@@ -122,9 +184,9 @@ async function primaryKey(ref: ObjectRef, refresh = false): Promise<string[]> {
   }
 }
 
-function render(loading = false): void {
-  if (!panel || !session) return;
-  const s = session;
+function render(v: DataView, loading = false): void {
+  const s = v.session;
+  if (!s) return;
   const columns = s.result?.columns ?? [];
   const indicator = sortIndicator(s.sort, columns);
   const filters = s.filters.flatMap(f => {
@@ -138,9 +200,11 @@ function render(loading = false): void {
   if (paging) notes.push(paging);
   if (s.capped) notes.push(LOAD_CAP_NOTE);
   const view = s.view && s.viewKey === columnsKey(columns) ? s.view : undefined;
-  panel.webview.html = renderDataView({
+  const color = colorOf(s.ref.connection);
+  v.panel.webview.html = renderDataView({
     objectName: s.title,
     connection: s.ref.connection,
+    ...(color ? { connectionColor: color } : {}),
     top: s.top,
     loading,
     ...(s.error !== undefined ? { error: s.error } : {}),
@@ -149,7 +213,7 @@ function render(loading = false): void {
     filters,
     canLoadMore: s.more,
     notes,
-    gen: ++gen,
+    gen: ++v.gen,
     ...(view ? { view } : {}),
     ...(s.focus !== undefined ? { focus: s.focus } : {}),
     ...(s.scroll ? { scroll: s.scroll } : {}),
@@ -180,20 +244,22 @@ async function query(ref: ObjectRef, script: string, maxRows: number): Promise<Q
  * Runs the Data View query for the current session state and shows its result or error.
  * - 'first': TOP (n) with the filters, ORDER BY the stored sort and the primary key. A failure whose message names a
  *   primary-key column is retried without the key (e.g. a column name holding ','); a failure with a sort is retried
- *   without it: if that result no longer has the sorted column, the sort is cleared with a note.
+ *   without it: if that result no longer has the sorted column, the sort is cleared with a note. `rows` (Reload)
+ *   asks for that many rows instead of TOP, so a reload re-reads every row already loaded (Load more pages included).
  * - 'more': the next n rows of the loaded rows' own parameters (loadedWith), appended; at most MAX_LOADED_ROWS.
  * On an error the previously loaded rows stay on screen under the error text, and the sort, filters and TOP shown
  * go back to the ones those rows were queried with.
  */
-async function load(kind: 'first' | 'more'): Promise<void> {
-  const s = session;
+async function load(v: DataView, kind: 'first' | 'more', rows?: number): Promise<void> {
+  const s = v.session;
   if (!s || !deps) return;
   const seq = ++s.seq;
   if (kind === 'more') {
-    await loadMore(s, seq);
+    await loadMore(v, s, seq);
     return;
   }
-  const run = (order: DataViewOrder | undefined, pk: string[]) => query(s.ref, dataViewSql(s.ref, s.top, order, { pk, filters: s.filters }), s.top);
+  const count = Math.min(MAX_TOP, Math.max(s.top, rows ?? 0));
+  const run = (order: DataViewOrder | undefined, pk: string[]) => query(s.ref, dataViewSql(s.ref, count, order, { pk, filters: s.filters }), count);
   let pk = s.pk;
   let sort = s.sort;
   let outcome = await run(sort, pk);
@@ -205,22 +271,23 @@ async function load(kind: 'first' | 'more'): Promise<void> {
     const unsorted = await run(undefined, pk);
     if (unsorted.result && reconcileSort(sort, unsorted.result.columns).note) outcome = unsorted;
   }
-  if (session !== s || seq !== s.seq) return;
+  if (v.session !== s || seq !== s.seq) return;
   if (outcome.result) {
-    const { columns, rows, truncated } = outcome.result;
+    const { columns, rows: resultRows, truncated } = outcome.result;
     const reconciled = reconcileSort(sort, columns);
     sort = reconciled.sort;
     s.sort = sort;
     s.pk = usablePrimaryKey(pk, columns);
     s.filters = reconcileFilters(s.filters, columns);
-    s.result = { columns, rows, truncated };
+    s.result = { columns, rows: resultRows, truncated };
     s.loadedWith = { ...(sort ? { sort } : {}), filters: [...s.filters], pk: [...s.pk], top: s.top };
-    s.more = truncated && rows.length < MAX_LOADED_ROWS;
-    s.capped = truncated && rows.length >= MAX_LOADED_ROWS;
+    s.more = truncated && resultRows.length < MAX_LOADED_ROWS;
+    s.capped = truncated && resultRows.length >= MAX_LOADED_ROWS;
     s.notes = reconciled.note ? [reconciled.note, ...outcome.notes] : outcome.notes;
     s.error = undefined;
   } else {
     s.error = outcome.error;
+    s.scroll = undefined;
     if (s.result && s.loadedWith) {
       // The old rows stay: show the sort, filters and TOP they were queried with.
       const shown = displayedParams({ sort: s.sort, filters: s.filters }, s.loadedWith, true);
@@ -231,10 +298,10 @@ async function load(kind: 'first' | 'more'): Promise<void> {
       s.notes = [];
     }
   }
-  render();
+  render(v);
 }
 
-async function loadMore(s: DataViewSession, seq: number): Promise<void> {
+async function loadMore(v: DataView, s: DataViewSession, seq: number): Promise<void> {
   const loaded = s.result;
   const lw = s.loadedWith;
   if (!loaded || !lw || !s.more) return;
@@ -243,11 +310,11 @@ async function loadMore(s: DataViewSession, seq: number): Promise<void> {
   if (!page) {
     s.more = false;
     s.capped = true;
-    render();
+    render(v);
     return;
   }
   const outcome = await query(s.ref, page.script, page.maxRows);
-  if (session !== s || seq !== s.seq) return;
+  if (v.session !== s || seq !== s.seq) return;
   if (outcome.result && columnsKey(outcome.result.columns) !== columnsKey(loaded.columns)) {
     outcome.error = 'The columns of the object changed. Reload the view.';
   }
@@ -262,10 +329,10 @@ async function loadMore(s: DataViewSession, seq: number): Promise<void> {
     s.notes = outcome.notes;
     s.error = undefined;
   }
-  render();
+  render(v);
 }
 
-/** Widths reset when new data loads (reload, sort, filter); Load more keeps them. */
+/** Widths reset when new data loads (sort, filter); Load more and Reload keep them. */
 function dropWidths(s: DataViewSession): void {
   if (s.view?.widths) {
     const { widths: _w, ...rest } = s.view;
@@ -274,11 +341,11 @@ function dropWidths(s: DataViewSession): void {
   }
 }
 
-function onMessage(raw: unknown): void {
-  const s = session;
+function onMessage(v: DataView, raw: unknown): void {
+  const s = v.session;
   if (!s || !deps) return;
   const columns = s.result?.columns ?? [];
-  const message = parseDataViewMessage(raw, { rows: s.result?.rows.length ?? 0, cols: columns.length }, gen, columns.map(c => c.type));
+  const message = parseDataViewMessage(raw, { rows: s.result?.rows.length ?? 0, cols: columns.length }, v.gen, columns.map(c => c.type));
   if (!message) return;
   switch (message.type) {
     case 'copy':
@@ -299,31 +366,35 @@ function onMessage(raw: unknown): void {
       if (!isSortableType(column.type)) return;
       s.sort = message.dir === 'none' ? undefined : { column: column.name, type: column.type, dir: message.dir };
       dropWidths(s);
-      void requery('first');
+      void requery(v, 'first');
       return;
     }
     case 'filter':
       s.filters = message.filters.map(f => ({ column: columns[f.col].name, type: columns[f.col].type, op: f.op, value: f.value }));
       s.focus = message.focus;
       dropWidths(s);
-      void requery('first');
+      void requery(v, 'first');
       return;
-    case 'reload':
+    case 'reload': {
+      // Reload re-reads at least as many rows as are loaded now (Load more pages included), with the same sort and
+      // filters, and keeps the scroll position, so rows changed or added within that range show up in place.
+      const loadedRows = s.result && s.loadedWith && s.loadedWith.top === message.top ? s.result.rows.length : 0;
       s.top = message.top;
-      dropWidths(s);
+      if (message.scroll) s.scroll = message.scroll;
       // Reload also reads the primary key again (it may have changed since the view opened).
       void vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, async () => {
         s.pk = await primaryKey(s.ref, true);
-        await load('first');
+        await load(v, 'first', loadedRows);
       });
       return;
+    }
     case 'loadMore':
       s.scroll = message.scroll;
-      void requery('more');
+      void requery(v, 'more');
       return;
   }
 }
 
-function requery(kind: 'first' | 'more'): Thenable<void> {
-  return vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, () => load(kind));
+function requery(v: DataView, kind: 'first' | 'more'): Thenable<void> {
+  return vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'APoint-ms-sql: loading data' }, () => load(v, kind));
 }

@@ -55,12 +55,6 @@
     "views": {
       "msSqlMcp": [
         {
-          "id": "msSqlMcp.objectFilter",
-          "name": "Filter",
-          "type": "webview",
-          "when": "msSqlMcp.hasConnections"
-        },
-        {
           "id": "msSqlMcp.explorer",
           "name": "Connections"
         }
@@ -113,13 +107,25 @@
       },
       {
         "command": "msSqlMcp.dataView",
-        "title": "Data View",
+        "title": "Show Data",
+        "category": "APoint-ms-sql",
+        "icon": "$(table)"
+      },
+      {
+        "command": "msSqlMcp.dataViewReplace",
+        "title": "Show Data - Replace Current Tab",
         "category": "APoint-ms-sql",
         "icon": "$(table)"
       },
       {
         "command": "msSqlMcp.showDdl",
         "title": "Show DDL",
+        "category": "APoint-ms-sql",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "msSqlMcp.showDdlNewTab",
+        "title": "Show DDL - New Tab",
         "category": "APoint-ms-sql",
         "icon": "$(file-code)"
       },
@@ -147,10 +153,16 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "msSqlMcp.filter",
+        "title": "Filter Objects by Name…",
+        "category": "APoint-ms-sql",
+        "icon": "$(filter)"
+      },
+      {
         "command": "msSqlMcp.clearFilter",
         "title": "Clear Filter",
         "category": "APoint-ms-sql",
-        "icon": "$(clear-all)"
+        "icon": "$(filter-filled)"
       },
       {
         "command": "msSqlMcp.newQuery",
@@ -199,6 +211,21 @@
     "menus": {
       "view/title": [
         {
+          "command": "msSqlMcp.filter",
+          "when": "view == msSqlMcp.explorer && msSqlMcp.hasConnections && !msSqlMcp.filterActive",
+          "group": "navigation@0"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "view == msSqlMcp.explorer && msSqlMcp.filterActive",
+          "group": "navigation@0"
+        },
+        {
+          "command": "msSqlMcp.filter",
+          "when": "view == msSqlMcp.explorer && msSqlMcp.filterActive",
+          "group": "navigation@0"
+        },
+        {
           "command": "msSqlMcp.addConnection",
           "when": "view == msSqlMcp.explorer",
           "group": "navigation@1"
@@ -241,9 +268,29 @@
           "group": "inline@2"
         },
         {
+          "command": "msSqlMcp.dataView",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\.(table|view)(\\.history)?$/",
+          "group": "0@1"
+        },
+        {
+          "command": "msSqlMcp.dataViewReplace",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\.(table|view)(\\.history)?$/",
+          "group": "0@2"
+        },
+        {
+          "command": "msSqlMcp.showDdl",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "0@3"
+        },
+        {
+          "command": "msSqlMcp.showDdlNewTab",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "0@4"
+        },
+        {
           "command": "msSqlMcp.showHistory",
           "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\..*\\.history$/",
-          "group": "0@2"
+          "group": "0@5"
         },
         {
           "command": "msSqlMcp.refresh",
@@ -284,6 +331,18 @@
         {
           "command": "msSqlMcp.showDdl",
           "when": "false"
+        },
+        {
+          "command": "msSqlMcp.dataViewReplace",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.showDdlNewTab",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "msSqlMcp.filterActive"
         },
         {
           "command": "msSqlMcp.showHistory",
@@ -416,6 +475,12 @@
         "command": "msSqlMcp.refreshIntelliSense",
         "key": "ctrl+shift+r",
         "when": "editorTextFocus && msSqlMcp.editorConnected"
+      },
+      {
+        "command": "msSqlMcp.filter",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "focusedView == msSqlMcp.explorer"
       }
     ]
   },

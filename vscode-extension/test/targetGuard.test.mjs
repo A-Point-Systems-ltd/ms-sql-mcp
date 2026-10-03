@@ -50,19 +50,19 @@ test('wrongTargetPrompt: free queries and matching object documents run without 
 test('wrongTargetPrompt: an edited profile pointing elsewhere asks with both targets and the connection name', () => {
   assert.equal(
     wrongTargetPrompt(object(), profile({ server: 'PRODSRV', database: 'live' })),
-    "This script was generated from DEVSRV/db1 but will run on PRODSRV/live (connection 'dev'). Run anyway?");
+    "This script was generated from DEVSRV\\db1 but will run on PRODSRV\\live (connection 'dev'). Run anyway?");
 });
 
 test('wrongTargetPrompt: a document rebound with Change Connection asks even when the targets look equal', () => {
   assert.equal(
     wrongTargetPrompt(object({ connection: 'other', rebound: true }), profile({ name: 'other' })),
-    "This script was generated from DEVSRV/db1 but will run on DEVSRV/db1 (connection 'other'). Run anyway?");
+    "This script was generated from DEVSRV\\db1 but will run on DEVSRV\\db1 (connection 'other'). Run anyway?");
 });
 
 test('wrongTargetPrompt: an unknown origin is described as such', () => {
   assert.equal(
     wrongTargetPrompt(object({ target: undefined }), profile()),
-    "This script was generated from an unknown server but will run on DEVSRV/db1 (connection 'dev'). Run anyway?");
+    "This script was generated from an unknown server but will run on DEVSRV\\db1 (connection 'dev'). Run anyway?");
   assert.equal(describeTarget({ raw: true }), 'an unknown server');
 });
 
