@@ -354,7 +354,7 @@
         },
         {
           "command": "msSqlMcp.runQuery",
-          "when": "msSqlMcp.editorConnected"
+          "when": "msSqlMcp.editorConnected || editorLangId == sql"
         },
         {
           "command": "msSqlMcp.cancelQuery",
@@ -378,6 +378,11 @@
         {
           "command": "msSqlMcp.runQuery",
           "when": "resource in msSqlMcp.runnableDocs",
+          "group": "navigation@1"
+        },
+        {
+          "command": "msSqlMcp.runQuery",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && !msSqlMcp.editorConnected",
           "group": "navigation@1"
         },
         {
@@ -470,6 +475,11 @@
         "command": "msSqlMcp.runQuery",
         "key": "f5",
         "when": "editorTextFocus && msSqlMcp.editorConnected && !inDebugMode"
+      },
+      {
+        "command": "msSqlMcp.runQuery",
+        "key": "f5",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && !msSqlMcp.editorConnected && !inDebugMode"
       },
       {
         "command": "msSqlMcp.refreshIntelliSense",
