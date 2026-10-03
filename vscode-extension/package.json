@@ -3,7 +3,7 @@
   "displayName": "APoint-ms-sql",
   "description": "SQL Server MCP server for VS Code, Cursor and Claude - multi-connection, object explorer with DDL, read-only profiles, AI schema insights.",
   "publisher": "apoint",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -432,6 +432,11 @@
           "default": false,
           "description": "Let agents open ad-hoc connections with open_connection (MSSQL_ALLOW_ADHOC_CONNECTIONS)."
         },
+        "msSqlMcp.installSkill": {
+          "type": "boolean",
+          "default": true,
+          "description": "Install the bundled mssql-insights-ops agent skill (how agents should use this server and its AI Insights) into ~/.cursor/skills and, when Claude Code is installed, ~/.claude/skills. Updated with the extension; a copy you edited is never overwritten."
+        },
         "msSqlMcp.dataViewRows": {
           "type": "number",
           "default": 200,
@@ -497,7 +502,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && node scripts/stage-skill.mjs",
     "test:unit": "npm run compile && node --test test/*.test.mjs",
     "check:version": "node scripts/check-version.mjs",
     "package": "vsce package --target win32-x64",

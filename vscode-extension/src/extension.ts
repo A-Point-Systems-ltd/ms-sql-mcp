@@ -23,6 +23,7 @@ import { SqlDocFileSystem } from './query/sqlDocFs';
 import { SQL_DOC_SCHEME } from './query/sqlDocNames';
 import { cursorConfigPath } from './register/clientPaths';
 import { registerClientCommand } from './register/registerClients';
+import { installBundledSkill } from './register/skillInstall';
 
 export function activate(context: vscode.ExtensionContext): void {
   const channel = vscode.window.createOutputChannel('APoint-ms-sql');
@@ -86,6 +87,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const cursorApi = cursorMcpApi(vscode);
   if (cursorApi) registerCursorServer(context, store, log, cursorApi);
   else registerMcpProvider(context, store, log);
+  // The bundled mssql-insights-ops agent skill, into the user's Cursor / Claude Code skill folders (never over user edits).
+  void installBundledSkill(context, log);
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    if (e.affectsConfiguration('msSqlMcp.installSkill')) void installBundledSkill(context, log);
+  }));
   log.info('activate', 'APoint-ms-sql activated');
 }
 
