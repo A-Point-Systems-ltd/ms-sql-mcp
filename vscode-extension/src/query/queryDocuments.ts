@@ -81,6 +81,22 @@ export function orphanQueryIds(owned: readonly string[], open: ReadonlySet<strin
   return owned.filter(id => isValidDocId(id) && !open.has(id));
 }
 
+/** An open document that may be the source of a Save As: its key, text, binding and whether it is the active editor. */
+export interface SaveAsCandidate { key: string; text: string; assoc: QueryAssociation | undefined; active: boolean }
+
+/**
+ * The binding a newly opened, unbound document inherits when it is the Save As copy of a bound one (VS Code reports
+ * Save As only as a new document with the same text). The active bound document with the same (non-blank) text wins;
+ * otherwise the only bound document with that text. Undefined when nothing (or more than one) matches. The copy is
+ * always a plain query binding: an object script saved to a file is no longer the object's editable document.
+ */
+export function inheritedBinding(newKey: string, newText: string, candidates: readonly SaveAsCandidate[]): QueryAssociation | undefined {
+  if (!newText.trim()) return undefined;
+  const same = candidates.filter(c => c.key !== newKey && c.assoc && c.text === newText);
+  const pick = same.find(c => c.active) ?? (same.length === 1 ? same[0] : undefined);
+  return pick?.assoc ? { connection: pick.assoc.connection, kind: 'query' } : undefined;
+}
+
 function isAssociation(v: unknown): v is QueryAssociation {
   const a = v as Partial<QueryAssociation> | undefined;
   return !!a && typeof a.connection === 'string' && a.connection.length > 0 && (a.kind === 'query' || a.kind === 'object')

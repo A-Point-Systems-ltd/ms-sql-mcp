@@ -6,9 +6,10 @@ import type { ConnectionProfile } from '../connections/profile';
 import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
 import { EditorRunState, editorRunState, findProfile, runContextDocs } from './editorState';
-import { QueryAssociation, QueryDocuments, defersRunCleanup, isNeverBound } from './queryDocuments';
+import { QueryAssociation, QueryDocuments, defersRunCleanup, inheritedBinding, isNeverBound } from './queryDocuments';
 import { SqlDocFileSystem, openDocumentKeys } from './sqlDocFs';
 import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
+import { SQL_DOC_SCHEME } from './sqlDocNames';
 import { resultsToCarry } from './sqlDocTitles';
 import type { CellViewer } from '../grid/cellViewer';
 import { RESULTS_VIEW_ID, ResultsViewProvider } from './resultsView';
@@ -211,6 +212,17 @@ export function registerQueryCommands(
     }),
     { dispose: () => { for (const t of closeTimers) clearTimeout(t); closeTimers.clear(); } },
     running,
+    // Save As: the new (file or untitled) document keeps the connection of the bound document it was saved from.
+    vscode.workspace.onDidOpenTextDocument(doc => {
+      if (isNeverBound(doc.uri.scheme) || doc.uri.scheme === SQL_DOC_SCHEME || docs.get(doc.uri)) return;
+      const activeKey = vscode.window.activeTextEditor?.document.uri.toString();
+      const inherited = inheritedBinding(doc.uri.toString(), doc.getText(), vscode.workspace.textDocuments
+        .filter(d => d !== doc)
+        .map(d => ({ key: d.uri.toString(), text: d.getText(), assoc: docs.get(d.uri), active: d.uri.toString() === activeKey })));
+      if (!inherited) return;
+      log.info('query', `Save As: ${doc.uri.scheme} document bound to '${inherited.connection}' like the document it was saved from.`);
+      void docs.set(doc.uri, inherited);
+    }),
   );
   updateRunning();
 
@@ -271,7 +283,14 @@ export function registerQueryCommands(
   // F5 (the active editor) / the editor title's Run button (arg = that editor's uri, also in an inactive group).
   reg('runQuery', async arg => {
     const target = commandTarget(arg);
-    const run = target ? tracker.contextOf(target.document) : undefined;
+    let run = target ? tracker.contextOf(target.document) : undefined;
+    // An unbound SQL editor (e.g. a .sql file opened from disk): pick its connection first, then run.
+    if (target && run && !run.assoc && target.document.languageId === 'sql' && !isNeverBound(target.document.uri.scheme)) {
+      const p = await pickProfile(store, undefined, 'Run on which connection? (this editor is then bound to it)', x => x.open);
+      if (!p) return;
+      await docs.set(target.document.uri, { connection: p.name, kind: 'query' });
+      run = tracker.contextOf(target.document);
+    }
     if (!target || !run?.assoc) {
       void vscode.window.showInformationMessage('APoint-ms-sql: open a SQL editor bound to a connection first (New Query or Change Connection).');
       return;

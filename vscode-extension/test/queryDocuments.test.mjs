@@ -148,3 +148,18 @@ test('object associations keep a well-formed target and rebound flag; malformed 
   await docs.set('untitled:x', good);
   assert.deepEqual(m.data[QUERY_DOCUMENTS_KEY]['untitled:x'], good);
 });
+
+import { inheritedBinding } from '../out/query/queryDocuments.js';
+
+test('Save As: the new document inherits the binding of the bound document it was saved from', () => {
+  const q = { connection: 'dev', kind: 'query' };
+  const obj = { connection: 'prod', kind: 'object', object: { connection: 'prod', scriptType: 'View', name: 'v' } };
+  const c = (key, text, assoc, active = false) => ({ key, text, assoc, active });
+  assert.deepEqual(inheritedBinding('file:///a.sql', 'select 1', [c('mssql-sql:/q/1', 'select 1', q, true)]), q);
+  assert.deepEqual(inheritedBinding('file:///a.sql', 'select 1', [c('mssql-sql:/o/1', 'select 1', obj)]), { connection: 'prod', kind: 'query' }, 'object scripts become plain queries');
+  assert.equal(inheritedBinding('file:///a.sql', '  ', [c('mssql-sql:/q/1', '  ', q, true)]), undefined, 'blank text');
+  assert.equal(inheritedBinding('file:///a.sql', 'select 1', [c('mssql-sql:/q/1', 'select 2', q, true)]), undefined, 'different text');
+  assert.equal(inheritedBinding('file:///a.sql', 'x', [c('u:1', 'x', q), c('u:2', 'x', obj)]), undefined, 'ambiguous');
+  assert.deepEqual(inheritedBinding('file:///a.sql', 'x', [c('u:1', 'x', q), c('u:2', 'x', obj, true)]), { connection: 'prod', kind: 'query' }, 'the active one wins');
+  assert.equal(inheritedBinding('file:///a.sql', 'x', [c('file:///a.sql', 'x', q)]), undefined, 'not itself');
+});
