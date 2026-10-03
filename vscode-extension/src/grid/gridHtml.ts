@@ -30,6 +30,25 @@ export const SERVER_FILTER_DEBOUNCE_MS = 400;
 /** A column whose filter is a from / to period is at least this wide, so both date pickers fit. */
 export const PERIOD_FILTER_WIDTH = 250;
 
+/**
+ * Data View editing state for the grid. Pending values are shown in place of the loaded ones; new rows follow the
+ * loaded rows (row index = loaded + insert index).
+ */
+export interface GridEditSpec {
+  update: boolean;
+  insert: boolean;
+  delete: boolean;
+  /** Per column: values can be written. */
+  writable: readonly boolean[];
+  /** Per column: filled by the server in a new row (identity, computed). */
+  auto: readonly boolean[];
+  edits: ReadonlyMap<number, ReadonlyMap<number, string | null>>;
+  deletes: ReadonlySet<number>;
+  inserts: readonly (readonly (string | null | undefined)[])[];
+  /** Cells whose pending value cannot be saved: row, column and message. */
+  problems?: readonly { row: number; col: number; message: string }[];
+}
+
 /** A filter as the filter row shows it (column index, operator, value). */
 export interface GridFilterInput { col: number; op: FilterOp; value: string }
 
@@ -59,6 +78,8 @@ export interface GridSpec {
   focus?: number;
   /** Scroll offsets [top, left] to restore after the render (Load more). */
   scroll?: readonly [number, number];
+  /** Data View editing (in-cell edits, new and deleted rows); omitted when the grid is read-only. */
+  edit?: GridEditSpec;
 }
 
 const SAFE_ID = /^[A-Za-z][\w-]*$/;
@@ -90,7 +111,14 @@ const MENU_ITEMS: readonly [string, string, string][] = [
   ['rowjson', 'Copy row (JSON)', 'cell row'],
   ['view', 'Open in viewer', 'cell'],
   ['selall', 'Select all', 'cell'],
+  ['editcell', 'Edit cell (F2)', 'cell'],
+  ['setnull', 'Set to NULL', 'cell'],
+  ['delrows', 'Delete row(s)', 'cell row'],
+  ['revert', 'Revert row(s)', 'cell row'],
 ];
+
+/** Menu actions that need editing, and the grid capability each one needs (u update, d delete, any = any edit). */
+const EDIT_ACTIONS: Readonly<Record<string, string>> = { editcell: 'any', setnull: 'any', delrows: 'any', revert: 'any' };
 
 /** One grid: toolbar, header row with sort / resize / reorder, filter row, row-number gutter, menus, hover buttons. */
 export function renderGrid(spec: GridSpec): string {
@@ -104,6 +132,7 @@ export function renderGrid(spec: GridSpec): string {
     const dir = spec.sort && spec.sort.col === i ? spec.sort.dir : '';
     const tip = `${name(c)} (${c.type || 'unknown type'})${sortable ? '' : ` - cannot be sorted (${c.type || 'unknown type'})`}`;
     return `<th data-c="${i}" data-sort="${dir}"${sortable ? '' : ' data-nosort="1"'}${numeric[i] ? ' data-num="1"' : ''}`
+      + `${spec.edit?.writable[i] ? ' data-w="1"' : ''}${spec.edit?.auto[i] ? ' data-auto="1"' : ''}`
       + ` draggable="true" title="${escapeHtml(tip)}"><span class="hl">${escapeHtml(name(c))}</span><span class="si"></span><span class="rz"></span></th>`;
   }).join('');
 
@@ -128,9 +157,25 @@ export function renderGrid(spec: GridSpec): string {
       + `<input type="text" data-c="${i}" aria-label="Filter ${label}" placeholder="filter" value="${escapeHtml(text)}"${disabled ? ' disabled' : ''}>${dates}</th>`;
   }).join('');
 
-  const body = rows.map((row, r) =>
-    `<tr data-r="${r}"><th class="rn">${r + 1}<span class="rh"></span></th>${columns.map((_, c) => cell(row[c])).join('')}</tr>`,
-  ).join('');
+  const ed = spec.edit;
+  const problems = new Map((ed?.problems ?? []).map(p => [`${p.row}:${p.col}`, p.message]));
+  const mark = (r: number, c: number, edited: boolean) => {
+    const problem = problems.get(`${r}:${c}`);
+    return (edited ? ' data-ed="1"' : '') + (problem ? ` data-err="1" title="${escapeHtml(problem)}"` : '');
+  };
+  const body = rows.map((row, r) => {
+    const edits = ed?.edits.get(r);
+    const state = ed?.deletes.has(r) ? ' data-del="1"' : edits?.size ? ' data-dirty="1"' : '';
+    return `<tr data-r="${r}"${state}><th class="rn">${r + 1}<span class="rh"></span></th>${columns.map((_, c) =>
+      (edits?.has(c) ? cell(edits.get(c), mark(r, c, true)) : cell(row[c], mark(r, c, false)))).join('')}</tr>`;
+  }).join('') + (ed?.inserts ?? []).map((cells, i) => {
+    const r = rows.length + i;
+    return `<tr data-r="${r}" data-new="1"><th class="rn" title="New row">*<span class="rh"></span></th>${columns.map((_, c) => {
+      if (ed!.auto[c]) return '<td class="dflt" data-auto="1">(auto)</td>';
+      const v = cells[c];
+      return v === undefined ? `<td class="dflt" data-dflt="1"${mark(r, c, false)}>(default)</td>` : cell(v, mark(r, c, true));
+    }).join('')}</tr>`;
+  }).join('');
 
   // Per-grid rules: one width variable per column, and right alignment for numeric columns.
   const rules = [`#${id} .gt tr>:nth-child(1){width:var(--rn)}`];
@@ -145,6 +190,7 @@ export function renderGrid(spec: GridSpec): string {
   const ints = (a: readonly number[] | undefined) => (a ?? []).map(n => Math.floor(n)).join(',');
   const attrs = [
     `data-mode="${spec.sortMode}"`,
+    ...(ed ? [`data-edit="${[ed.update ? 'u' : '', ed.insert ? 'i' : '', ed.delete ? 'd' : ''].join('')}"`, `data-loaded="${rows.length}"`] : []),
     ...(spec.set === undefined ? [] : [`data-set="${Math.floor(spec.set)}"`]),
     `data-gen="${Math.floor(spec.gen)}"`,
     ...(v ? [`data-order="${ints(v.order)}"`, `data-hidden="${ints(v.hidden)}"`, `data-freeze="${Math.floor(v.freeze)}"`,
@@ -156,7 +202,7 @@ export function renderGrid(spec: GridSpec): string {
 
   const checklist = columns.map((c, i) =>
     `<label><input type="checkbox" data-col="${i}" checked> ${escapeHtml(name(c))}</label>`).join('');
-  const menu = MENU_ITEMS.map(([act, label, kinds]) =>
+  const menu = MENU_ITEMS.filter(([act]) => !EDIT_ACTIONS[act] || ed).map(([act, label, kinds]) =>
     `<button type="button" role="menuitem" data-act="${act}" data-k="${kinds}">${escapeHtml(label)}</button>`).join('');
   const tb = (act: string, icon: string, label: string, title: string, pressed?: boolean) =>
     `<button type="button" class="tb" data-act="${act}" title="${escapeHtml(title)}"${pressed === undefined ? '' : ` aria-pressed="${pressed}"`}>${icon}<span>${escapeHtml(label)}</span></button>`;
@@ -170,7 +216,7 @@ export function renderGrid(spec: GridSpec): string {
 <div class="gscroll"><table class="gt"><thead><tr class="gh"><th class="rn" aria-label="Row number"></th>${head}</tr><tr class="gf"><th class="rn"></th>${filterRow}</tr></thead><tbody>${body}</tbody></table>
 <button type="button" class="ghover gcopy" title="Copy to clipboard" aria-label="Copy cell value to clipboard" style="display:none">${COPY_ICON}</button>
 <button type="button" class="ghover gview" title="Open in viewer" aria-label="Open cell value in a viewer" style="display:none">${VIEW_ICON}</button>
-<button type="button" class="ghover growbtn" title="Row actions" aria-label="Row actions" aria-haspopup="menu" style="display:none">${MORE_ICON}</button></div>
+<button type="button" class="ghover growbtn" title="Row actions" aria-label="Row actions" aria-haspopup="menu" style="display:none">${MORE_ICON}</button>${ed ? '<textarea class="gedit" rows="1" spellcheck="false" aria-label="Cell value (Enter saves, Alt+Enter new line, Esc cancels)" style="display:none"></textarea>' : ''}</div>
 </div>`;
 }
 
@@ -178,13 +224,13 @@ export function renderGrid(spec: GridSpec): string {
  * One cell. Its tooltip is set lazily by the client script on hover (from textContent, capped by tooltipText), so
  * values are not rendered twice; only a value cut by the server gets its tooltip here, with the full-size note.
  */
-function cell(value: unknown): string {
-  if (value === null || value === undefined) return '<td class="null" data-null="1">NULL</td>';
+function cell(value: unknown, attrs = ''): string {
+  if (value === null || value === undefined) return `<td class="null" data-null="1"${attrs}>NULL</td>`;
   const text = cellText(value);
   const cut = typeof value === 'string' ? TRUNCATED_SUFFIX.exec(value) : null;
-  if (!cut) return `<td>${escapeHtml(text)}</td>`;
+  if (!cut) return `<td${attrs}>${escapeHtml(text)}</td>`;
   const tip = `${tooltipText(text)}\n\nTruncated by the server: the full value has ${cut[1]} ${cut[2]}.`;
-  return `<td class="trunc" title="${escapeHtml(tip)}">${escapeHtml(text)}</td>`;
+  return `<td class="trunc" title="${escapeHtml(tip)}"${attrs.replace(/ title="[^"]*"/, '')}>${escapeHtml(text)}</td>`;
 }
 
 /** The grid stylesheet (theme variables only). */
@@ -215,6 +261,7 @@ export const GRID_CSS = `
     color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
     box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36)); font-size: 12px; }
   .gcols label { display: flex; align-items: center; gap: 4px; padding: 2px 4px; white-space: nowrap; }
+  .gmenu button { display: block; width: 100%; }
   .gmenu button, .gcols button { padding: 3px 10px; border: none; border-radius: 2px; text-align: left; cursor: pointer;
     background: transparent; color: inherit; font-family: inherit; font-size: 12px; white-space: nowrap; }
   .gmenu button:hover, .gmenu button:focus, .gcols button:hover { color: var(--vscode-menu-selectionForeground, inherit);
@@ -264,6 +311,22 @@ export const GRID_CSS = `
   .gt td.trunc { text-decoration: underline dotted var(--vscode-descriptionForeground); }
   .gt tbody tr[data-fit="1"] > td, .dgrid[data-wrap="1"] .gt tbody tr:not([data-fit="0"]) > td { white-space: pre-wrap;
     overflow-wrap: anywhere; text-overflow: clip; max-height: ${ROW_FIT_MAX_HEIGHT}px; overflow: auto; }
+  .gt tbody tr > td[data-ed="1"] { --ov: color-mix(in srgb, var(--vscode-editorGutter-modifiedBackground, #1b81a8) 28%, transparent); }
+  .gt tbody tr[data-dirty="1"] > th.rn { color: var(--vscode-editorGutter-modifiedBackground, #1b81a8); font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--vscode-editorGutter-modifiedBackground, #1b81a8); }
+  .gt tbody tr[data-new="1"] > th.rn { color: var(--vscode-editorGutter-addedBackground, #487e02); font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--vscode-editorGutter-addedBackground, #487e02); }
+  .gt tbody tr[data-new="1"] > td { --ov: color-mix(in srgb, var(--vscode-editorGutter-addedBackground, #487e02) 14%, transparent); }
+  .gt tbody tr[data-del="1"] > th.rn { color: var(--vscode-editorGutter-deletedBackground, #f14c4c); font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--vscode-editorGutter-deletedBackground, #f14c4c); }
+  .gt tbody tr[data-del="1"] > td { text-decoration: line-through; opacity: 0.55;
+    --ov: color-mix(in srgb, var(--vscode-editorGutter-deletedBackground, #f14c4c) 14%, transparent); }
+  .gt td.dflt { color: var(--vscode-descriptionForeground); font-style: italic; }
+  .gt tbody tr > td[data-err="1"] { outline: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); outline-offset: -1px; }
+  .gedit { position: absolute; z-index: 5; box-sizing: border-box; margin: 0; padding: 1px 7px; resize: none; overflow: hidden;
+    white-space: pre; line-height: 18px; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-focusBorder); outline: none;
+    font-family: var(--vscode-editor-font-family), monospace; font-size: var(--vscode-editor-font-size, 12px); }
   .ghover { position: absolute; z-index: 4; width: 20px; height: 20px; padding: 2px; line-height: 0; cursor: pointer;
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 3px;
     color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
@@ -337,6 +400,7 @@ function initGrids(vscode) {
     }
     var t = e.target;
     var typing = t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
+    if (!typing && active && active.editKey && active.editKey(e)) { e.preventDefault(); return; }
     if (typing || !active || !(e.ctrlKey || e.metaKey)) return;
     var k = e.key.toLowerCase();
     if (k === 'a') { e.preventDefault(); active.selectAll(); }
@@ -658,7 +722,8 @@ function initGrids(vscode) {
       var first = null;
       for (var i = 0; i < items.length; i++) {
         var kinds = (items[i].getAttribute('data-k') || '').split(' ');
-        var show = kinds.indexOf(kind) !== -1 && !(items[i].getAttribute('data-act') === 'copysel' && !rect());
+        var a = items[i].getAttribute('data-act');
+        var show = kinds.indexOf(kind) !== -1 && !(a === 'copysel' && !rect()) && editActionShown(a, mctx);
         items[i].style.display = show ? '' : 'none';
         if (show && !first) first = items[i];
       }
@@ -700,8 +765,136 @@ function initGrids(vscode) {
           break;
         case 'view': if (m.row !== undefined) vscode.postMessage(withSet({ type: 'openCell', gen: gen, row: m.row, col: m.col })); break;
         case 'selall': selectAll(); break;
+        case 'editcell': if (m.row !== undefined) { var etd = cellOf(m.row, m.col); if (etd && canEdit(etd)) startEdit(etd); } break;
+        case 'setnull': setNullSelection(m); break;
+        case 'delrows': postRows('deleteRows', m); break;
+        case 'revert': postRows('revertRows', m); break;
       }
     }
+
+    // --- Editing (Data View) -----------------------------------------------------------------------------------------
+    var editFlags = grid.getAttribute('data-edit');
+    var loadedRows = Number(grid.getAttribute('data-loaded')) || 0;
+    var editor = grid.querySelector('.gedit');
+    var editing = null;
+    function canEdit(td) {
+      if (editFlags === null || !td || td.tagName !== 'TD') return false;
+      var tr = td.parentNode;
+      var c = Array.prototype.indexOf.call(tr.children, td) - 1;
+      if (c < 0 || heads[c].getAttribute('data-w') !== '1' || td.getAttribute('data-auto') === '1') return false;
+      if (tr.getAttribute('data-del') === '1' || (td.getAttribute('class') || '').indexOf('trunc') !== -1) return false;
+      return tr.getAttribute('data-new') === '1' ? editFlags.indexOf('i') !== -1 : editFlags.indexOf('u') !== -1;
+    }
+    function rowsOfContext(m) {
+      var s = rect(), list = [];
+      if (s && m.row !== undefined && disp.rowPos[m.row] >= s.r1 && disp.rowPos[m.row] <= s.r2) {
+        for (var p = s.r1; p <= s.r2; p++) list.push(disp.rows[p]);
+      } else if (m.row !== undefined) list.push(m.row);
+      return list;
+    }
+    function editActionShown(a, m) {
+      if (a !== 'editcell' && a !== 'setnull' && a !== 'delrows' && a !== 'revert') return true;
+      if (editFlags === null || !m || m.row === undefined) return false;
+      if (a === 'editcell') return canEdit(cellOf(m.row, m.col));
+      if (a === 'setnull') return canEdit(cellOf(m.row, m.col)) && heads[m.col].getAttribute('data-w') === '1';
+      var list = rowsOfContext(m);
+      if (a === 'delrows') return list.some(function (r) { return r >= loadedRows ? true : editFlags.indexOf('d') !== -1 && rows[r].getAttribute('data-del') !== '1'; });
+      return list.some(function (r) { var tr = rows[r]; return r >= loadedRows || tr.getAttribute('data-dirty') === '1' || tr.getAttribute('data-del') === '1'; });
+    }
+    function scrollPos() { return [Math.round(scroll.scrollTop), Math.round(scroll.scrollLeft)]; }
+    function postRows(type, m) {
+      var list = rowsOfContext(m);
+      if (list.length) vscode.postMessage({ type: type, gen: gen, rows: list, scroll: scrollPos() });
+    }
+    function postEdit(td, value) {
+      var tr = td.parentNode;
+      var r = Number(tr.getAttribute('data-r')), c = Array.prototype.indexOf.call(tr.children, td) - 1;
+      vscode.postMessage({ type: 'edit', gen: gen, row: r, col: c, value: value });
+      td.removeAttribute('title');
+      td.removeAttribute('data-err');
+      td.removeAttribute('data-dflt');
+      td.setAttribute('data-ed', '1');
+      if (value === null) { td.textContent = 'NULL'; td.setAttribute('class', 'null'); td.setAttribute('data-null', '1'); }
+      else { td.textContent = value; td.removeAttribute('class'); td.removeAttribute('data-null'); }
+      if (tr.getAttribute('data-new') !== '1') tr.setAttribute('data-dirty', '1');
+    }
+    function setNullSelection(m) {
+      var s = rect(), cells = [];
+      if (s && m.row !== undefined && disp.rowPos[m.row] >= s.r1 && disp.rowPos[m.row] <= s.r2) {
+        for (var p = s.r1; p <= s.r2; p++) for (var q = s.c1; q <= s.c2; q++) cells.push(cellOf(disp.rows[p], disp.cols[q]));
+      } else if (m.row !== undefined) cells.push(cellOf(m.row, m.col));
+      cells.forEach(function (td) { if (canEdit(td) && td.getAttribute('data-null') !== '1') postEdit(td, null); });
+    }
+    function startEdit(td, typed) {
+      if (!editor || !canEdit(td)) return;
+      finishEdit(true);
+      hideHover();
+      var sr = scroll.getBoundingClientRect(), cr = td.getBoundingClientRect();
+      editing = td;
+      editor.style.top = (cr.top - sr.top + scroll.scrollTop) + 'px';
+      editor.style.left = (cr.left - sr.left + scroll.scrollLeft) + 'px';
+      editor.style.width = Math.max(cr.width, 140) + 'px';
+      editor.style.height = Math.max(cr.height, 22) + 'px';
+      var blank = td.getAttribute('data-null') === '1' || td.getAttribute('data-dflt') === '1';
+      editor.value = typed !== undefined ? typed : blank ? '' : td.textContent;
+      editor.setAttribute('data-blank', blank ? '1' : '0');
+      editor.setAttribute('data-orig', typed !== undefined ? '\u0000' : editor.value);
+      editor.style.display = 'block';
+      editor.focus();
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+    }
+    function finishEdit(save) {
+      if (!editing) return;
+      var td = editing;
+      editing = null;
+      editor.style.display = 'none';
+      if (!save) return;
+      var v = editor.value;
+      if (v === editor.getAttribute('data-orig')) return;
+      if (v === '' && editor.getAttribute('data-blank') === '1') return;
+      postEdit(td, v);
+    }
+    function moveEdit(td, dr, dc) {
+      var p = posOf(td);
+      var r = p.r + dr, c = p.c + dc;
+      while (r >= 0 && r < disp.rows.length && c >= 0 && c < disp.cols.length) {
+        var next = cellOf(disp.rows[r], disp.cols[c]);
+        if (canEdit(next)) { anchor = { r: r, c: c }; focus = anchor; markSelection(); next.scrollIntoView({ block: 'nearest', inline: 'nearest' }); startEdit(next); return; }
+        if (dc) c += dc; else r += dr;
+      }
+      anchor = { r: Math.max(0, Math.min(disp.rows.length - 1, p.r + dr)), c: p.c }; focus = anchor; markSelection();
+    }
+    if (editor) {
+      editor.addEventListener('keydown', function (e) {
+        e.stopPropagation();
+        var td = editing;
+        if (e.key === 'Escape') { e.preventDefault(); finishEdit(false); return; }
+        if (e.key === 'Enter' && e.altKey) {
+          e.preventDefault();
+          var s0 = editor.selectionStart, s1 = editor.selectionEnd;
+          editor.value = editor.value.slice(0, s0) + '\n' + editor.value.slice(s1);
+          editor.setSelectionRange(s0 + 1, s0 + 1);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          finishEdit(true);
+          if (td) moveEdit(td, e.key === 'Enter' ? (e.shiftKey ? -1 : 1) : 0, e.key === 'Tab' ? (e.shiftKey ? -1 : 1) : 0);
+        }
+      });
+      editor.addEventListener('blur', function () { finishEdit(true); });
+      editor.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    }
+    api.editKey = function (e) {
+      if (editFlags === null || editing) return false;
+      var s = rect();
+      if (!s || s.r1 !== s.r2 || s.c1 !== s.c2) return false;
+      var td = cellOf(disp.rows[s.r1], disp.cols[s.c1]);
+      if (!canEdit(td)) return false;
+      if (e.key === 'F2' || e.key === 'Enter') { startEdit(td); return true; }
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { startEdit(td, e.key); return true; }
+      return false;
+    };
 
     // --- Toolbar -----------------------------------------------------------------------------------------------------
     grid.querySelector('.gbar').addEventListener('click', function (e) {
@@ -798,6 +991,7 @@ function initGrids(vscode) {
       } else {
         var td = t.closest ? t.closest('tbody td') : null;
         if (!td) return;
+        if (canEdit(td)) { e.preventDefault(); startEdit(td); return; }
         var p = td.parentNode;
         vscode.postMessage(withSet({ type: 'openCell', gen: gen, row: Number(p.getAttribute('data-r')), col: Array.prototype.indexOf.call(p.children, td) - 1 }));
       }
@@ -1024,7 +1218,15 @@ export interface DataViewModel {
   view?: GridViewState;
   focus?: number;
   scroll?: readonly [number, number];
+  /** Editing state (omitted when the view cannot be edited). */
+  edit?: GridEditSpec;
+  /** Number of rows with unsaved changes. */
+  pending?: number;
+  /** Why the view is read-only (shown next to the row count). */
+  readOnlyReason?: string;
 }
+
+const pendingText = (n: number): string => (n ? `${n} unsaved row change${n === 1 ? '' : 's'}` : '');
 
 /** The Data View webview document. */
 export function renderDataView(model: DataViewModel, nonce: string): string {
@@ -1035,14 +1237,21 @@ export function renderDataView(model: DataViewModel, nonce: string): string {
   const extra = `<label class="topl" for="top">TOP <input id="top" type="number" min="${MIN_TOP}" max="${MAX_TOP}" step="1" value="${model.top}" aria-label="Rows to load (TOP)"></label>`
     + '<button type="button" class="tb" id="reload" title="Load the rows again with this TOP, the filters and the current sort"><span>Reload</span></button>'
     + `<button type="button" class="tb" id="more" title="Load the next rows with the same filters and sort"${model.canLoadMore ? '' : ' style="display:none"'}><span>Load more</span></button>`
+    + (model.edit?.insert ? '<button type="button" class="tb" id="gadd" title="Add a new row (saved with Save)"><span>+ Add row</span></button>' : '')
+    + (model.edit
+      ? `<span class="pend" id="gpend">${escapeHtml(pendingText(model.pending ?? 0))}</span>`
+        + `<button type="button" class="tb save" id="gsave" title="Save all changes in one transaction"${model.pending ? '' : ' style="display:none"'}><span>Save</span></button>`
+        + `<button type="button" class="tb" id="gdiscard" title="Discard all unsaved changes"${model.pending ? '' : ' style="display:none"'}><span>Discard</span></button>`
+      : '')
     + '<span id="toperr" role="alert"></span>'
     + `<span class="meta" id="gstatus">${model.loading ? 'Loading…' : ''}</span>`;
   if (result) {
     const cols = result.columns.length;
-    meta = `${rowCountLabel(result.rows.length, result.truncated)} · ${cols} column${cols === 1 ? '' : 's'} · read-only`;
+    const mode = model.edit ? (model.edit.update ? 'editable' : 'add rows only') : 'read-only';
+    meta = `${rowCountLabel(result.rows.length, result.truncated)} · ${cols} column${cols === 1 ? '' : 's'} · ${mode}`;
     content = renderGrid({
       id: 'gd', columns: result.columns, rows: result.rows, sortMode: 'server', sort: model.sort, filters: model.filters, gen: model.gen,
-      view: model.view, focus: model.focus, scroll: model.scroll, toolbarExtra: extra,
+      view: model.view, focus: model.focus, scroll: model.scroll, toolbarExtra: extra, ...(model.edit ? { edit: model.edit } : {}),
     }) + (result.rows.length === 0 ? '<p class="hint">No rows.</p>' : '');
   } else if (model.error === undefined) {
     content = '<p class="hint">Loading…</p>';
@@ -1075,6 +1284,9 @@ export function renderDataView(model: DataViewModel, nonce: string): string {
   #top[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }
   #toperr { color: var(--vscode-errorForeground); font-size: 12px; }
   .dgrid { flex: 1; }
+  .pend { color: var(--vscode-editorGutter-modifiedBackground, #1b81a8); font-size: 12px; font-weight: 600; }
+  .gbar .tb.save { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+  .gbar .tb.save:hover { background: var(--vscode-button-hoverBackground); }
   .meta.conn { color: var(--conn); font-weight: 600; }
   .meta.conn::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; background: var(--conn); }
 ${GRID_CSS}
@@ -1084,7 +1296,7 @@ ${GRID_CSS}
   <div class="bar">
     <span class="name">${escapeHtml(model.objectName)}</span>
     <span class="meta${model.connectionColor ? ' conn' : ''}" title="Connection"${model.connectionColor ? ` style="--conn: var(--vscode-charts-${model.connectionColor})"` : ''}>${escapeHtml(model.connection)}</span>
-    <span class="meta">${escapeHtml(meta)}</span>
+    <span class="meta"${model.readOnlyReason || model.edit ? ` title="${escapeHtml(model.readOnlyReason ?? 'Double-click, F2 or type to edit a cell; right-click for NULL, delete and revert. Changes are saved with Save.')}"` : ''}>${escapeHtml(meta)}</span>
   </div>
   ${error}
   ${notes}
@@ -1115,8 +1327,33 @@ ${gridScript()}
   }
   document.getElementById('reload').addEventListener('click', reload);
   top.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); reload(); } });
-  var more = document.getElementById('more');
   var grid = document.getElementById('gd');
+  function scrollPos() { var sc = grid && grid.querySelector('.gscroll'); return sc ? [Math.round(sc.scrollTop), Math.round(sc.scrollLeft)] : [0, 0]; }
+  function gridGen() { return Number((grid || document.body).getAttribute('data-gen')); }
+  [['gadd', 'addRow'], ['gsave', 'save'], ['gdiscard', 'discard']].forEach(function (b) {
+    var el = document.getElementById(b[0]);
+    if (el) el.addEventListener('click', function () {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      vscode.postMessage({ type: b[1], gen: gridGen(), scroll: scrollPos() });
+    });
+  });
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (!m || m.type !== 'pending') return;
+    var pend = document.getElementById('gpend');
+    if (pend) pend.textContent = m.count ? m.count + ' unsaved row change' + (m.count === 1 ? '' : 's') : '';
+    ['gsave', 'gdiscard'].forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = m.count ? '' : 'none'; });
+    if (grid && typeof m.row === 'number' && typeof m.col === 'number') {
+      var tr = grid.querySelector('tbody tr[data-r="' + m.row + '"]');
+      var td = tr && tr.children[m.col + 1];
+      if (td) {
+        if (m.error) { td.setAttribute('data-err', '1'); td.setAttribute('title', String(m.error)); }
+        else { td.removeAttribute('data-err'); td.removeAttribute('title'); }
+        if (m.reverted) { td.removeAttribute('data-ed'); if (!tr.querySelector('td[data-ed="1"]')) tr.removeAttribute('data-dirty'); }
+      }
+    }
+  });
+  var more = document.getElementById('more');
   if (more && grid) {
     more.addEventListener('click', function () {
       var sc = grid.querySelector('.gscroll');
