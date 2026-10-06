@@ -442,6 +442,31 @@ The file is a JSON object, which the form is meant to edit:
 
 Rollback: remove `MSSQL_MANAGED_CONNECTIONS_FILE` from the client's config and restart the client. The file is then ignored; delete it if it is no longer needed.
 
+#### Claude Desktop extension (.mcpb)
+
+To install in Claude Desktop without VS Code, build the bundle:
+
+```powershell
+.\packaging\mcpb\build-mcpb.ps1
+```
+
+The script:
+- rebuilds the connections view and publishes the self-contained exe;
+- smoke-starts the exe (MCP `initialize`);
+- stamps `packaging/mcpb/manifest.json` with the `<Version>` from `MssqlMcp.csproj`;
+- validates and packs it with `@anthropic-ai/mcpb`;
+- writes `Publish\mcpb\apoint-ms-sql-<version>.mcpb` and prints its SHA-256.
+
+To install, open the `.mcpb` file in Claude Desktop (or drag it into **Settings > Extensions**).
+
+What the bundle does:
+- It starts with no connections and uses `%APPDATA%\APoint-ms-sql\connections.json` as its managed file, the same file the VS Code extension sets for Claude Desktop. Both installs therefore see the same connections.
+- Ad-hoc connections and the extension-only tools are off.
+- The **AI Insights layer** setting maps to `USE_INSIGHTS_LAYER`.
+- Windows only.
+
+If Claude Desktop is also registered through the VS Code extension, it lists two servers: remove one of them.
+
 ## AI Insights layer
 
 The AI Insights layer caches LLM-authored (or server-generated baseline) summaries of database objects so repeated investigations cost fewer tokens. It is **enabled by default** but **not auto-installed** — call **install_insights_layer** once per database.
