@@ -631,6 +631,8 @@ dotnet test MssqlMcp.sln -c Release
 
 Output path is configured in `MssqlMcp/MssqlMcp.csproj` and `Properties/PublishProfiles/ReleaseSingleFile.pubxml` (default: `C:\Development\MCPs\MS-SQL-Release\MssqlMcp.exe`).
 
+The script also packs the same exe as the Claude Desktop extension, `<release folder>\ClaudeDesktop\APoint-ms-sql.mcpb`. The previous bundle is kept as `APoint-ms-sql_yyyyMMdd_HHmm.mcpb`, as the script does for the exe. Pass `-SkipClaudeDesktop` to publish the exe only. `-DryRun` builds and packs both and shows what it would copy.
+
 ### Versioning
 
 The server `<Version>` in `MssqlMcp/MssqlMcp.csproj` and `version` in `vscode-extension/package.json` (and its `package-lock.json`) must be equal. `npm run check:version` in `vscode-extension` and CI enforce this. The `.mcpb` takes its version from the csproj.
