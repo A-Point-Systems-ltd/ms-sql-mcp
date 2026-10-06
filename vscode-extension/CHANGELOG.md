@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Register with Cursor / Claude...** now sets `MSSQL_MANAGED_CONNECTIONS_FILE=%APPDATA%\APoint-ms-sql\connections.json` on the Claude Desktop entry only, which turns on the server's connection manager form (MCP Apps) there. Cursor and Claude Code entries are unchanged. Re-register Claude Desktop to get it.
+
 ## 1.0.0
 
 - SQL IntelliSense in editors bound to an open connection: completion (tables, views, columns, CTEs, variables, functions, procedure parameters, keywords), hover and signature help from the bundled server's `language_service` (Microsoft SqlParser). Completion opens on `.` space `(` `,` `@` `[`; typing-triggered requests wait 150 ms and are cancelled on the server as you type. The metadata cache is warmed when a window is bound (New Query, editable script, Change Connection) or a bound tab becomes active, at most once per connection every 5 minutes; until it is ready the list has keywords only and the status bar says so. New command **Refresh IntelliSense Cache** (editor title, editor context menu, palette, **Ctrl+Shift+R** in bound editors, which replaces VS Code's Refactor… there) and setting `msSqlMcp.intellisense.enabled` (default `true`). Other SQL extensions' providers stay active. Trace logs record only the document length and item counts.

@@ -108,6 +108,8 @@ Run **Register with Cursor / Claude...** (the view's title bar, or the Command P
 
 Restart the client afterwards.
 
+In **Claude Desktop** the entry also turns on the connection manager. Ask Claude to "manage connections" and a form opens in the chat. There you add, edit, test and remove connections that belong to Claude Desktop only. They are saved to `%APPDATA%\APoint-ms-sql\connections.json`, with passwords encrypted for your Windows account, and they apply without a restart. Connections from this extension are listed there read-only; change them here and re-register. See the server README, "Connection manager".
+
 ### SQL logins: `MSSQLMCP_PWD_<NAME>` placeholders
 
 When a connection uses a SQL login, you choose how `connections.json` stores its password:
