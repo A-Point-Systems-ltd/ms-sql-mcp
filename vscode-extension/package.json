@@ -3,7 +3,7 @@
   "displayName": "APoint-ms-sql",
   "description": "SQL Server MCP server for VS Code, Cursor and Claude - multi-connection, object explorer with DDL, read-only profiles, AI schema insights.",
   "publisher": "apoint",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "license": "MIT",
   "repository": {
     "type": "git",
