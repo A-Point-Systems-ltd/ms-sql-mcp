@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New Claude Desktop extension bundle (`.mcpb`), built by `packaging/mcpb/build-mcpb.ps1` (manifest v0.3, `@anthropic-ai/mcpb` 2.1.2). It holds the self-contained exe with the connection manager on, the managed file at `%APPDATA%\APoint-ms-sql\connections.json`, and an "AI Insights layer" setting. The script smoke-starts the exe before packing. See README, "Claude Desktop extension (.mcpb)".
+
 - New connection manager for Claude Desktop (MCP Apps), on when `MSSQL_MANAGED_CONNECTIONS_FILE` is set. Claude calls `manage_connections` and a form opens in the chat, where the user adds, edits, tests and removes connections. Changes apply without a restart, and other processes that share the file reload it on their next tool call. The form's tools (`connections_ui_*`) are app-only, so the model never sees them: it cannot add hosts, make a connection writable or read a password. SQL-login passwords are stored encrypted with DPAPI (current Windows user). Writes are atomic, under a cross-process lock, with a `.bak` copy, and an unparsable file is never overwritten. Connections from the other sources are listed read-only. New `ConnectionSource.Managed`. The view is built from `apps/connections-ui` into `MssqlMcp/Apps/connections.html` and embedded in the exe. New dependency: `System.Security.Cryptography.ProtectedData` 10.0.11. See README, "Connection manager".
 
 - AI Insights asks the agent to call `upsert_insight` far less often, and with fewer tokens:

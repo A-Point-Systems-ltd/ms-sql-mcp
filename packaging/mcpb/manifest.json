@@ -1,0 +1,70 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.3.schema.json",
+  "manifest_version": "0.3",
+  "name": "apoint-ms-sql",
+  "display_name": "APoint-ms-sql",
+  "version": "0.0.0",
+  "description": "SQL Server for Claude: inspect schemas, query data and manage connections from a form in the chat.",
+  "long_description": "APoint-ms-sql connects Claude to Microsoft SQL Server. Ask Claude to \"manage connections\" to add, edit, test and remove connections in a form inside the chat; they apply without a restart. Passwords are stored encrypted for your Windows account (DPAPI) and Claude never sees them. Connections are read-only by default. Includes schema introspection, read-only queries, optional writes on read-write connections, and the AI Insights layer (cached object summaries).",
+  "author": {
+    "name": "A Point Systems"
+  },
+  "license": "MIT",
+  "keywords": ["sql server", "mssql", "database", "t-sql"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/MssqlMcp.exe",
+    "mcp_config": {
+      "command": "${__dirname}/server/MssqlMcp.exe",
+      "args": [],
+      "env": {
+        "MSSQL_MANAGED_CONNECTIONS_FILE": "%APPDATA%\\APoint-ms-sql\\connections.json",
+        "MSSQL_CONNECTIONS_FILE": "",
+        "MSSQL_CONNECTIONS": "",
+        "CONNECTION_STRING": "",
+        "MSSQL_ALLOW_ADHOC_CONNECTIONS": "false",
+        "MSSQL_SCRIPT_RUNNER": "",
+        "USE_INSIGHTS_LAYER": "${user_config.insights}"
+      }
+    }
+  },
+  "user_config": {
+    "insights": {
+      "type": "boolean",
+      "title": "AI Insights layer",
+      "description": "Cache object summaries in the AIInsights schema of each database (install it per database with install_insights_layer). Turn off to never read or write AIInsights.",
+      "default": true,
+      "required": false
+    }
+  },
+  "tools": [
+    { "name": "manage_connections", "description": "Open the connection manager form to add, edit, test and remove connections." },
+    { "name": "list_connections", "description": "List connections: name, open/closed, read-only, server, database." },
+    { "name": "open_connection", "description": "Reopen a closed connection." },
+    { "name": "close_connection", "description": "Close a connection." },
+    { "name": "get_server_info", "description": "SQL Server version, edition, hardware and database counts." },
+    { "name": "list_objects", "description": "List tables, views, procedures, functions or triggers." },
+    { "name": "describe_table", "description": "Columns, keys, indexes, constraints and triggers of a table." },
+    { "name": "describe_view", "description": "Columns and definition of a view." },
+    { "name": "get_object", "description": "Definition of a procedure, function or trigger." },
+    { "name": "script_object", "description": "CREATE script of an object." },
+    { "name": "read_data", "description": "Run a read-only SELECT." },
+    { "name": "execute_sql", "description": "Run DDL/DML on a read-write connection." },
+    { "name": "insert_data", "description": "Insert rows on a read-write connection." },
+    { "name": "update_data", "description": "Update rows on a read-write connection." },
+    { "name": "create_table", "description": "Create a table on a read-write connection." },
+    { "name": "drop_table", "description": "Drop a table on a read-write connection." },
+    { "name": "insights_check", "description": "State of the AI Insights layer in the database." },
+    { "name": "install_insights_layer", "description": "Install the AI Insights layer (read-write connection)." },
+    { "name": "get_insight", "description": "Read the cached insight of an object." },
+    { "name": "upsert_insight", "description": "Write or update an object's insight." },
+    { "name": "list_insights", "description": "List cached insights." },
+    { "name": "get_insight_history", "description": "Archived insights of an object." },
+    { "name": "refresh_insights", "description": "Process schema changes and refresh stale insights." },
+    { "name": "rebuild_baseline_insights", "description": "Rebuild mechanical baseline insights in bulk." }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": ["win32"]
+  }
+}
