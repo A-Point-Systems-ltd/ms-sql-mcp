@@ -5,9 +5,13 @@
 # copy the new exe in -> verify SHA256. If anything fails after the rename, the previous exe is restored.
 # Running MssqlMcp.exe processes keep the old binary until they restart (Windows allows renaming a running exe).
 #
+# The same exe is also packed as the Claude Desktop extension: <ReleaseDir>\ClaudeDesktop\APoint-ms-sql.mcpb
+# (previous bundle kept as APoint-ms-sql_yyyyMMdd_HHmm.mcpb). Install it by opening the file in Claude Desktop.
+#
 # Usage:
-#   .\publish-release.ps1                 # publish
-#   .\publish-release.ps1 -DryRun         # build + smoke-start only, show what would be renamed/copied
+#   .\publish-release.ps1                 # publish exe + Claude Desktop bundle
+#   .\publish-release.ps1 -DryRun         # build + smoke-start + pack only, show what would be renamed/copied
+#   .\publish-release.ps1 -SkipClaudeDesktop   # exe only
 #   .\publish-release.ps1 -ReleaseDir D:\Some\Folder
 # Extra args after -- are forwarded to dotnet publish (e.g. .\publish-release.ps1 -- --verbosity normal).
 #
@@ -18,6 +22,7 @@
 param(
     [string]$ReleaseDir = 'C:\Development\MCPs\MS-SQL-Release',
     [switch]$DryRun,
+    [switch]$SkipClaudeDesktop,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$PublishArgs
 )
 
@@ -62,6 +67,18 @@ try {
     Write-Host "Smoke start OK (exits with the expected 'no connection configured' error)." -ForegroundColor Green
 
     $newHash = Get-Sha256 $newExe
+
+    # 2b. Pack the same exe as the Claude Desktop bundle (in staging; copied to the release folder after the exe).
+    $newBundle = $null
+    if (-not $SkipClaudeDesktop) {
+        $bundleStaging = Join-Path $staging 'mcpb'
+        & "$repoRoot\packaging\mcpb\build-mcpb.ps1" -ExePath $newExe -OutDir $bundleStaging
+        $newBundle = Get-ChildItem -LiteralPath $bundleStaging -Filter '*.mcpb' | Select-Object -First 1
+        if (-not $newBundle) { throw "Claude Desktop bundle was not produced in $bundleStaging." }
+    }
+    $bundleDir = Join-Path $ReleaseDir 'ClaudeDesktop'
+    $bundleTarget = Join-Path $bundleDir 'APoint-ms-sql.mcpb'
+
     $target = Join-Path $ReleaseDir $exeName
     $stamp = Get-Date -Format 'yyyyMMdd_HHmm'
     $backup = Join-Path $ReleaseDir ("MssqlMcp_{0}.exe" -f $stamp)
@@ -71,6 +88,7 @@ try {
         Write-Host "[DryRun] New exe: $newExe (SHA256 $newHash)" -ForegroundColor Yellow
         if (Test-Path -LiteralPath $target) { Write-Host "[DryRun] Would rename $target -> $backup" -ForegroundColor Yellow }
         Write-Host "[DryRun] Would copy the new exe to $target" -ForegroundColor Yellow
+        if ($newBundle) { Write-Host "[DryRun] Would copy $($newBundle.Name) to $bundleTarget (previous kept with a timestamp)" -ForegroundColor Yellow }
         return
     }
 
@@ -110,6 +128,22 @@ try {
     }
 
     Write-Host "Done. $target (SHA256 $newHash)" -ForegroundColor Green
+
+    # 6. Claude Desktop bundle: keep the previous one with a timestamp, copy the new one, verify.
+    #    Not live (Claude Desktop copies an installed bundle), so a plain replace is safe.
+    if ($newBundle) {
+        $null = New-Item -ItemType Directory -Force $bundleDir
+        if (Test-Path -LiteralPath $bundleTarget) {
+            $bundleBackup = Join-Path $bundleDir ("APoint-ms-sql_{0}.mcpb" -f $stamp)
+            for ($i = 2; Test-Path -LiteralPath $bundleBackup; $i++) { $bundleBackup = Join-Path $bundleDir ("APoint-ms-sql_{0}_{1}.mcpb" -f $stamp, $i) }
+            Rename-Item -LiteralPath $bundleTarget -NewName (Split-Path $bundleBackup -Leaf)
+            Write-Host "Previous Claude Desktop bundle kept as $bundleBackup" -ForegroundColor Cyan
+        }
+        Copy-Item -LiteralPath $newBundle.FullName -Destination $bundleTarget
+        $bundleHash = Get-Sha256 $bundleTarget
+        if ($bundleHash -ne (Get-Sha256 $newBundle.FullName)) { throw "SHA256 mismatch after copying the Claude Desktop bundle." }
+        Write-Host "Claude Desktop bundle: $bundleTarget ($($newBundle.Name), SHA256 $bundleHash)" -ForegroundColor Green
+    }
     Write-Host "Restart MCP clients (Cursor / Claude) to pick up the new exe; running processes still use the old one." -ForegroundColor Green
 }
 finally {
