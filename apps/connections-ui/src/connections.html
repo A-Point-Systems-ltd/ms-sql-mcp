@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL Server connections</title>
+<style>
+  :root {
+    --bg: var(--color-background-primary, #ffffff);
+    --bg2: var(--color-background-secondary, #f4f4f5);
+    --fg: var(--color-text-primary, #1f1f1f);
+    --fg2: var(--color-text-secondary, #5f5f66);
+    --border: var(--color-border-primary, #d4d4d8);
+    --danger: var(--color-text-danger, #c62828);
+    --success: var(--color-text-success, #2e7d32);
+    --accent: var(--color-ring-primary, #3b6fd8);
+    --radius: var(--border-radius-md, 6px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: var(--color-background-primary, #1f1f22); --bg2: var(--color-background-secondary, #2a2a2e);
+      --fg: var(--color-text-primary, #ececf1); --fg2: var(--color-text-secondary, #a1a1aa);
+      --border: var(--color-border-primary, #3f3f46);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px 14px; background: var(--bg); color: var(--fg);
+         font-family: var(--font-sans, system-ui, sans-serif); font-size: var(--font-text-sm-size, 14px); line-height: 1.45; }
+  h2 { font-size: var(--font-heading-sm-size, 16px); margin: 0; }
+  h3 { font-size: 13px; margin: 18px 0 6px; color: var(--fg2); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  button { font: inherit; padding: 5px 12px; border-radius: var(--radius); border: 1px solid var(--border);
+           background: var(--bg2); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .55; cursor: default; }
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border);
+         border-radius: var(--radius); }
+  .row .main { flex: 1; min-width: 0; }
+  .row .name { font-weight: 600; }
+  .row .target { color: var(--fg2); font-family: var(--font-mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
+  .row.other { opacity: .7; }
+  .badge { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--border);
+           color: var(--fg2); margin-left: 6px; vertical-align: 1px; }
+  .badge.rw { color: var(--danger); border-color: currentColor; }
+  .err { color: var(--danger); font-size: 12px; }
+  .ok { color: var(--success); }
+  .empty { color: var(--fg2); padding: 8px 0; }
+  .banner { border: 1px solid var(--danger); color: var(--danger); padding: 8px 10px; border-radius: var(--radius); margin-bottom: 8px; }
+  form { display: grid; grid-template-columns: 170px 1fr; gap: 8px 12px; align-items: start; max-width: 680px; }
+  form label.l { padding-top: 5px; color: var(--fg2); }
+  input[type=text], input[type=password], select, textarea { width: 100%; font: inherit; padding: 5px 8px; color: var(--fg);
+           background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+  textarea { min-height: 60px; font-family: var(--font-mono, monospace); font-size: 12px; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { color: var(--fg2); font-size: 12px; margin-top: 2px; }
+  .check { display: flex; gap: 6px; align-items: center; padding-top: 4px; }
+  .actions { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  #status { grid-column: 1 / -1; min-height: 1.2em; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .hidden { display: none !important; }
+  @media (max-width: 520px) { form { grid-template-columns: 1fr; } form label.l { padding-top: 0; } }
+</style>
+</head>
+<body>
+  <section id="listView">
+    <div class="bar">
+      <h2>SQL Server connections</h2>
+      <button id="add" class="primary" type="button">Add connection</button>
+    </div>
+    <div id="fileError" class="banner hidden"></div>
+    <div id="managed" class="list"></div>
+    <div id="othersWrap" class="hidden">
+      <h3>Configured elsewhere (read-only here)</h3>
+      <div id="others" class="list"></div>
+    </div>
+  </section>
+
+  <section id="formView" class="hidden">
+    <div class="bar"><h2 id="formTitle">Add connection</h2></div>
+    <form id="form" novalidate autocomplete="off">
+      <label class="l" for="f-name">Name</label>
+      <div><input id="f-name" name="name" type="text" maxlength="64" spellcheck="false"><div class="err" data-err="name"></div>
+        <div class="hint">Letters, digits, "-", "_" or ".". Claude uses it as the connection name.</div></div>
+
+      <label class="l" for="f-auth">Authentication</label>
+      <div><select id="f-auth" name="auth"></select><div class="err" data-err="auth"></div></div>
+
+      <label class="l" for="f-server" data-field="server">Server</label>
+      <div data-field="server"><input id="f-server" name="server" type="text" spellcheck="false" placeholder="host\instance or host,port"><div class="err" data-err="server"></div></div>
+
+      <label class="l" for="f-database" data-field="database">Database</label>
+      <div data-field="database"><input id="f-database" name="database" type="text" list="dblist" spellcheck="false"><datalist id="dblist"></datalist>
+        <div class="err" data-err="database"></div></div>
+
+      <label class="l" for="f-user" data-field="user">User</label>
+      <div data-field="user"><input id="f-user" name="user" type="text" spellcheck="false"><div class="err" data-err="user"></div></div>
+
+      <label class="l" for="f-password" data-field="password">Password</label>
+      <div data-field="password"><input id="f-password" name="password" type="password" autocomplete="new-password">
+        <div class="err" data-err="password"></div>
+        <div class="hint" id="pwHint">Stored encrypted for your Windows account (DPAPI). Claude never sees it.</div></div>
+
+      <label class="l" for="f-raw" data-field="rawConnectionString">Connection string</label>
+      <div data-field="rawConnectionString"><textarea id="f-raw" name="rawConnectionString" spellcheck="false"></textarea>
+        <div class="err" data-err="rawConnectionString"></div><div class="hint">Without a password - use SQL login for that.</div></div>
+
+      <label class="l" for="f-encrypt" data-field="encrypt">Encryption</label>
+      <div data-field="encrypt"><select id="f-encrypt" name="encrypt"></select><div class="hint" id="encHint"></div><div class="err" data-err="encrypt"></div></div>
+
+      <span class="l" data-field="trustServerCertificate"></span>
+      <div data-field="trustServerCertificate"><label class="check"><input id="f-trust" name="trustServerCertificate" type="checkbox"> Trust server certificate</label>
+        <div class="hint" id="trustHint"></div></div>
+
+      <span class="l"></span>
+      <div><label class="check"><input id="f-readOnly" name="readOnly" type="checkbox"> Read-only</label>
+        <div class="hint">Claude cannot run write tools on a read-only connection.</div></div>
+
+      <span class="l"></span>
+      <div><label class="check"><input id="f-insights" name="insights" type="checkbox"> AI insights</label>
+        <div class="hint">Cached object summaries (needs the insights layer installed in the database).</div></div>
+
+      <div class="actions">
+        <button id="save" class="primary" type="submit">Save</button>
+        <button id="test" type="button">Test connection</button>
+        <button id="listDbs" type="button">List databases</button>
+        <button id="cancel" type="button">Cancel</button>
+        <span style="flex:1"></span>
+        <button id="delete" class="danger hidden" type="button">Delete</button>
+      </div>
+      <div id="status" role="status" aria-live="polite"></div>
+    </form>
+  </section>
+<!--SCRIPT-->
+</body>
+</html>
