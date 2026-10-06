@@ -4,10 +4,21 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for Mi
 
 Forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-AI-samples) and extended with unified object introspection, strict read/write SQL routing, and an optional **AI Insights** cache layer that helps LLM agents investigate databases with less repeated schema work.
 
+It ships in three forms:
+
+| Package | For | What you get |
+|---------|-----|--------------|
+| **VS Code / Cursor extension** (`apoint.ms-sql-mcp`) | Developers working in VS Code or Cursor | Bundled server for agent mode, connection form, object explorer, query windows, IntelliSense, and one-command registration with Cursor CLI, Claude Desktop and Claude Code |
+| **Claude Desktop extension** (`.mcpb`) | Claude Desktop users without VS Code | One file install; connections are managed in a form inside the chat |
+| **Server executable** (`MssqlMcp.exe`) | Any other MCP client, servers, CI | Configure it yourself with environment variables |
+
+See [Install](#install).
+
 ## Table of contents
 
 - [Requirements](#requirements)
-- [Quick start](#quick-start)
+- [Install](#install)
+- [Quick start (from source)](#quick-start-from-source)
 - [MCP client configuration](#mcp-client-configuration)
 - [Environment variables](#environment-variables)
 - [Multiple connections](#multiple-connections)
@@ -24,7 +35,8 @@ Forked from [Azure-Samples/SQL-AI-samples](https://github.com/Azure-Samples/SQL-
 
 | Component | Version |
 |-----------|---------|
-| .NET SDK / Runtime | **.NET 10.0** |
+| Operating system | **Windows x64** (the packaged server is a `win-x64` executable) |
+| .NET SDK | **.NET 10.0**, only to build from source. The VS Code extension, the `.mcpb` and `publish-release.ps1` output are self-contained and need no .NET install. |
 | SQL Server | **2008 R2 (10.50)** or later |
 | Azure SQL Database | Supported |
 
@@ -32,7 +44,45 @@ Tested target versions include SQL Server 2008 R2 through 2022 and Azure SQL Dat
 
 With a single `CONNECTION_STRING` (legacy mode) the server validates it and opens a test connection **before** starting the MCP transport. If either check fails, the process exits with code `1` and writes diagnostics to the log file. With several connections, startup behaves differently; see [Multiple connections](#multiple-connections).
 
-## Quick start
+## Install
+
+### Option 1: VS Code / Cursor extension
+
+1. Install **APoint-ms-sql** (ID `apoint.ms-sql-mcp`). Use one of these sources:
+   - **VS Code:** the Extensions view (Ctrl+Shift+X); the extension is on the Visual Studio Marketplace.
+   - **Cursor:** its Extensions view; the extension is on Open VSX.
+   - **Offline or pinned version:** download `ms-sql-mcp-win32-x64-<version>.vsix` from the repository's [GitHub releases](https://github.com/A-Point-Systems-ltd/ms-sql-mcp/releases) (tag `ext-v<version>`). Then run **Extensions: Install from VSIX...** from the Command Palette, or:
+     ```powershell
+     code --install-extension ms-sql-mcp-win32-x64-<version>.vsix
+     ```
+     For Cursor, use `cursor --install-extension`.
+2. Open the **APoint-ms-sql** view in the activity bar and click **Add connection**. Fill in the form, click **Test connection**, then **Save**. Passwords stay in VS Code SecretStorage.
+3. **Agents:** VS Code agent mode and Cursor get the MCP server automatically for every open connection. Nothing else to configure.
+4. **Optional:** to use the same connections from **Cursor CLI, Claude Desktop or Claude Code**, run **Register with Cursor / Claude...** from the view's title bar and restart those clients. For Claude Desktop this also turns on the [connection manager](#8-connection-manager-claude-desktop-mcp-apps).
+
+The extension's own documentation covers the explorer, query windows and settings: [vscode-extension/README.md](vscode-extension/README.md).
+
+### Option 2: Claude Desktop extension (.mcpb)
+
+1. Get `apoint-ms-sql-<version>.mcpb`. GitHub releases don't include it yet, so build it with `.\packaging\mcpb\build-mcpb.ps1` (see [Package the Claude Desktop extension](#package-the-claude-desktop-extension-mcpb)) or get it from your administrator.
+2. Install it: double-click the file, or open Claude Desktop **Settings > Extensions** and drag the file in. Then confirm the install.
+3. **Optional:** the extension's settings have one switch, **AI Insights layer** (on by default).
+4. In a chat, ask Claude to **"manage connections"**. A form opens in the chat:
+   - Click **Add connection**, fill it in, then **Test connection** and **Save**.
+   - The connection is usable in the next message, without restarting Claude.
+   - Connections are read-only by default. SQL-login passwords are stored encrypted for your Windows account, and Claude never sees them.
+
+Connections are saved in `%APPDATA%\APoint-ms-sql\connections.json`. The VS Code extension's Claude Desktop registration uses the same file. Use **either** the `.mcpb` **or** the VS Code registration for Claude Desktop, not both: with both, Claude lists the server twice.
+
+To uninstall, use **Settings > Extensions** in Claude Desktop. The connections file stays; delete it if you no longer need it.
+
+### Option 3: Server executable with any MCP client
+
+1. Get `MssqlMcp.exe`. Build it with `.\publish-release.ps1` ([Publish single-file executable](#publish-single-file-executable)), or build from source ([Quick start](#quick-start-from-source)).
+2. Add it to your client's MCP configuration with `CONNECTION_STRING`, `MSSQL_CONNECTIONS` or `MSSQL_CONNECTIONS_FILE`. See [MCP client configuration](#mcp-client-configuration) and [Multiple connections](#multiple-connections).
+3. **Optional:** to get the connection manager form in hosts that support MCP Apps (such as Claude Desktop), add `MSSQL_MANAGED_CONNECTIONS_FILE`.
+
+## Quick start (from source)
 
 ```powershell
 # Clone and build
@@ -442,30 +492,7 @@ The file is a JSON object, which the form is meant to edit:
 
 Rollback: remove `MSSQL_MANAGED_CONNECTIONS_FILE` from the client's config and restart the client. The file is then ignored; delete it if it is no longer needed.
 
-#### Claude Desktop extension (.mcpb)
-
-To install in Claude Desktop without VS Code, build the bundle:
-
-```powershell
-.\packaging\mcpb\build-mcpb.ps1
-```
-
-The script:
-- rebuilds the connections view and publishes the self-contained exe;
-- smoke-starts the exe (MCP `initialize`);
-- stamps `packaging/mcpb/manifest.json` with the `<Version>` from `MssqlMcp.csproj`;
-- validates and packs it with `@anthropic-ai/mcpb`;
-- writes `Publish\mcpb\apoint-ms-sql-<version>.mcpb` and prints its SHA-256.
-
-To install, open the `.mcpb` file in Claude Desktop (or drag it into **Settings > Extensions**).
-
-What the bundle does:
-- It starts with no connections and uses `%APPDATA%\APoint-ms-sql\connections.json` as its managed file, the same file the VS Code extension sets for Claude Desktop. Both installs therefore see the same connections.
-- Ad-hoc connections and the extension-only tools are off.
-- The **AI Insights layer** setting maps to `USE_INSIGHTS_LAYER`.
-- Windows only.
-
-If Claude Desktop is also registered through the VS Code extension, it lists two servers: remove one of them.
+The [Claude Desktop extension (.mcpb)](#option-2-claude-desktop-extension-mcpb) turns this on by default.
 
 ## AI Insights layer
 
@@ -603,6 +630,56 @@ dotnet test MssqlMcp.sln -c Release
 ```
 
 Output path is configured in `MssqlMcp/MssqlMcp.csproj` and `Properties/PublishProfiles/ReleaseSingleFile.pubxml` (default: `C:\Development\MCPs\MS-SQL-Release\MssqlMcp.exe`).
+
+### Versioning
+
+The server `<Version>` in `MssqlMcp/MssqlMcp.csproj` and `version` in `vscode-extension/package.json` (and its `package-lock.json`) must be equal. `npm run check:version` in `vscode-extension` and CI enforce this. The `.mcpb` takes its version from the csproj.
+
+### Package the VS Code extension (VSIX)
+
+The **publish-extension** GitHub workflow builds and releases the extension:
+- publishes the exe and stages it into `vscode-extension/bin`;
+- runs the tests and packages `ms-sql-mcp-win32-x64-<version>.vsix`;
+- publishes it to the Visual Studio Marketplace and Open VSX (unless run as package-only);
+- creates the GitHub release `ext-v<version>` with the VSIX attached.
+
+To build a VSIX locally:
+
+```powershell
+dotnet publish MssqlMcp\MssqlMcp.csproj -c Release -p:PublishProfile=ReleaseSingleFile -o $env:TEMP\mssqlmcp-exe
+cd vscode-extension
+npm ci
+node scripts\stage-exe.mjs $env:TEMP\mssqlmcp-exe\MssqlMcp.exe
+npm run package
+```
+
+Before running `dotnet publish`, rebuild the embedded connections view if `apps/connections-ui` changed:
+
+```powershell
+cd apps\connections-ui
+npm ci
+npm run build
+```
+
+### Package the Claude Desktop extension (.mcpb)
+
+```powershell
+.\packaging\mcpb\build-mcpb.ps1
+# Optional: -OutDir D:\out
+```
+
+The script:
+1. Rebuilds the connections view and publishes the self-contained exe.
+2. Smoke-starts the exe (it must answer MCP `initialize`).
+3. Stamps `packaging/mcpb/manifest.json` with the csproj version.
+4. Validates and packs the bundle with `@anthropic-ai/mcpb` (via `npx`).
+
+The output is `Publish\mcpb\apoint-ms-sql-<version>.mcpb`, and the script prints its SHA-256.
+
+The bundle:
+- starts with no connections and enables the [connection manager](#8-connection-manager-claude-desktop-mcp-apps) on `%APPDATA%\APoint-ms-sql\connections.json`;
+- keeps ad hoc connections and the extension-only tools off;
+- maps its **AI Insights layer** setting to `USE_INSIGHTS_LAYER`.
 
 ## Project layout
 
