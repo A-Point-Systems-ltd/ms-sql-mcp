@@ -1,7 +1,9 @@
 name: Publish VS Code Extension
 
 # Manual trigger. Builds the server exe in this workflow, bundles it into the
-# extension and publishes to the VS Code Marketplace and Open VSX.
+# extension and publishes to the VS Code Marketplace and Open VSX. The same exe
+# is packed as the Claude Desktop extension (.mcpb); both files are uploaded as
+# build artifacts and attached to the GitHub release.
 # Required repo secrets (set by the owner): VSCE_PAT, OVSX_PAT (publisher "apoint").
 # Marketplace versions are irreversible: dryRun defaults to true (package only).
 
@@ -83,9 +85,25 @@ jobs:
           $v = node -p "require('./package.json').version"
           "version=$v" >> $env:GITHUB_OUTPUT
           "vsix=ms-sql-mcp-win32-x64-$v.vsix" >> $env:GITHUB_OUTPUT
+          "mcpb=apoint-ms-sql-$v.mcpb" >> $env:GITHUB_OUTPUT
 
       - name: Unit tests
         run: npm run test:unit
+
+      # Packs the exe staged above (the one the server tests ran against), so the VSIX and the .mcpb carry the same build.
+      - name: Package Claude Desktop extension (.mcpb)
+        working-directory: .
+        shell: pwsh
+        run: |
+          ./packaging/mcpb/build-mcpb.ps1 -ExePath (Join-Path $env:RUNNER_TEMP 'exe/MssqlMcp.exe') -OutDir (Join-Path $env:RUNNER_TEMP 'mcpb')
+          $bundle = Join-Path $env:RUNNER_TEMP 'mcpb/${{ steps.ver.outputs.mcpb }}'
+          if (-not (Test-Path -LiteralPath $bundle)) { throw "Expected $bundle" }
+
+      - name: Upload .mcpb as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apoint-ms-sql-mcpb
+          path: ${{ runner.temp }}/mcpb/${{ steps.ver.outputs.mcpb }}
 
       - name: Package (win32-x64)
         run: npx vsce package --target win32-x64 -o "${{ steps.ver.outputs.vsix }}"
@@ -110,4 +128,4 @@ jobs:
 
       - name: Create GitHub release
         if: ${{ inputs.dryRun == false }}
-        run: gh release create "ext-v${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.vsix }}" --title "Extension v${{ steps.ver.outputs.version }}" --target ${{ github.sha }} --generate-notes
+        run: gh release create "ext-v${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.vsix }}" "${{ runner.temp }}/mcpb/${{ steps.ver.outputs.mcpb }}" --title "Extension v${{ steps.ver.outputs.version }}" --target ${{ github.sha }} --generate-notes

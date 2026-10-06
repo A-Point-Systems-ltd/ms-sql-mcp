@@ -2,13 +2,15 @@
 #
 #   .\packaging\mcpb\build-mcpb.ps1                 -> Publish\mcpb\apoint-ms-sql-<version>.mcpb
 #   .\packaging\mcpb\build-mcpb.ps1 -OutDir D:\out
+#   .\packaging\mcpb\build-mcpb.ps1 -ExePath <published MssqlMcp.exe>   (CI: pack the exe it already built and tested)
 #
-# Steps: rebuild the embedded connections view, publish the self-contained single-file exe, stamp the manifest with
-# the server version (MssqlMcp.csproj <Version>), smoke-start the exe, validate and pack with the mcpb CLI.
-# Nothing outside the staging folder and -OutDir is written.
+# Steps: rebuild the embedded connections view and publish the self-contained single-file exe (skipped with -ExePath),
+# stamp the manifest with the server version (MssqlMcp.csproj <Version>), smoke-start the exe, validate and pack with
+# the mcpb CLI. Nothing outside the staging folder and -OutDir is written.
 [CmdletBinding()]
 param(
     [string]$OutDir = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'Publish\mcpb'),
+    [string]$ExePath,
     [string]$McpbCliVersion = '2.1.2'
 )
 
@@ -27,21 +29,30 @@ try {
     $version = $Matches[1]
     Write-Host "APoint-ms-sql $version -> .mcpb" -ForegroundColor Cyan
 
-    # 1. The view is embedded in the exe, so rebuild it first.
-    Push-Location "$repoRoot\apps\connections-ui"
-    try {
-        Invoke-Checked 'npm ci (connections-ui)' { npm ci --no-audit --no-fund }
-        Invoke-Checked 'connections view build' { npm run build }
-    }
-    finally { Pop-Location }
-
-    # 2. Self-contained single-file exe into staging\server.
     $serverDir = Join-Path $staging 'server'
-    Invoke-Checked 'dotnet publish' {
-        dotnet publish "$repoRoot\MssqlMcp\MssqlMcp.csproj" -c Release -p:PublishProfile=ReleaseSingleFile -o $serverDir
-    }
     $exe = Join-Path $serverDir 'MssqlMcp.exe'
-    if (-not (Test-Path -LiteralPath $exe)) { throw "Publish output $exe not found." }
+    if ($ExePath) {
+        # 1-2. Use a given published exe (it must come from this commit; CI passes the one it tested).
+        if (-not (Test-Path -LiteralPath $ExePath)) { throw "-ExePath $ExePath not found." }
+        $null = New-Item -ItemType Directory -Force $serverDir
+        Copy-Item -LiteralPath $ExePath $exe
+        Write-Host "Using $ExePath" -ForegroundColor Cyan
+    }
+    else {
+        # 1. The view is embedded in the exe, so rebuild it first.
+        Push-Location "$repoRoot\apps\connections-ui"
+        try {
+            Invoke-Checked 'npm ci (connections-ui)' { npm ci --no-audit --no-fund }
+            Invoke-Checked 'connections view build' { npm run build }
+        }
+        finally { Pop-Location }
+
+        # 2. Self-contained single-file exe into staging\server.
+        Invoke-Checked 'dotnet publish' {
+            dotnet publish "$repoRoot\MssqlMcp\MssqlMcp.csproj" -c Release -p:PublishProfile=ReleaseSingleFile -o $serverDir
+        }
+        if (-not (Test-Path -LiteralPath $exe)) { throw "Publish output $exe not found." }
+    }
 
     # 3. Smoke-start with an empty managed file in a temp folder: the server must answer MCP initialize.
     $smokeFile = Join-Path $staging 'smoke\connections.json'

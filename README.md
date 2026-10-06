@@ -64,7 +64,7 @@ The extension's own documentation covers the explorer, query windows and setting
 
 ### Option 2: Claude Desktop extension (.mcpb)
 
-1. Get `apoint-ms-sql-<version>.mcpb`. GitHub releases don't include it yet, so build it with `.\packaging\mcpb\build-mcpb.ps1` (see [Package the Claude Desktop extension](#package-the-claude-desktop-extension-mcpb)) or get it from your administrator.
+1. Download `apoint-ms-sql-<version>.mcpb` from the repository's [GitHub releases](https://github.com/A-Point-Systems-ltd/ms-sql-mcp/releases) (tag `ext-v<version>`, 1.0.10 and later), or build it with `.\packaging\mcpb\build-mcpb.ps1` (see [Package the Claude Desktop extension](#package-the-claude-desktop-extension-mcpb)).
 2. Install it: double-click the file, or open Claude Desktop **Settings > Extensions** and drag the file in. Then confirm the install.
 3. **Optional:** the extension's settings have one switch, **AI Insights layer** (on by default).
 4. In a chat, ask Claude to **"manage connections"**. A form opens in the chat:
@@ -637,11 +637,14 @@ The server `<Version>` in `MssqlMcp/MssqlMcp.csproj` and `version` in `vscode-ex
 
 ### Package the VS Code extension (VSIX)
 
-The **publish-extension** GitHub workflow builds and releases the extension:
+The **publish-extension** GitHub workflow builds and releases both packages:
 - publishes the exe and stages it into `vscode-extension/bin`;
 - runs the tests and packages `ms-sql-mcp-win32-x64-<version>.vsix`;
-- publishes it to the Visual Studio Marketplace and Open VSX (unless run as package-only);
-- creates the GitHub release `ext-v<version>` with the VSIX attached.
+- packs the same exe as `apoint-ms-sql-<version>.mcpb` (`build-mcpb.ps1 -ExePath`);
+- uploads both as build artifacts;
+- unless run as package-only (`dryRun`, the default):
+  - publishes the VSIX to the Visual Studio Marketplace and Open VSX;
+  - creates the GitHub release `ext-v<version>` with the VSIX and the `.mcpb` attached.
 
 To build a VSIX locally:
 
@@ -666,6 +669,7 @@ npm run build
 ```powershell
 .\packaging\mcpb\build-mcpb.ps1
 # Optional: -OutDir D:\out
+# Optional: -ExePath <published single-file MssqlMcp.exe> to pack that exe instead of building one
 ```
 
 The script:
