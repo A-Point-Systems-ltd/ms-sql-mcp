@@ -6,7 +6,7 @@ import { cursorMcpApi } from '../cursorMcp';
 import { EXE_NAME, resolveExe } from '../exe';
 import { Logger } from '../logger';
 import { registerClaudeCode, powershellCommand } from './claudeCode';
-import { claudeDesktopConfigPaths, cursorConfigPath } from './clientPaths';
+import { claudeDesktopConfigPaths, cursorConfigPath, managedConnectionsFilePath } from './clientPaths';
 import { atomicWriteFile, writeClientConfig } from './configWriter';
 import { externalClientEnv } from '../connections/serverEnv';
 import { buildConnectionsFile, needsSecretDecision, refreshConnectionsFileOnDisk } from './connectionsFile';
@@ -41,7 +41,7 @@ export async function writeConnectionsFile(context: vscode.ExtensionContext, sto
   return { file, envVars: result.envVars, skipped: result.skipped };
 }
 
-function buildEntry(exe: string, file: string): McpEntry {
+function buildEntry(exe: string, file: string, managedFile?: string): McpEntry {
   const cfg = vscode.workspace.getConfiguration('msSqlMcp');
   return {
     command: exe,
@@ -49,7 +49,7 @@ function buildEntry(exe: string, file: string): McpEntry {
     env: externalClientEnv(file, {
       insights: cfg.get<boolean>('insights', true),
       allowAdhocConnections: cfg.get<boolean>('allowAdhocConnections', false),
-    }),
+    }, managedFile),
   };
 }
 
@@ -139,9 +139,11 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
   for (const s of written.skipped) report.push(`Skipped '${s.name}': ${s.reason}.`);
   if (written.envVars.length) report.push(`Define these user environment variables before starting the client: ${written.envVars.join(', ')}.`);
 
-  const tryWrite = (label: string, p: string) => {
+  // Claude Desktop also gets the connection manager view (MCP Apps), backed by its own managed file.
+  const desktopEntry = buildEntry(exe, written.file, managedConnectionsFilePath());
+  const tryWrite = (label: string, p: string, e: McpEntry = entry) => {
     try {
-      const r = writeClientConfig(p, SERVER_KEY, entry, new Date(), LEGACY_SERVER_KEY);
+      const r = writeClientConfig(p, SERVER_KEY, e, new Date(), LEGACY_SERVER_KEY);
       if (r.removedLegacy) log.info('registerClients', `${label}: removed the legacy '${LEGACY_SERVER_KEY}' entry from ${r.path}`);
       report.push(`${label}: updated ${r.path}${r.backup ? ` (backup ${path.basename(r.backup)})` : ''}.${r.removedLegacy ? ` Removed the old '${LEGACY_SERVER_KEY}' entry.` : ''} Restart it to load the server.`);
     } catch (err) {
@@ -150,7 +152,10 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
     }
   };
   if (chosen.has('Cursor')) tryWrite('Cursor', cursorConfigPath());
-  if (chosen.has('Claude Desktop')) for (const p of claudeDesktopConfigPaths()) tryWrite('Claude Desktop', p);
+  if (chosen.has('Claude Desktop')) {
+    for (const p of claudeDesktopConfigPaths()) tryWrite('Claude Desktop', p, desktopEntry);
+    report.push('Claude Desktop: ask Claude to "manage connections" to add, edit or remove connections there.');
+  }
 
   let copyCmd: string | undefined;
   if (chosen.has('Claude Code')) {

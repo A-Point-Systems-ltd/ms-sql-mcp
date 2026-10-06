@@ -9,6 +9,14 @@ export function cursorConfigPath(home: string = os.homedir()): string {
 export interface PathEnv { APPDATA?: string; LOCALAPPDATA?: string }
 
 /**
+ * The connections the user manages from Claude Desktop's connection manager view (MSSQL_MANAGED_CONNECTIONS_FILE).
+ * Separate from the extension's connections.json, which the extension regenerates and the server never writes.
+ */
+export function managedConnectionsFilePath(env: PathEnv = process.env): string | undefined {
+  return env.APPDATA ? path.join(env.APPDATA, 'APoint-ms-sql', 'connections.json') : undefined;
+}
+
+/**
  * Claude Desktop config locations. Mirrors Get-ClaudeDesktopConfigPaths in install-accessmcp.ps1:
  * the documented %APPDATA% file, plus the virtualised copy of an MSIX install
  * (%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude) when that directory already exists.

@@ -55,10 +55,16 @@ export function explorerProcessEnv(connectionsJson: string, extra: Record<string
   };
 }
 
-/** Env for Cursor / Claude Desktop / Claude Code entries: only the connections file, other sources blanked. */
-export function externalClientEnv(connectionsFile: string, s: Pick<AgentServerSettings, 'insights' | 'allowAdhocConnections'>): Record<string, string> {
+/**
+ * Env for Cursor / Claude Desktop / Claude Code entries: only the connections file, other sources blanked.
+ * `managedConnectionsFile` (Claude Desktop only) enables the server's connection manager view on that file.
+ */
+export function externalClientEnv(
+  connectionsFile: string, s: Pick<AgentServerSettings, 'insights' | 'allowAdhocConnections'>, managedConnectionsFile?: string,
+): Record<string, string> {
   return {
     MSSQL_CONNECTIONS_FILE: connectionsFile,
+    ...(managedConnectionsFile ? { MSSQL_MANAGED_CONNECTIONS_FILE: managedConnectionsFile } : {}),
     CONNECTION_STRING: '',
     MSSQL_CONNECTIONS: '',
     USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
