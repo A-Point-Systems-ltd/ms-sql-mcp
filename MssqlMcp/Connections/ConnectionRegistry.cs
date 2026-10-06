@@ -202,6 +202,76 @@ public sealed class ConnectionRegistry
     }
 
     /// <summary>
+    /// Adds or replaces a <see cref="ConnectionSource.Managed"/> profile and opens it. Refuses (returns false) when the
+    /// name belongs to a profile of another source. An unchanged profile is a no-op; a changed one drops the old pool.
+    /// </summary>
+    public bool UpsertManaged(ConnectionProfile profile)
+    {
+        if (profile.Source != ConnectionSource.Managed)
+        {
+            throw new ArgumentException("Only managed profiles can be upserted.", nameof(profile));
+        }
+
+        ConnectionProfile? replaced = null;
+        lock (_gate)
+        {
+            if (_entries.TryGetValue(profile.Name, out var existing))
+            {
+                if (existing.Profile.Source != ConnectionSource.Managed)
+                {
+                    return false;
+                }
+
+                if (existing.Profile == profile)
+                {
+                    return true;
+                }
+
+                replaced = existing.Profile;
+            }
+
+            _entries[profile.Name] = (profile, true);
+        }
+
+        if (replaced is not null)
+        {
+            ClearPoolQuietly(replaced.ConnectionString);
+            RaiseChanged(replaced.Name, ConnectionChangeKind.Replaced);
+        }
+
+        return true;
+    }
+
+    /// <summary>Unregisters a <see cref="ConnectionSource.Managed"/> profile. No last-open guard: the user removed it.</summary>
+    public bool RemoveManaged(string name)
+    {
+        ConnectionProfile profile;
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(name, out var e) || e.Profile.Source != ConnectionSource.Managed)
+            {
+                return false;
+            }
+
+            profile = e.Profile;
+            _ = _entries.Remove(profile.Name);
+        }
+
+        ClearPoolQuietly(profile.ConnectionString);
+        RaiseChanged(profile.Name, ConnectionChangeKind.Removed);
+        return true;
+    }
+
+    /// <summary>Names of the registered <see cref="ConnectionSource.Managed"/> profiles.</summary>
+    public IReadOnlyList<string> ManagedNames()
+    {
+        lock (_gate)
+        {
+            return [.. _entries.Values.Where(e => e.Profile.Source == ConnectionSource.Managed).Select(e => e.Profile.Name)];
+        }
+    }
+
+    /// <summary>
     /// Closes a connection and drops its pooled sessions. Ad-hoc profiles are unregistered (the count drops).
     /// Has no last-open guard: for tests and internal use only; tools must call <see cref="TryClose"/>.
     /// </summary>
