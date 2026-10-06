@@ -135,6 +135,7 @@ This produces a self-contained `MssqlMcp.exe` (default output: `C:\Development\M
 | `CONNECTION_STRING` | One of the three connection variables | — | ADO.NET connection string for a single database (legacy mode, profile name `default`). Validated at startup; the process exits with code `1` if it cannot connect. |
 | `MSSQL_CONNECTIONS` | One of the three connection variables | — | JSON array of named connections. See [Multiple connections](#multiple-connections). |
 | `MSSQL_CONNECTIONS_FILE` | One of the three connection variables | — | Path to a file holding the same JSON array. |
+| `MSSQL_MANAGED_CONNECTIONS_FILE` | No | — | Path of a file the server itself reads **and writes**: the connections the user adds, edits and removes in the connection manager view (MCP Apps, e.g. Claude Desktop). It may not exist yet; with it set the server also starts with no connection. `%VAR%` is expanded. See [Connection manager](#8-connection-manager-claude-desktop-mcp-apps). |
 | `MSSQL_ALLOW_ADHOC_CONNECTIONS` | No | disabled | Set to `true` to let `open_connection` register new connections from a raw connection string at runtime. |
 | `MSSQL_ADHOC_ALLOW_INTEGRATED_AUTH` | No | disabled | Set to `true` to allow ad-hoc connections that use `Integrated Security` / `Trusted_Connection` or any `Authentication=Active Directory*` method (they send the server's own identity to the target host). |
 | `MSSQL_ADHOC_ALLOW_WRITE` | No | disabled | Set to `true` to allow `open_connection` with `readOnly=false`. Without it, writable ad-hoc connections are refused. |
@@ -412,6 +413,34 @@ with `C:\Secrets\mssql-connections.json`:
 ```
 
 Inline `MSSQL_CONNECTIONS` works too (see `sample_mcp.json`), but nesting JSON inside a JSON string needs careful escaping; prefer the file for anything beyond a demo. No tool ever returns a connection string, and the startup log masks passwords.
+
+### 8. Connection manager (Claude Desktop, MCP Apps)
+
+With `MSSQL_MANAGED_CONNECTIONS_FILE` set, the server offers a form in the chat where the user adds, edits, tests and removes connections. It is an [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) view (`ui://apoint-ms-sql/connections`), so it shows up in hosts that support MCP Apps, such as Claude Desktop. The VS Code extension's **Register clients** command sets the variable for Claude Desktop only, to `%APPDATA%\APoint-ms-sql\connections.json`.
+
+Ask Claude to "manage connections". It calls `manage_connections`, the only one of these tools the model can see, and the form opens. The form uses five app-only tools (`_meta.ui.visibility: ["app"]`) that the host hides from the model: `connections_ui_list`, `connections_ui_save`, `connections_ui_remove`, `connections_ui_test` and `connections_ui_list_databases`. The model therefore cannot add hosts, switch a connection to read-write, or see a password: only the person at the form can. Every request is validated again on the server.
+
+| | |
+|---|---|
+| **Fields** | The same as the VS Code form: name, authentication (Windows, SQL login, Entra interactive, Entra default, raw connection string without a password), server, database, user, password, encryption, trust server certificate, read-only (default on), AI insights. |
+| **Passwords** | SQL-login passwords are stored as `passwordProtected`, encrypted with Windows DPAPI for the current Windows user. They are never written in clear text and never returned. An entry another Windows account saved is listed with an error until the password is entered again. |
+| **Applies** | At once, with no restart: the server updates its connection list. Other server processes that share the file (another Claude window) reload it on their next tool call. |
+| **Other connections** | Connections from `MSSQL_CONNECTIONS_FILE` (the extension's file), `MSSQL_CONNECTIONS` or `CONNECTION_STRING` are listed read-only. A managed name that collides with one of them is reported, not registered. |
+| **File safety** | Changes are written under a cross-process lock, atomically, with the previous version kept as `<file>.bak`. A file that cannot be parsed is reported in the form and never overwritten; connections already loaded keep working. |
+
+The file is a JSON object, which the form is meant to edit:
+
+```json
+{
+  "version": 1,
+  "connections": [
+    { "name": "crm-dev", "auth": "windows", "server": "DC\\DEV", "database": "Crm", "encrypt": "optional", "trustServerCertificate": true, "readOnly": true, "insights": true },
+    { "name": "crm-prod", "auth": "sql", "server": "prod-sql", "database": "Crm", "user": "mcp_reader", "passwordProtected": "AQAAANCMnd8B...", "encrypt": "mandatory", "trustServerCertificate": false, "readOnly": true, "insights": true }
+  ]
+}
+```
+
+Rollback: remove `MSSQL_MANAGED_CONNECTIONS_FILE` from the client's config and restart the client. The file is then ignored; delete it if it is no longer needed.
 
 ## AI Insights layer
 

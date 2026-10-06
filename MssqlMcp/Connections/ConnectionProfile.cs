@@ -5,6 +5,9 @@ public enum ConnectionSource
     Legacy,
     Configured,
     Adhoc,
+
+    /// <summary>From MSSQL_MANAGED_CONNECTIONS_FILE: added, edited and removed at runtime by the connections view.</summary>
+    Managed,
 }
 
 /// <summary>A named SQL Server target. <see cref="ConnectionString"/> is secret: never return or log it unmasked.</summary>

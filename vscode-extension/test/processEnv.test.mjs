@@ -92,3 +92,10 @@ test('definition version ignores closed profiles and never depends on the passwo
   assert.notEqual(definitionVersion('1.0.0', [sql], settings, new Map()), pw1);
   assert.ok(!pw1.includes('one'));
 });
+
+test('external client env adds the managed connections file only when given', () => {
+  const env = externalClientEnv('C:/x/connections.json', settings, 'C:/u/APoint-ms-sql/connections.json');
+  assert.equal(env.MSSQL_MANAGED_CONNECTIONS_FILE, 'C:/u/APoint-ms-sql/connections.json');
+  assert.equal(env.MSSQL_CONNECTIONS_FILE, 'C:/x/connections.json');
+  assert.equal('MSSQL_MANAGED_CONNECTIONS_FILE' in externalClientEnv('C:/x/connections.json', settings), false);
+});

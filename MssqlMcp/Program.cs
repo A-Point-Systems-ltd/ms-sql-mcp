@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Console;
 using Mssql.McpServer.Connections;
+using Mssql.McpServer.Connections.Managed;
 using Mssql.McpServer.InsightsLayer;
 using System.Diagnostics;
 
@@ -79,9 +80,12 @@ internal class Program
         }
 
         var adhocAllowed = string.Equals(Environment.GetEnvironmentVariable("MSSQL_ALLOW_ADHOC_CONNECTIONS"), "true", StringComparison.OrdinalIgnoreCase);
-        if (profiles.Count == 0 && !adhocAllowed)
+
+        // Connections the user manages in the connections view; the file may not exist yet (first run).
+        var managedPath = ManagedConnectionTools.ConfiguredPath(Environment.GetEnvironmentVariable);
+        if (profiles.Count == 0 && !adhocAllowed && managedPath is null)
         {
-            const string errorMsg = "FATAL: no connection configured. Set CONNECTION_STRING, MSSQL_CONNECTIONS or MSSQL_CONNECTIONS_FILE (or MSSQL_ALLOW_ADHOC_CONNECTIONS=true).";
+            const string errorMsg = "FATAL: no connection configured. Set CONNECTION_STRING, MSSQL_CONNECTIONS, MSSQL_CONNECTIONS_FILE or MSSQL_MANAGED_CONNECTIONS_FILE (or MSSQL_ALLOW_ADHOC_CONNECTIONS=true).";
             Console.Error.WriteLine(errorMsg);
             log.Append(errorMsg);
             Environment.ExitCode = 1;
@@ -164,9 +168,32 @@ internal class Program
             log.Append("Script runner tool enabled (MSSQL_SCRIPT_RUNNER) - intended for the VS Code extension only.");
         }
 
+        if (managedPath is not null)
+        {
+            _ = builder.Services.AddSingleton(new ManagedConnectionStore(managedPath));
+            _ = builder.Services.AddSingleton<ISecretProtector, DpapiSecretProtector>();
+            _ = builder.Services.AddSingleton<ManagedConnectionService>();
+            _ = mcp.WithTools<ManagedConnectionTools>().WithResources<ManagedConnectionResources>();
+
+            // Other processes (other Claude windows) edit the same file: re-sync on any tool call when it changed.
+            _ = mcp.WithRequestFilters(filters => filters.AddCallToolFilter(next => async (context, cancellationToken) =>
+            {
+                context.Services!.GetRequiredService<ManagedConnectionService>().EnsureCurrent();
+                return await next(context, cancellationToken).ConfigureAwait(false);
+            }));
+            log.Append($"Managed connections enabled (MSSQL_MANAGED_CONNECTIONS_FILE): {managedPath}");
+        }
+
         log.Append("Building host...");
         var host = builder.Build();
         log.Append("Host built successfully, MCP server starting...");
+
+        // Before the server starts, so the server instructions' connection count includes the managed connections.
+        if (host.Services.GetService<ManagedConnectionService>() is { } managed)
+        {
+            managed.Sync();
+            log.Append($"Managed connections loaded; {registry.Count} connection(s) in total.");
+        }
 
         // Setup cancellation token for graceful shutdown (Ctrl+C or SIGTERM)
         using var cts = new CancellationTokenSource();

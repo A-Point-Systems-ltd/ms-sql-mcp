@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { mergeMcpServer } from '../out/register/jsonMerge.js';
 import { backupPath, normalizeName, passwordEnvVar, timestamp } from '../out/register/naming.js';
 import { writeClientConfig } from '../out/register/configWriter.js';
-import { claudeDesktopConfigPaths, cursorConfigPath } from '../out/register/clientPaths.js';
+import { claudeDesktopConfigPaths, cursorConfigPath, managedConnectionsFilePath } from '../out/register/clientPaths.js';
 import { copyStableExe } from '../out/register/stableExe.js';
 
 const entry = { command: 'C:\\x\\MssqlMcp.exe', args: [], env: { MSSQL_CONNECTIONS_FILE: 'C:\\x\\connections.json' } };
@@ -160,4 +160,9 @@ test('copyStableExe recopies a same-size file with a different mtime', () => {
   const m = fs.statSync(t).mtimeMs;
   copyStableExe(src, dir, '2.0.0', 'MssqlMcp.exe');
   assert.equal(fs.statSync(t).mtimeMs, m);
+});
+
+test('managed connections file lives under %APPDATA%/APoint-ms-sql', () => {
+  assert.equal(managedConnectionsFilePath({ APPDATA: 'A' }), path.join('A', 'APoint-ms-sql', 'connections.json'));
+  assert.equal(managedConnectionsFilePath({}), undefined);
 });

@@ -52,6 +52,13 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Build connections view (embedded in the exe)
+        working-directory: apps/connections-ui
+        run: |
+          npm ci
+          npm test
+          npm run build
+
       - name: Server tests
         working-directory: .
         run: dotnet test MssqlMcp.sln -c Release

@@ -35,6 +35,8 @@
   
   <ItemGroup>
     <EmbeddedResource Include="InsightsLayer\SqlScripts\*.sql" />
+    <!-- MCP Apps views, built by apps/connections-ui (npm run build). -->
+    <EmbeddedResource Include="Apps\*.html" />
   </ItemGroup>
 
   <ItemGroup>
@@ -56,6 +58,7 @@
     <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" Version="181.37.1" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.117.0" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
 
 </Project>

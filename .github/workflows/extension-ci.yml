@@ -1,10 +1,10 @@
 name: extension-ci
 on:
   pull_request:
-    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
+    paths: ['vscode-extension/**', 'apps/connections-ui/**', 'MssqlMcp/Apps/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
   push:
     branches: [main]
-    paths: ['vscode-extension/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
+    paths: ['vscode-extension/**', 'apps/connections-ui/**', 'MssqlMcp/Apps/**', 'MssqlMcp/MssqlMcp.csproj', '.github/workflows/extension-ci.yml']
 permissions:
   contents: read
 jobs:
@@ -18,3 +18,18 @@ jobs:
       - run: npm ci
       - run: npm run check:version
       - run: npm run test:unit
+  connections-ui:
+    runs-on: windows-latest
+    defaults: { run: { working-directory: apps/connections-ui } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      # The view imports labels from the extension's form model; no extension install is needed for that.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Committed view is up to date
+        working-directory: .
+        run: git diff --exit-code -- MssqlMcp/Apps/connections.html

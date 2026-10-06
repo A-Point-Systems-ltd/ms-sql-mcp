@@ -1,0 +1,19 @@
+{
+  "name": "apoint-ms-sql-connections-ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "MCP Apps view for managing APoint-ms-sql connections from Claude Desktop. Built into a single HTML file embedded in MssqlMcp.exe.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "2.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.5.0"
+  }
+}

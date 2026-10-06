@@ -29,7 +29,18 @@ $staging = Join-Path ([IO.Path]::GetTempPath()) ("MssqlMcp-publish-" + [Guid]::N
 function Get-Sha256([string]$path) { (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash }
 
 try {
-    # 1. Build into staging (never straight into the live folder, so a failed build cannot break it).
+    # 1. Rebuild the embedded MCP Apps view (MssqlMcp/Apps/connections.html), then build into staging
+    #    (never straight into the live folder, so a failed build cannot break it).
+    Write-Host "Building the connections view ..." -ForegroundColor Cyan
+    Push-Location "$repoRoot\apps\connections-ui"
+    try {
+        npm ci --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed in apps/connections-ui (exit $LASTEXITCODE)." }
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw "connections view build failed (exit $LASTEXITCODE)." }
+    }
+    finally { Pop-Location }
+
     Write-Host "Building into $staging ..." -ForegroundColor Cyan
     dotnet publish "$repoRoot\MssqlMcp\MssqlMcp.csproj" -c Release -p:PublishProfile=ReleaseSingleFile -o $staging @PublishArgs
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)." }

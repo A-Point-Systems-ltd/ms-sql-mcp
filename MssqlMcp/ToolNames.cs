@@ -33,6 +33,14 @@ public static class ToolNames
     public const string ListConnections = "list_connections";
     public const string OpenConnection = "open_connection";
     public const string CloseConnection = "close_connection";
+    // Connections view (MCP Apps): registered only when MSSQL_MANAGED_CONNECTIONS_FILE is set. Only manage_connections is
+    // visible to the model; the connections_ui_* tools are app-only (called by the view, hidden from the model).
+    public const string ManageConnections = "manage_connections";
+    public const string ConnectionsUiList = "connections_ui_list";
+    public const string ConnectionsUiSave = "connections_ui_save";
+    public const string ConnectionsUiRemove = "connections_ui_remove";
+    public const string ConnectionsUiTest = "connections_ui_test";
+    public const string ConnectionsUiListDatabases = "connections_ui_list_databases";
     // Extension-only: registered only when MSSQL_SCRIPT_RUNNER=true, never part of the agent tool set.
     public const string RunScript = "run_script";
     public const string DdlHistory = "ddl_history";
