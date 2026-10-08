@@ -23,7 +23,10 @@ internal static class TestConnectionString
 
         try
         {
-            using var conn = new SqlConnection($"{LocalDbServer};Initial Catalog=master");
+            // The first connection starts the LocalDB instance, which on a cold CI runner can take longer than the
+            // default 15 s. A pool timeout here is an InvalidOperationException, not a SqlException, and a failed
+            // static initializer fails every test that touches this class, so allow it time and keep it out of the pool.
+            using var conn = new SqlConnection($"{LocalDbServer};Initial Catalog=master;Connect Timeout=60;Pooling=false");
             conn.Open();
             using var cmd = new SqlCommand($"IF DB_ID(N'{TestDatabase}') IS NULL CREATE DATABASE [{TestDatabase}];", conn);
             cmd.ExecuteNonQuery();
