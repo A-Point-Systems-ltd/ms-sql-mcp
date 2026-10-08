@@ -1,13 +1,26 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
-- **Behaviour change (wire format):** `read_data`, `list_objects`, `list_insights` and `get_insight_history` return rows as TOON (Token-Oriented Object Notation v4) by default, to cut LLM tokens. New parameter `toon` (default `true`); `toon=false` returns the previous JSON. Only a successful result whose `data` is 2+ uniform rows (or 2+ plain values) is converted; errors, single rows and nested shapes stay JSON. Converted in one place after the tool runs (`ToonResultFilter`), from the JSON the SDK produced, so values are identical and numbers exact. The encoder is a port of the chatbot API's TOON encoder, reading `JsonElement` directly, with a real depth guard and no double conversion. The server instructions explain the format. **Clients that parse these results as JSON must pass `toon=false`.** Rollback without a rebuild: set `MSSQL_TOON=false` (JSON by default again; the server instructions follow it).
+### BREAKING
+- `read_data`, `list_objects`, `list_insights` and `get_insight_history` return rows as TOON (Token-Oriented Object Notation v4) by default, to cut LLM tokens. New parameter `toon` (default `true`); `toon=false` returns the previous JSON. Only a successful result whose `data` is 2+ uniform rows (or 2+ plain values) is converted; errors, single rows and nested shapes stay JSON. Converted in one place after the tool runs (`ToonResultFilter`), from the JSON the SDK produced, so values are identical and numbers exact. The encoder is a port of the chatbot API's TOON encoder, reading `JsonElement` directly, with a real depth guard and no double conversion. The server instructions explain the format. **Clients that parse these results as JSON must pass `toon=false`.** Rollback without a rebuild: set `MSSQL_TOON=false` (JSON by default again; the server instructions follow it).
+
+  **Migrating:** a client that parses `read_data`, `list_objects`, `list_insights` or `get_insight_history` results as JSON must pass `toon=false` on those calls, or the operator sets `MSSQL_TOON=false` (in the Claude Desktop extension: turn off **Compact row results (TOON)**). The change only shows with 2+ rows, so test with multi-row results. The VS Code extension already passes `toon=false` for its own calls. The startup log states the active default.
+
+### Changes
 - Connection manager (Claude Desktop): **List databases** lists every database with its state, labelling the ones that are not online (`Sales (offline)`); it used to hide them. **Test connection** reports when the database is not ONLINE, and a new app-only tool `connections_ui_bring_online` lets the user bring an OFFLINE database online after a two-click confirmation (`ALTER DATABASE … SET ONLINE` through `master`, server-side `QUOTENAME`, 300 s timeout, OFFLINE only). Saving a new connection to an OFFLINE database offers **Bring online & save** or **Save anyway**. Allowed on read-only connections (the flag limits the model); the model cannot call it.
 - The connection view's app-only tools (`connections_ui_*`) are listed and callable only for clients that advertise the MCP Apps extension (`io.modelcontextprotocol/ui`) at initialize. Before, hiding them from the model relied on the host alone, so a client without MCP Apps support started with `MSSQL_MANAGED_CONNECTIONS_FILE` showed `connections_ui_save` (and now `connections_ui_bring_online`) to its model. Other clients still get `manage_connections`. `MSSQL_APPS_REQUIRE_UI_CAPABILITY=false` disables the check; refusals are logged at Warning.
 - `probe_test` opens the form's database once and classifies a failure by SQL error number (4060/942/922/927), so the connection form's offline hint works whatever the server's message language; the state is looked up through master only for those errors (a wrong password is never retried).
 - Connection view probes (Test / List databases / Bring online) no longer use connection pooling: the pool replayed a failed open's error for a few seconds, so Test right after Bring online still failed.
 - New extension-only tools `probe_test`, `probe_list_databases`, `probe_database_state` and `probe_bring_online`, registered and routed only when `MSSQL_PROBE_TOOLS=true` (the VS Code connection form's probe process). The agent tool count stays 23. The `.mcpb` manifest blanks `MSSQL_PROBE_TOOLS`.
+- Listing databases (both forms) connects to the typed database first and falls back to master only when that database cannot be opened, so contained-database users (who cannot log in to master) can list; a wrong password is still not retried.
+- `ALTER DATABASE … SET ONLINE` is no longer cancelled when the calling host gives up on the request (that would interrupt recovery); the 300 s command timeout still caps it.
+- The connection-view gate logs once per session when it hides the view's tools, naming the client and what it advertised.
+- Claude Desktop extension (`.mcpb`): new settings **Compact row results (TOON)** (`MSSQL_TOON`) and **Connection manager: require MCP Apps support** (`MSSQL_APPS_REQUIRE_UI_CAPABILITY`), both on by default.
+- TOON conversion reads the original result in place (no second copy of the rows) and reads each row's cells in one pass.
+
+## Before 1.1.0
+
 
 - New Claude Desktop extension bundle (`.mcpb`), built by `packaging/mcpb/build-mcpb.ps1` (manifest v0.3, `@anthropic-ai/mcpb` 2.1.2). It holds the self-contained exe with the connection manager on, the managed file at `%APPDATA%\APoint-ms-sql\connections.json`, and an "AI Insights layer" setting. The script smoke-starts the exe before packing. See README, "Claude Desktop extension (.mcpb)".
 
