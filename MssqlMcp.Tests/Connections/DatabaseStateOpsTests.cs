@@ -5,6 +5,7 @@ using Mssql.McpServer.Connections;
 namespace MssqlMcp.Tests.Connections;
 
 /// <summary>Against throwaway LocalDB databases; skipped when LocalDB is not available.</summary>
+[Collection(DatabaseStateCollection.Name)]
 public sealed class DatabaseStateOpsTests
 {
     private const string Server = "Server=(localdb)\\MSSQLLocalDB;Integrated Security=true;TrustServerCertificate=True";

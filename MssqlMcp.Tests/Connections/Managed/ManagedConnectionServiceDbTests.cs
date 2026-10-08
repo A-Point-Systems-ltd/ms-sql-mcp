@@ -9,6 +9,7 @@ namespace MssqlMcp.Tests.Connections.Managed;
 /// The connections view's Test / List databases / Bring online against throwaway LocalDB databases (skipped without
 /// LocalDB). Every database taken offline here is brought back in a finally block.
 /// </summary>
+[Collection(DatabaseStateCollection.Name)]
 public sealed class ManagedConnectionServiceDbTests : IDisposable
 {
     private const string LocalDb = "(localdb)\\MSSQLLocalDB";
