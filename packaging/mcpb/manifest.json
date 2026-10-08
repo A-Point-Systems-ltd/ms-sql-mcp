@@ -24,6 +24,7 @@
         "CONNECTION_STRING": "",
         "MSSQL_ALLOW_ADHOC_CONNECTIONS": "false",
         "MSSQL_SCRIPT_RUNNER": "",
+        "MSSQL_PROBE_TOOLS": "",
         "USE_INSIGHTS_LAYER": "${user_config.insights}"
       }
     }
