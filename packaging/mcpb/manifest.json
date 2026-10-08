@@ -24,7 +24,10 @@
         "CONNECTION_STRING": "",
         "MSSQL_ALLOW_ADHOC_CONNECTIONS": "false",
         "MSSQL_SCRIPT_RUNNER": "",
-        "USE_INSIGHTS_LAYER": "${user_config.insights}"
+        "MSSQL_PROBE_TOOLS": "",
+        "USE_INSIGHTS_LAYER": "${user_config.insights}",
+        "MSSQL_TOON": "${user_config.toon_rows}",
+        "MSSQL_APPS_REQUIRE_UI_CAPABILITY": "${user_config.require_apps_capability}"
       }
     }
   },
@@ -33,6 +36,20 @@
       "type": "boolean",
       "title": "AI Insights layer",
       "description": "Cache object summaries in the AIInsights schema of each database (install it per database with install_insights_layer). Turn off to never read or write AIInsights.",
+      "default": true,
+      "required": false
+    },
+    "toon_rows": {
+      "type": "boolean",
+      "title": "Compact row results (TOON)",
+      "description": "Return query and list results to Claude as TOON, which uses fewer tokens than JSON. Turn off to get JSON by default (Claude can still ask for TOON per call).",
+      "default": true,
+      "required": false
+    },
+    "require_apps_capability": {
+      "type": "boolean",
+      "title": "Connection manager: require MCP Apps support",
+      "description": "Only let the connection manager form's own tools run for hosts that announce MCP Apps support, so a model can never call them directly. Turn off only if the connection manager opens but its buttons fail (see the server log).",
       "default": true,
       "required": false
     }

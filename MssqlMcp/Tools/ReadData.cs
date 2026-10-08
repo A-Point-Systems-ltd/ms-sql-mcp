@@ -19,10 +19,11 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Executes a single read-only SELECT query and returns rows as column-name objects. Use this tool for ALL queries that return result sets - user tables, sys.*, INFORMATION_SCHEMA.*, DMVs, and WITH ... SELECT. " + ToolNames.ExecuteSql + " rejects SELECT; do not use it for reads. At most maxRows rows are returned; when more exist the response has truncated=true - narrow the query (TOP/WHERE) instead of raising the cap. SQL parameters are not supported - build literals yourself and never interpolate untrusted input. For built-in schema detail prefer " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " when applicable." + MultiConnectionNote)]
+        Description("Executes a single read-only SELECT query and returns its rows (compact TOON by default, see the toon parameter). Use this tool for ALL queries that return result sets - user tables, sys.*, INFORMATION_SCHEMA.*, DMVs, and WITH ... SELECT. " + ToolNames.ExecuteSql + " rejects SELECT; do not use it for reads. At most maxRows rows are returned; when more exist the response has truncated true (and maxRows) - narrow the query (TOP/WHERE) instead of raising the cap. SQL parameters are not supported - build literals yourself and never interpolate untrusted input. For built-in schema detail prefer " + ToolNames.DescribeTable + "/" + ToolNames.DescribeView + "/" + ToolNames.GetObject + " when applicable." + MultiConnectionNote)]
     public async Task<DbOperationResult> ReadData(
         [Description("A single read-only T-SQL SELECT (or WITH ... SELECT). Includes queries against sys.* and INFORMATION_SCHEMA. DDL/DML, SELECT ... INTO, OPENQUERY/OPENROWSET and linked-server names are not allowed.")] string sql,
         [Description("Maximum rows to return (default 500, clamped to 1..10000).")] int maxRows = ReadDataDefaultMaxRows,
+        [Description(ToonParamDescription)] bool? toon = null,
         [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {

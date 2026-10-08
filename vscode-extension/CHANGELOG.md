@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
+
+- The bundled server (1.1.0) returns TOON rows by default to agents; see the server changelog's BREAKING note. The extension's own views are unaffected (they ask for JSON).
+- Connection form: **List databases** shows every database, labelling the ones that are not online (`Sales (offline)`), and works with an empty Database field and for raw connection strings (it lists through the typed database, falling back to `master` only when that database cannot be opened, so contained-database users can list). When the database is OFFLINE (from the list, a failed **Test connection**, or a check when saving a new connection) the form offers **Bring online**, confirmed in a modal dialog, which runs `ALTER DATABASE … SET ONLINE` through the probe process's new `probe_*` tools (`MSSQL_PROBE_TOOLS=true`, set for that process only and blanked for every agent-facing server). Saving a new connection to an OFFLINE database asks **Bring online & save** or **Save anyway**. **Test connection** uses the server's `probe_test`, which recognises an unavailable database by SQL error number, so the offline hint also works on servers with non-English messages (an older server exe falls back to matching the English text).
+- The extension asks the server's TOON-capable tools (`read_data`, `list_objects`, `list_insights`, `get_insight_history`) for JSON on every call it makes (`toon=false`), so the explorer, Data View and history keep working with the server's new TOON default.
 
 - **Register with Cursor / Claude...** now sets `MSSQL_MANAGED_CONNECTIONS_FILE=%APPDATA%\APoint-ms-sql\connections.json` on the Claude Desktop entry only, which turns on the server's connection manager form (MCP Apps) there. Cursor and Claude Code entries are unchanged. Re-register Claude Desktop to get it.
 

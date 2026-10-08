@@ -17,7 +17,10 @@ public sealed record ManagedConnectionList(
 
 public sealed record ManagedSaveResult(bool Success, IReadOnlyDictionary<string, string> Errors, string? Message = null);
 
-public sealed record ManagedProbeResult(bool Success, string Message, IReadOnlyList<string>? Databases = null);
+/// <param name="Databases">List databases: every database of the server with its state.</param>
+/// <param name="DatabaseState">Test: the form's database state when the connection failed and it is not ONLINE (e.g. OFFLINE).</param>
+public sealed record ManagedProbeResult(
+    bool Success, string Message, IReadOnlyList<Connections.DatabaseState>? Databases = null, string? DatabaseState = null);
 
 /// <summary>
 /// Keeps the <see cref="ConnectionRegistry"/>'s <see cref="ConnectionSource.Managed"/> profiles equal to the managed
@@ -221,17 +224,76 @@ public sealed class ManagedConnectionService(
         return new ManagedSaveResult(true, new Dictionary<string, string>());
     }
 
-    /// <summary>Connects with the form's values without saving. An empty password on an edit uses the saved one.</summary>
-    public Task<ManagedProbeResult> TestAsync(ManagedConnectionInput input, bool isNew, CancellationToken ct) =>
-        ProbeAsync(input, isNew, listDatabases: false, ct);
+    /// <summary>
+    /// Connects with the form's values without saving. An empty password on an edit uses the saved one. When the
+    /// connection fails because the form's database is not ONLINE, the result carries that state so the view can
+    /// offer to bring it online.
+    /// </summary>
+    public async Task<ManagedProbeResult> TestAsync(ManagedConnectionInput input, bool isNew, CancellationToken ct)
+    {
+        var (result, databaseUnavailable) = await ProbeCoreAsync(input, isNew, listDatabases: false, ct).ConfigureAwait(false);
+        // Only a "cannot open database" failure is worth a state lookup; after a failed login (wrong password) a second
+        // login to master would just count twice toward a lockout policy.
+        if (result.Success || !databaseUnavailable || ProbeConnectionString(input, isNew, out _) is not { } cs)
+        {
+            return result;
+        }
 
-    /// <summary>Lists the online databases of the form's server (connects to master).</summary>
+        // From the built string, so a raw connection string's Initial Catalog counts too.
+        var database = new SqlConnectionStringBuilder(cs).InitialCatalog;
+        if (string.IsNullOrWhiteSpace(database))
+        {
+            return result;
+        }
+
+        try
+        {
+            var state = await DatabaseStateOps.GetStateAsync(cs, database, ct).ConfigureAwait(false);
+            return state is not null && !string.Equals(state, Connections.DatabaseState.Online, StringComparison.OrdinalIgnoreCase)
+                ? result with { Message = $"Database '{database}' is {state}. {result.Message}", DatabaseState = state }
+                : result;
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
+        {
+            return result; // master is unreachable too: the original error says why
+        }
+    }
+
+    /// <summary>Lists every database of the form's server with its state (through the typed database, else master).</summary>
     public Task<ManagedProbeResult> ListDatabasesAsync(ManagedConnectionInput input, bool isNew, CancellationToken ct) =>
         ProbeAsync(input, isNew, listDatabases: true, ct);
 
-    private async Task<ManagedProbeResult> ProbeAsync(ManagedConnectionInput input, bool isNew, bool listDatabases, CancellationToken ct)
+    /// <summary>
+    /// ALTER DATABASE ... SET ONLINE for the form's database when it is OFFLINE. Human-initiated only (app-only tool,
+    /// after an explicit confirmation in the view); allowed on read-only connections, whose flag restricts the model.
+    /// </summary>
+    public async Task<ManagedProbeResult> BringOnlineAsync(ManagedConnectionInput input, bool isNew, CancellationToken ct)
     {
-        // The name is irrelevant to a probe; the database is not needed to list databases.
+        if (ProbeConnectionString(input, isNew, out var error) is not { } cs)
+        {
+            return new ManagedProbeResult(false, error!);
+        }
+
+        try
+        {
+            var database = new SqlConnectionStringBuilder(cs).InitialCatalog;
+            var r = await DatabaseStateOps.BringOnlineAsync(cs, database, logger, ct).ConfigureAwait(false);
+            return new ManagedProbeResult(r.Success, r.Message, DatabaseState: r.State);
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
+        {
+            return new ManagedProbeResult(false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// The probe connection string for the form's values (password from the form or, on an edit, the saved one),
+    /// or null with the validation error.
+    /// </summary>
+    private string? ProbeConnectionString(ManagedConnectionInput input, bool isNew, out string? error, bool listDatabases = false)
+    {
+        // The name is irrelevant to a probe. Listing needs no database (empty = master); a typed one is tried first by
+        // DatabaseStateOps.ListAsync, so contained-database users who cannot log in to master can still list.
         var probeInput = input with { Name = "probe", Database = listDatabases && string.IsNullOrWhiteSpace(input.Database) ? "master" : input.Database };
         string? savedPassword = null;
         if (!isNew && input.Auth == ManagedAuth.Sql && string.IsNullOrEmpty(input.Password))
@@ -243,44 +305,59 @@ public sealed class ManagedConnectionService(
         var errors = ManagedConnectionRules.Validate(probeInput, hasSavedPassword: savedPassword is not null);
         if (errors.Count > 0)
         {
-            return new ManagedProbeResult(false, string.Join(" ", errors.Values));
+            error = string.Join(" ", errors.Values);
+            return null;
         }
 
+        error = null;
         var entry = ManagedConnectionRules.ToEntry(probeInput, passwordProtected: null);
-        var builder = new SqlConnectionStringBuilder(ManagedConnectionRules.BuildConnectionString(
-            entry, string.IsNullOrEmpty(input.Password) ? savedPassword : input.Password, listDatabases ? "master" : null))
+        return new SqlConnectionStringBuilder(ManagedConnectionRules.BuildConnectionString(
+            entry, string.IsNullOrEmpty(input.Password) ? savedPassword : input.Password, null))
         {
             ConnectTimeout = entry.Auth == ManagedAuth.EntraInteractive ? InteractiveProbeTimeoutSeconds : ProbeTimeoutSeconds,
-        };
+            // One-off connections. A pool would also replay a failed open's error for seconds (blocking period), so
+            // Test right after Bring online would still report the database as unavailable.
+            Pooling = false,
+        }.ConnectionString;
+    }
 
+    private async Task<ManagedProbeResult> ProbeAsync(ManagedConnectionInput input, bool isNew, bool listDatabases, CancellationToken ct) =>
+        (await ProbeCoreAsync(input, isNew, listDatabases, ct).ConfigureAwait(false)).Result;
+
+    /// <returns>The result, and whether it failed because the database itself could not be opened (offline, restoring...).</returns>
+    private async Task<(ManagedProbeResult Result, bool DatabaseUnavailable)> ProbeCoreAsync(
+        ManagedConnectionInput input, bool isNew, bool listDatabases, CancellationToken ct)
+    {
+        if (ProbeConnectionString(input, isNew, out var error, listDatabases) is not { } connectionString)
+        {
+            return (new ManagedProbeResult(false, error!), false);
+        }
+
+        var builder = new SqlConnectionStringBuilder(connectionString);
         try
         {
-            await using var conn = new SqlConnection(builder.ConnectionString);
-            await conn.OpenAsync(ct).ConfigureAwait(false);
             if (listDatabases)
             {
-                await using var cmd = new SqlCommand("SELECT name FROM sys.databases WHERE state = 0 ORDER BY name", conn);
-                await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-                var names = new List<string>();
-                while (await reader.ReadAsync(ct).ConfigureAwait(false))
-                {
-                    names.Add(reader.GetString(0));
-                }
-
-                return new ManagedProbeResult(true, $"{names.Count} databases.", names);
+                var databases = await DatabaseStateOps.ListAsync(connectionString, ct).ConfigureAwait(false);
+                var notOnline = databases.Count(d => !string.Equals(d.State, Connections.DatabaseState.Online, StringComparison.OrdinalIgnoreCase));
+                return (new ManagedProbeResult(
+                    true, notOnline > 0 ? $"{databases.Count} databases ({notOnline} not online)." : $"{databases.Count} databases.", databases), false);
             }
+
+            await using var conn = new SqlConnection(connectionString);
+            await conn.OpenAsync(ct).ConfigureAwait(false);
 
             await using var info = new SqlCommand("SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), DB_NAME()", conn);
             await using var r = await info.ExecuteReaderAsync(ct).ConfigureAwait(false);
             _ = await r.ReadAsync(ct).ConfigureAwait(false);
-            return new ManagedProbeResult(true, $"Connected to {conn.DataSource} / {r.GetString(1)} (SQL Server {r.GetString(0)}).");
+            return (new ManagedProbeResult(true, $"Connected to {conn.DataSource} / {r.GetString(1)} (SQL Server {r.GetString(0)})."), false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Human-initiated from the view (app-only tool), so the full reason is shown, unlike ad-hoc probes.
             logger.LogWarning("Managed connection test failed ({ConnectionString}): {Error}",
                 ConnectionStringMasker.Mask(builder.ConnectionString), ex.Message);
-            return new ManagedProbeResult(false, ex.Message);
+            return (new ManagedProbeResult(false, ex.Message), ex is SqlException sql && DatabaseStateOps.IsDatabaseUnavailable(sql));
         }
     }
 

@@ -69,12 +69,22 @@ public sealed class ManagedConnectionTools(ManagedConnectionService service)
 
     [McpServerTool(Name = ToolNames.ConnectionsUiListDatabases, Title = "Connections view: list databases", ReadOnly = true, Idempotent = true, Destructive = false, OpenWorld = true),
         McpMeta("ui", JsonValue = AppOnlyMeta),
-        Description("Connections view only: lists the online databases of the form's server.")]
+        Description("Connections view only: lists every database of the form's server with its state (ONLINE, OFFLINE, ...).")]
     public Task<ManagedProbeResult> ListDatabases(
         [Description("The form values.")] ManagedConnectionInput connection,
         [Description("true when the form adds a connection; false when editing.")] bool isNew,
         CancellationToken cancellationToken) =>
         service.ListDatabasesAsync(connection, isNew, cancellationToken);
+
+    // App-only and outside WriteTools on purpose: the person confirms it in the view; the model can never call it.
+    [McpServerTool(Name = ToolNames.ConnectionsUiBringOnline, Title = "Connections view: bring database online", ReadOnly = false, Idempotent = true, Destructive = false, OpenWorld = true),
+        McpMeta("ui", JsonValue = AppOnlyMeta),
+        Description("Connections view only: ALTER DATABASE ... SET ONLINE for the form's database, only when it is OFFLINE, after the user confirmed it.")]
+    public Task<ManagedProbeResult> BringOnline(
+        [Description("The form values; database is the one to bring online.")] ManagedConnectionInput connection,
+        [Description("true when the form adds a connection; false when editing.")] bool isNew,
+        CancellationToken cancellationToken) =>
+        service.BringOnlineAsync(connection, isNew, cancellationToken);
 
     private static ManagedSaveResult Guard(Func<ManagedSaveResult> action)
     {

@@ -74,6 +74,23 @@ public sealed class ConnectionRoutingFilterTests
     }
 
     [Fact]
+    public void Probe_tools_are_routed_only_when_enabled_and_never_count_as_write_tools()
+    {
+        foreach (var tool in ToolNames.ProbeOnlyTools)
+        {
+            Assert.False(ConnectionRoutingFilter.IsRouted(tool), tool);
+            Assert.False(ConnectionRoutingFilter.IsRouted(tool, scriptRunnerEnabled: true), tool);
+            Assert.True(ConnectionRoutingFilter.IsRouted(tool, probeToolsEnabled: true), tool);
+            Assert.DoesNotContain(tool, ToolNames.All);
+            Assert.DoesNotContain(tool, ToolNames.WriteTools);
+        }
+
+        // A read-only probe profile may still bring a database online: the form asked the person, not the model.
+        Assert.Null(ConnectionRoutingFilter.Route(Multi(), ToolNames.ProbeBringOnline, "ro", out var p));
+        Assert.NotNull(p);
+    }
+
+    [Fact]
     public void Every_non_management_tool_is_routed() =>
         Assert.All(ToolNames.All.Where(t => !ToolNames.ConnectionManagementTools.Contains(t)), t => Assert.True(ConnectionRoutingFilter.IsRouted(t), t));
 

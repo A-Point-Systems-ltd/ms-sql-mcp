@@ -105,6 +105,8 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
   .result.ok{border-color:var(--vscode-testing-iconPassed,var(--vscode-panel-border))}
   .result.fail{border-color:var(--vscode-errorForeground);color:var(--vscode-errorForeground)}
   .result:empty{display:none}
+  .dbstate{margin-top:6px;padding:6px 8px;border:1px solid var(--vscode-inputValidation-warningBorder,var(--vscode-panel-border));
+           border-radius:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -114,7 +116,8 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
     edit ? 'The name cannot be changed. Remove and re-add the connection to rename it.' : 'Letters, digits, "-", "_" and ".". Agents use it to pick the connection.')}
   ${plain('auth', 'Authentication', `<select id="auth">${authOptions}</select>`)}
   ${field('server', 'Server', `<input type="text" id="server" value="${e(v.server)}" spellcheck="false">`, 'host, host\\instance or host,port')}
-  ${field('database', 'Database', `<div class="row"><input type="text" id="database" list="dblist" value="${e(v.database)}" spellcheck="false"><button type="button" id="listDatabases">List databases</button></div><datalist id="dblist"></datalist>`)}
+  ${field('database', 'Database', `<div class="row"><input type="text" id="database" list="dblist" value="${e(v.database)}" spellcheck="false"><button type="button" id="listDatabases">List databases</button></div><datalist id="dblist"></datalist>
+    <div class="dbstate hidden" id="dbState" role="status"><span id="dbStateText"></span> <button type="button" id="bringOnline" class="hidden">Bring online</button></div>`)}
   ${field('user', 'User', `<input type="text" id="user" value="${e(v.user)}" spellcheck="false">`)}
   ${field('password', 'Password', `<input type="password" id="password" autocomplete="new-password" placeholder="${e(passwordPlaceholder)}">`, 'Kept in VS Code secure storage, never in the connection list.')}
   ${field('rawConnectionString', 'Connection string', `<textarea id="rawConnectionString" spellcheck="false">${e(v.rawConnectionString)}</textarea>`, 'Must not contain a password; it is stored unencrypted.')}
@@ -143,7 +146,9 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
     var vscode = acquireVsCodeApi();
     function el(id) { return document.getElementById(id); }
     function each(list, fn) { Array.prototype.forEach.call(list, fn); }
-    var buttons = ['save', 'test', 'cancel', 'listDatabases'];
+    var buttons = ['save', 'test', 'cancel', 'listDatabases', 'bringOnline'];
+    /** Lower-cased database name -> state_desc, from List databases / Test. */
+    var states = {};
 
     function values() {
       return {
@@ -178,7 +183,28 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
       vscode.postMessage({ type: type, values: values() });
     }
 
+    /** Shows the state note under Database when the typed database is known not to be ONLINE. */
+    function applyDbState() {
+      var name = el('database').value.trim();
+      var state = states[name.toLowerCase()];
+      var show = !!name && !!state && state !== 'ONLINE';
+      el('dbState').classList.toggle('hidden', !show);
+      el('bringOnline').classList.toggle('hidden', !show || state !== 'OFFLINE');
+      el('dbStateText').textContent = show
+        ? (state === 'OFFLINE'
+          ? 'Database ' + name + ' is OFFLINE. You can bring it online (you will be asked to confirm).'
+          : 'Database ' + name + ' is ' + state + '. Only an OFFLINE database can be brought online here.')
+        : '';
+    }
+
     el('auth').addEventListener('change', applyAuth);
+    el('database').addEventListener('input', applyDbState);
+    // States belong to one server and login: forget them when either changes.
+    ['auth', 'server', 'user', 'rawConnectionString'].forEach(function (id) {
+      el(id).addEventListener('input', function () { states = {}; applyDbState(); });
+      el(id).addEventListener('change', function () { states = {}; applyDbState(); });
+    });
+    el('bringOnline').addEventListener('click', function () { send('bringOnline'); });
     el('encrypt').addEventListener('change', applyEncryption);
     function applyColor() {
       var c = el('color').value;
@@ -206,12 +232,20 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
       } else if (m.type === 'databases') {
         var list = el('dblist');
         while (list.firstChild) list.removeChild(list.firstChild);
-        (m.names || []).forEach(function (n) {
+        states = {};
+        (m.databases || []).forEach(function (d) {
           var o = document.createElement('option');
-          o.value = String(n);
+          o.value = String(d.name);
+          // Datalist options cannot be greyed out; the label carries the state instead ("Sales (offline)").
+          if (d.label && d.label !== d.name) o.label = String(d.label);
           list.appendChild(o);
+          states[String(d.name).toLowerCase()] = String(d.state);
         });
-        showResult(true, (m.names || []).length + ' database(s) found. Pick one from the Database field.');
+        showResult(true, String(m.text || ''));
+        applyDbState();
+      } else if (m.type === 'databaseState') {
+        states[String(m.database).toLowerCase()] = String(m.state);
+        applyDbState();
       } else if (m.type === 'errors') {
         el('result').textContent = '';
         var errs = m.errors || {};

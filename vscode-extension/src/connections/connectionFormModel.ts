@@ -171,9 +171,98 @@ export function formToProbeProfile(v: FormValues, o: { hasPassword: boolean; dat
   return { profile: r.profile, errors: r.errors };
 }
 
+/** A database of the form's server and its sys.databases state_desc (ONLINE, OFFLINE, RESTORING, ...). */
+export interface DatabaseInfo {
+  name: string;
+  state: string;
+}
+
+export const ONLINE = 'ONLINE';
+export const OFFLINE = 'OFFLINE';
+
+/** Datalist label: the name, plus "(offline)" / "(restoring)" ... for a database that is not online. */
+export function databaseLabel(d: DatabaseInfo): string {
+  return isOnline(d.state) ? d.name : `${d.name} (${d.state.toLowerCase().replace(/_/g, ' ')})`;
+}
+
+export function isOnline(state: string | null | undefined): boolean {
+  return (state ?? '').toUpperCase() === ONLINE;
+}
+
+/** Only an OFFLINE database can be brought online; other states (RESTORING, SUSPECT, ...) need a DBA. */
+export function canBringOnline(state: string | null | undefined): boolean {
+  return (state ?? '').toUpperCase() === OFFLINE;
+}
+
+/** Status line after List databases: "12 databases (2 not online). Pick one from the Database field." */
+export function describeDatabaseList(dbs: readonly DatabaseInfo[]): string {
+  const notOnline = dbs.filter(d => !isOnline(d.state)).length;
+  return `${dbs.length} database(s) found${notOnline ? ` (${notOnline} not online)` : ''}. Pick one from the Database field.`;
+}
+
+/** The state of `name` in a listing (case-insensitive, like SQL Server's default collation), or undefined. */
+export function stateOf(dbs: readonly DatabaseInfo[], name: string): string | undefined {
+  const n = name.trim().toLowerCase();
+  return n ? dbs.find(d => d.name.toLowerCase() === n)?.state : undefined;
+}
+
+/** Which server and login database states were learned for: a change invalidates them (another server's "Sales"). */
+export function stateCacheKey(v: Pick<FormValues, 'auth' | 'server' | 'user' | 'rawConnectionString'>): string {
+  return [v.auth, v.server.trim().toLowerCase(), v.user.trim().toLowerCase(), v.auth === 'raw' ? v.rawConnectionString.trim() : ''].join('|');
+}
+
+/**
+ * True for SQL Server's "this database cannot be opened" errors (4060 cannot open database, 942 offline, 922 being
+ * recovered, 927 restoring), which a database state lookup can explain. False for a failed login (18456): a second
+ * login attempt would only count toward a lockout policy. Matches the English server messages the tools return.
+ */
+export function isDatabaseUnavailableError(message: string): boolean {
+  return /cannot open database|cannot be opened|is being recovered|in the middle of a restore/i.test(message);
+}
+
+/** What Test should do with probe_test's data ({ok, message, databaseUnavailable, state}). */
+export type OpenCheck =
+  | { kind: 'ok' }
+  | { kind: 'notOnline'; state: string; text: string }
+  | { kind: 'failed'; message: string };
+
+/**
+ * Interprets probe_test. The server classified the failure by SQL error number (any message language) and looked up
+ * the state only for a database that could not be opened, so a wrong password never costs a second login.
+ */
+export function interpretOpenCheck(data: unknown, database: string): OpenCheck {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  if (d.ok === true) return { kind: 'ok' };
+  const message = typeof d.message === 'string' && d.message ? d.message : 'The connection failed.';
+  const state = typeof d.state === 'string' ? d.state : undefined;
+  if (d.databaseUnavailable === true && state && !isOnline(state)) {
+    return { kind: 'notOnline', state, text: `Database '${database || '(from the connection string)'}' is ${state}. ${message}` };
+  }
+  return { kind: 'failed', message };
+}
+
+/** An MCP "unknown tool" error: the server exe predates the tool (e.g. a custom msSqlMcp.serverPath). */
+export function isUnknownToolError(message: string): boolean {
+  return /unknown tool/i.test(message);
+}
+
+/** probe_list_databases data -> DatabaseInfo[] (any casing, malformed rows dropped). */
+export function parseDatabaseList(data: unknown): DatabaseInfo[] {
+  if (!Array.isArray(data)) return [];
+  const out: DatabaseInfo[] = [];
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    const name = r.name ?? r.Name;
+    const state = r.state ?? r.State;
+    if (typeof name === 'string' && typeof state === 'string') out.push({ name, state });
+  }
+  return out;
+}
+
 export type FormMessage =
   | { type: 'cancel' }
-  | { type: 'test' | 'listDatabases' | 'save'; values: FormValues };
+  | { type: 'test' | 'listDatabases' | 'save' | 'bringOnline'; values: FormValues };
 
 const STRING_FIELDS = ['name', 'server', 'database', 'user', 'password', 'rawConnectionString'] as const;
 const BOOL_FIELDS = ['trustServerCertificate', 'readOnly', 'insights', 'open', 'ddlHistory'] as const;
@@ -183,7 +272,7 @@ export function parseFormMessage(raw: unknown): FormMessage | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const m = raw as Record<string, unknown>;
   if (m.type === 'cancel') return { type: 'cancel' };
-  if (m.type !== 'test' && m.type !== 'listDatabases' && m.type !== 'save') return undefined;
+  if (m.type !== 'test' && m.type !== 'listDatabases' && m.type !== 'save' && m.type !== 'bringOnline') return undefined;
   const v = m.values as Record<string, unknown> | null | undefined;
   if (!v || typeof v !== 'object') return undefined;
   if (!STRING_FIELDS.every(k => typeof v[k] === 'string')) return undefined;

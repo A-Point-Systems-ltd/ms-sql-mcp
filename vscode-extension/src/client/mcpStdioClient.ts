@@ -3,6 +3,17 @@ import { CallToolOptions, McpClient } from './mcpClient';
 import { McpToolError, traceableArguments, traceablePayload, unwrapToolResult } from './parse';
 import type { Logger } from '../logger';
 
+/**
+ * Server tools whose row results default to TOON (compact text for LLMs). The extension parses results as JSON, so
+ * every call to them opts out with toon=false unless the caller set it.
+ */
+export const TOON_TOOLS: ReadonlySet<string> = new Set(['read_data', 'list_objects', 'list_insights', 'get_insight_history']);
+
+/** `args` with toon=false added for a TOON tool (see {@link TOON_TOOLS}); unchanged otherwise. */
+export function withJsonRows(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  return TOON_TOOLS.has(name) && args.toon === undefined ? { ...args, toon: false } : args;
+}
+
 const PROTOCOL_VERSION = '2024-11-05';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const CANCEL_REASON = 'Cancelled by user';
@@ -81,7 +92,7 @@ export class McpStdioClient implements McpClient {
     this.log.trace('tool', `${name} arguments`, traceableArguments(name, args));
     const startedAt = Date.now();
     try {
-      const result = await this.request('tools/call', { name, arguments: args }, opts);
+      const result = await this.request('tools/call', { name, arguments: withJsonRows(name, args) }, opts);
       const payload = unwrapToolResult(result);
       this.log.debug('tool', `← ${name} ok (${Date.now() - startedAt} ms)`);
       this.log.trace('tool', `${name} result`, traceablePayload(name, payload));

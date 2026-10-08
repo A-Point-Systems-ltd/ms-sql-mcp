@@ -11,7 +11,8 @@ export const PROBE_TIMEOUT_MS = 30_000;
 
 /**
  * Runs `fn` against a short-lived, read-only, insights-free server process serving only `profile` (open, under its own
- * name), then disposes the process. Throws with a user-presentable message when the process cannot be started or the
+ * name), then disposes the process. The process also lists the probe_* tools (MSSQL_PROBE_TOOLS): database states and
+ * bringing an OFFLINE database online, which the connection form calls only after the user confirmed it. Throws with a user-presentable message when the process cannot be started or the
  * password is missing; aborting `signal` kills the process and rethrows the abort reason.
  */
 export async function withProbeClient<T>(
@@ -30,6 +31,7 @@ export async function withProbeClient<T>(
   if (signal?.aborted) throw signal.reason;
   const client = new McpStdioClient(exe.path, explorerProcessEnv(
     buildServerConnections([target], passwords, { forceReadOnly: true, insights: false }),
+    { MSSQL_PROBE_TOOLS: 'true' },
   ), log);
   // Aborting disposes the client, which fails the in-flight request and kills the process.
   const onAbort = () => client.dispose();

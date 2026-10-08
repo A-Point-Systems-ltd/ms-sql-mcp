@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Console;
 using Mssql.McpServer.Connections;
 using Mssql.McpServer.Connections.Managed;
 using Mssql.McpServer.InsightsLayer;
+using Mssql.McpServer.Serialization;
 using System.Diagnostics;
 
 namespace Mssql.McpServer;
@@ -152,12 +153,20 @@ internal class Program
 
         // Opt-in, for the VS Code extension's private runner process only: agents must never see run_script.
         var scriptRunnerEnabled = ScriptRunnerTools.IsEnabled(Environment.GetEnvironmentVariable);
+        // Opt-in, for the VS Code extension's short-lived connection-form probe process only.
+        var probeToolsEnabled = ProbeTools.IsEnabled(Environment.GetEnvironmentVariable);
+        // Row results as TOON unless a call passes toon=false; MSSQL_TOON=false flips the default without a rebuild.
+        var toonByDefault = ToonResultFilter.IsDefaultOn(Environment.GetEnvironmentVariable);
+        log.Append(toonByDefault
+            ? "TOON row results are on by default (read_data, list_objects, list_insights, get_insight_history); JSON consumers pass toon=false, or set MSSQL_TOON=false."
+            : "TOON row results are off by default (MSSQL_TOON); calls can still pass toon=true.");
 
         // The SDK creates a Tools instance per call via ActivatorUtilities, so Tools must stay stateless.
         var mcp = builder.Services
-            .AddMcpServer(options => options.ServerInstructions = ServerInstructions.Build(registry))
+            .AddMcpServer(options => options.ServerInstructions = ServerInstructions.Build(registry, toonByDefault))
             .WithStdioServerTransport()
-            .WithRequestFilters(filters => filters.AddCallToolFilter(next => ConnectionRoutingFilter.Create(next, scriptRunnerEnabled)))
+            .WithRequestFilters(filters => filters.AddCallToolFilter(next => ConnectionRoutingFilter.Create(next, scriptRunnerEnabled, probeToolsEnabled)))
+            .WithRequestFilters(filters => filters.AddCallToolFilter(next => ToonResultFilter.Create(next, toonByDefault)))
             .WithToolsFromAssembly();
 
         if (scriptRunnerEnabled)
@@ -168,12 +177,32 @@ internal class Program
             log.Append("Script runner tool enabled (MSSQL_SCRIPT_RUNNER) - intended for the VS Code extension only.");
         }
 
+        if (probeToolsEnabled)
+        {
+            _ = mcp.WithTools<ProbeTools>();
+            log.Append("Probe tools enabled (MSSQL_PROBE_TOOLS) - intended for the VS Code extension's connection form only.");
+        }
+
         if (managedPath is not null)
         {
             _ = builder.Services.AddSingleton(new ManagedConnectionStore(managedPath));
             _ = builder.Services.AddSingleton<ISecretProtector, DpapiSecretProtector>();
             _ = builder.Services.AddSingleton<ManagedConnectionService>();
             _ = mcp.WithTools<ManagedConnectionTools>().WithResources<ManagedConnectionResources>();
+
+            // Backstop for host-side app-only visibility: the view's tools only for clients that advertise MCP Apps.
+            if (AppsClientGate.IsRequired(Environment.GetEnvironmentVariable))
+            {
+                _ = mcp.WithRequestFilters(filters =>
+                {
+                    filters.AddCallToolFilter(AppsClientGate.CallFilter);
+                    filters.AddListToolsFilter(AppsClientGate.ListFilter);
+                });
+            }
+            else
+            {
+                log.Append($"{AppsClientGate.EnableVariable}=false: connection-view tools are listed to every client; their app-only visibility relies on the host.");
+            }
 
             // Other processes (other Claude windows) edit the same file: re-sync on any tool call when it changed.
             _ = mcp.WithRequestFilters(filters => filters.AddCallToolFilter(next => async (context, cancellationToken) =>

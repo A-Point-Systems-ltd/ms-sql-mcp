@@ -58,6 +58,8 @@
   .check { display: flex; gap: 6px; align-items: center; padding-top: 4px; }
   .actions { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   #status { grid-column: 1 / -1; min-height: 1.2em; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .dbstate { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--danger); border-radius: var(--radius); }
+  .dbactions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   .hidden { display: none !important; }
   @media (max-width: 520px) { form { grid-template-columns: 1fr; } form label.l { padding-top: 0; } }
 </style>
@@ -91,7 +93,9 @@
 
       <label class="l" for="f-database" data-field="database">Database</label>
       <div data-field="database"><input id="f-database" name="database" type="text" list="dblist" spellcheck="false"><datalist id="dblist"></datalist>
-        <div class="err" data-err="database"></div></div>
+        <div class="err" data-err="database"></div>
+        <div id="dbState" class="dbstate hidden" role="status"><div id="dbStateText"></div>
+          <div class="dbactions"><button id="bringOnline" type="button">Bring online</button><button id="saveAnyway" type="button" class="hidden">Save anyway</button></div></div></div>
 
       <label class="l" for="f-user" data-field="user">User</label>
       <div data-field="user"><input id="f-user" name="user" type="text" spellcheck="false"><div class="err" data-err="user"></div></div>

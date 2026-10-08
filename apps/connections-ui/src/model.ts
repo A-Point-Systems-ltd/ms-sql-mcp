@@ -3,7 +3,10 @@
 
 export {
   AUTH_OPTIONS, ENCRYPTION_HELP, ENCRYPTION_OPTIONS, TRUST_HELP,
+  canBringOnline, databaseLabel, describeDatabaseList, isOnline, stateOf,
 } from '../../../vscode-extension/src/connections/connectionFormModel';
+import type { DatabaseInfo } from '../../../vscode-extension/src/connections/connectionFormModel';
+export type { DatabaseInfo };
 import type { AuthKind } from '../../../vscode-extension/src/connections/profile';
 export type { AuthKind };
 
@@ -47,10 +50,14 @@ export interface SaveResult {
   message?: string | null;
 }
 
+/** connections_ui_test / _list_databases / _bring_online (server: ManagedProbeResult). */
 export interface ProbeResult {
   success: boolean;
   message: string;
-  databases?: string[] | null;
+  /** List databases: every database with its state. */
+  databases?: DatabaseInfo[] | null;
+  /** Test / bring online: the form database's state when it is not ONLINE, or the state after bringing it online. */
+  databaseState?: string | null;
 }
 
 /** What the form edits and what the server's ManagedConnectionInput accepts. */
