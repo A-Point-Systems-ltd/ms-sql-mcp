@@ -61,6 +61,17 @@ jobs:
           npm test
           npm run build
 
+      # A cold LocalDB instance can take longer to start than the tests' 15 s connect timeout; with dozens of
+      # parallel tests queued on one pool, that failed runs with "timeout obtaining a connection from the pool".
+      - name: Start LocalDB
+        working-directory: .
+        shell: pwsh
+        run: |
+          sqllocaldb start MSSQLLocalDB
+          if ($LASTEXITCODE -ne 0) { sqllocaldb create MSSQLLocalDB -s }
+          if ($LASTEXITCODE -ne 0) { throw "Could not start LocalDB (exit $LASTEXITCODE)." }
+          sqllocaldb info MSSQLLocalDB
+
       - name: Server tests
         working-directory: .
         run: dotnet test MssqlMcp.sln -c Release
