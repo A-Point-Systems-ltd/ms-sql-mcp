@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Connection form: **List databases** shows every database, labelling the ones that are not online (`Sales (offline)`), and works for raw connection strings too (it now always goes through `master`). When the database is OFFLINE (from the list, a failed **Test connection**, or a check when saving a new connection) the form offers **Bring online**, confirmed in a modal dialog, which runs `ALTER DATABASE … SET ONLINE` through the probe process's new `probe_*` tools (`MSSQL_PROBE_TOOLS=true`, set for that process only and blanked for every agent-facing server). Saving a new connection to an OFFLINE database asks **Bring online & save** or **Save anyway**.
+- The extension asks the server's TOON-capable tools (`read_data`, `list_objects`, `list_insights`, `get_insight_history`) for JSON on every call it makes (`toon=false`), so the explorer, Data View and history keep working with the server's new TOON default.
+
 - **Register with Cursor / Claude...** now sets `MSSQL_MANAGED_CONNECTIONS_FILE=%APPDATA%\APoint-ms-sql\connections.json` on the Claude Desktop entry only, which turns on the server's connection manager form (MCP Apps) there. Cursor and Claude Code entries are unchanged. Re-register Claude Desktop to get it.
 
 ## 1.0.0

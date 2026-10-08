@@ -47,12 +47,13 @@ test('cursorMcpApi detects missing, partial and full APIs', () => {
 
 test('cursorServerEnv is string-only with blanked inherited sources and the script runner off', () => {
   const env = cursorServerEnv('[{"name":"a"}]', SETTINGS);
-  assert.deepEqual(Object.keys(env).sort(), ['CONNECTION_STRING', 'MSSQL_ALLOW_ADHOC_CONNECTIONS', 'MSSQL_CONNECTIONS', 'MSSQL_CONNECTIONS_FILE', 'MSSQL_SCRIPT_RUNNER', 'USE_INSIGHTS_LAYER']);
+  assert.deepEqual(Object.keys(env).sort(), ['CONNECTION_STRING', 'MSSQL_ALLOW_ADHOC_CONNECTIONS', 'MSSQL_CONNECTIONS', 'MSSQL_CONNECTIONS_FILE', 'MSSQL_PROBE_TOOLS', 'MSSQL_SCRIPT_RUNNER', 'USE_INSIGHTS_LAYER']);
   assert.ok(Object.values(env).every(v => typeof v === 'string'));
   assert.equal(env.MSSQL_CONNECTIONS, '[{"name":"a"}]');
   assert.equal(env.CONNECTION_STRING, '');
   assert.equal(env.MSSQL_CONNECTIONS_FILE, '');
   assert.equal(env.MSSQL_SCRIPT_RUNNER, '');
+  assert.equal(env.MSSQL_PROBE_TOOLS, '', 'an agent-facing server never gets the probe tools');
   assert.equal(env.USE_INSIGHTS_LAYER, 'true');
   assert.equal(env.MSSQL_ALLOW_ADHOC_CONNECTIONS, 'false');
   const flipped = cursorServerEnv('[]', { ...SETTINGS, insights: false, allowAdhocConnections: true });

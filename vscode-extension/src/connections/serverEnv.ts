@@ -9,7 +9,8 @@ export interface AgentServerSettings { insights: boolean; allowAdhocConnections:
 /**
  * Env for the VS Code MCP server definition. The server also reads CONNECTION_STRING and MSSQL_CONNECTIONS_FILE, which
  * the editor would otherwise pass through from its own environment and silently add connections; `null` removes them.
- * `MSSQL_SCRIPT_RUNNER` (the extension-only `run_script` switch) is removed the same way.
+ * `MSSQL_SCRIPT_RUNNER` (the extension-only `run_script` switch) and `MSSQL_PROBE_TOOLS` (the connection form's
+ * probe tools, which can bring a database online) are removed the same way.
  */
 export function agentProviderEnv(connectionsJson: string, s: AgentServerSettings): Record<string, string | null> {
   return {
@@ -19,13 +20,15 @@ export function agentProviderEnv(connectionsJson: string, s: AgentServerSettings
     USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
     MSSQL_SCRIPT_RUNNER: null,
+    MSSQL_PROBE_TOOLS: null,
   };
 }
 
 /**
  * Env for the server the extension registers with Cursor's own API. Cursor's env type has no null, so inherited
  * sources are blanked with '' (the server treats empty as unset). `MSSQL_SCRIPT_RUNNER` is the extension-only
- * `run_script` switch; an agent-facing server must never inherit it from the editor's environment.
+ * `run_script` switch and `MSSQL_PROBE_TOOLS` the connection-form probe switch; an agent-facing server must never
+ * inherit either from the editor's environment.
  */
 export function cursorServerEnv(connectionsJson: string, s: Pick<AgentServerSettings, 'insights' | 'allowAdhocConnections'>): Record<string, string> {
   return {
@@ -35,6 +38,7 @@ export function cursorServerEnv(connectionsJson: string, s: Pick<AgentServerSett
     USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
     MSSQL_SCRIPT_RUNNER: '',
+    MSSQL_PROBE_TOOLS: '',
   };
 }
 
@@ -51,6 +55,8 @@ export function explorerProcessEnv(connectionsJson: string, extra: Record<string
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
     // Blank an inherited flag; the runner turns it on through `extra`.
     MSSQL_SCRIPT_RUNNER: '',
+    // Likewise: only the connection-form probe turns it on.
+    MSSQL_PROBE_TOOLS: '',
     ...extra,
   };
 }
@@ -70,6 +76,7 @@ export function externalClientEnv(
     USE_INSIGHTS_LAYER: s.insights ? 'true' : 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: s.allowAdhocConnections ? 'true' : 'false',
     MSSQL_SCRIPT_RUNNER: '',
+    MSSQL_PROBE_TOOLS: '',
   };
 }
 

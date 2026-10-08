@@ -11,7 +11,8 @@ test('agent provider env removes inherited connection sources with null', () => 
   assert.equal(env.CONNECTION_STRING, null);
   assert.equal(env.MSSQL_CONNECTIONS_FILE, null);
   assert.equal(env.MSSQL_SCRIPT_RUNNER, null);
-  assert.ok('CONNECTION_STRING' in env && 'MSSQL_CONNECTIONS_FILE' in env && 'MSSQL_SCRIPT_RUNNER' in env);
+  assert.equal(env.MSSQL_PROBE_TOOLS, null);
+  assert.ok('CONNECTION_STRING' in env && 'MSSQL_CONNECTIONS_FILE' in env && 'MSSQL_SCRIPT_RUNNER' in env && 'MSSQL_PROBE_TOOLS' in env);
   assert.equal(env.USE_INSIGHTS_LAYER, 'true');
   assert.equal(env.MSSQL_ALLOW_ADHOC_CONNECTIONS, 'false');
   assert.equal(agentProviderEnv('[]', { ...settings, insights: false, allowAdhocConnections: true }).MSSQL_ALLOW_ADHOC_CONNECTIONS, 'true');
@@ -26,17 +27,21 @@ test('explorer / probe env blanks inherited connection sources and forces safe f
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
     MSSQL_SCRIPT_RUNNER: '',
+    MSSQL_PROBE_TOOLS: '',
   });
   assert.equal(explorerProcessEnv('[]', { LOG_FILE_PATH: 'x' }).LOG_FILE_PATH, 'x');
   // Only the runner turns the script runner on, through its extra env.
   assert.equal(explorerProcessEnv('[]', { MSSQL_SCRIPT_RUNNER: 'true' }).MSSQL_SCRIPT_RUNNER, 'true');
+  // Likewise only the connection-form probe turns the probe tools on.
+  assert.equal(explorerProcessEnv('[]', { MSSQL_PROBE_TOOLS: 'true' }).MSSQL_PROBE_TOOLS, 'true');
 });
 
 test('explorer env wins over an inherited process env when spread last', () => {
-  const inherited = { CONNECTION_STRING: 'Server=evil', MSSQL_CONNECTIONS_FILE: 'C:\\evil.json', MSSQL_SCRIPT_RUNNER: 'true', PATH: 'p' };
+  const inherited = { CONNECTION_STRING: 'Server=evil', MSSQL_CONNECTIONS_FILE: 'C:\\evil.json', MSSQL_SCRIPT_RUNNER: 'true', MSSQL_PROBE_TOOLS: 'true', PATH: 'p' };
   const merged = { ...inherited, ...explorerProcessEnv('[]') };
   assert.equal(merged.CONNECTION_STRING, '');
   assert.equal(merged.MSSQL_SCRIPT_RUNNER, '', 'an inherited script-runner flag never reaches the explorer');
+  assert.equal(merged.MSSQL_PROBE_TOOLS, '', 'an inherited probe flag never reaches the explorer');
   assert.equal(merged.MSSQL_CONNECTIONS_FILE, '');
   assert.equal(merged.PATH, 'p');
 });
@@ -50,6 +55,7 @@ test('external client env points at the file and blanks the other sources', () =
     USE_INSIGHTS_LAYER: 'false',
     MSSQL_ALLOW_ADHOC_CONNECTIONS: 'false',
     MSSQL_SCRIPT_RUNNER: '',
+    MSSQL_PROBE_TOOLS: '',
   });
 });
 
