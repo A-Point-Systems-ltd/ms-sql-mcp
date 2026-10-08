@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   canBringOnline, databaseLabel, defaultFormValues, describeDatabaseList, formToProbeProfile, isDatabaseUnavailableError, isOnline,
-  parseDatabaseList, parseFormMessage, stateCacheKey, stateOf,
+  interpretOpenCheck, isUnknownToolError, parseDatabaseList, parseFormMessage, stateCacheKey, stateOf,
 } from '../out/connections/connectionFormModel.js';
 import { renderConnectionForm } from '../out/connections/connectionFormHtml.js';
 import { TOON_TOOLS, withJsonRows } from '../out/client/mcpStdioClient.js';
@@ -87,4 +87,23 @@ test('the state cache key changes with the server or login, not with the databas
   assert.notEqual(stateCacheKey(v), stateCacheKey({ ...v, auth: 'sql', user: 'sa' }));
   const raw = { ...v, auth: 'raw', rawConnectionString: 'Server=a;Initial Catalog=x' };
   assert.notEqual(stateCacheKey(raw), stateCacheKey({ ...raw, rawConnectionString: 'Server=b;Initial Catalog=x' }));
+});
+
+test('interpretOpenCheck: ok, not online with the fix offered, or a plain failure', () => {
+  assert.deepEqual(interpretOpenCheck({ ok: true, state: 'ONLINE' }, 'Sales'), { kind: 'ok' });
+  assert.deepEqual(
+    interpretOpenCheck({ ok: false, message: "Impossible d'ouvrir la base", databaseUnavailable: true, state: 'OFFLINE' }, 'Sales'),
+    { kind: 'notOnline', state: 'OFFLINE', text: "Database 'Sales' is OFFLINE. Impossible d'ouvrir la base" });
+  // A failed login is never "not online", whatever the message says.
+  assert.deepEqual(
+    interpretOpenCheck({ ok: false, message: 'Login failed', databaseUnavailable: false, state: null }, 'Sales'),
+    { kind: 'failed', message: 'Login failed' });
+  assert.deepEqual(interpretOpenCheck({ ok: false, databaseUnavailable: true, state: null }, 'Gone'), { kind: 'failed', message: 'The connection failed.' });
+  assert.equal(interpretOpenCheck({ ok: false, databaseUnavailable: true, state: 'OFFLINE' }, '').kind, 'notOnline');
+  assert.deepEqual(interpretOpenCheck(undefined, 'x'), { kind: 'failed', message: 'The connection failed.' });
+});
+
+test('isUnknownToolError detects a server without probe_test', () => {
+  assert.equal(isUnknownToolError("Unknown tool: 'probe_test'"), true);
+  assert.equal(isUnknownToolError('Login failed for user'), false);
 });

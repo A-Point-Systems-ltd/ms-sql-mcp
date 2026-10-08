@@ -175,6 +175,25 @@ public sealed class McpProtocolTests
         Assert.Contains("\"state\":\"ONLINE\"", state, StringComparison.Ordinal);
         var refused = Text(await probe.CallToolAsync(ToolNames.ProbeBringOnline, new Dictionary<string, object?> { ["database"] = "master" }));
         Assert.Contains("not OFFLINE", refused, StringComparison.Ordinal);
+        var test = Text(await probe.CallToolAsync(ToolNames.ProbeTest, new Dictionary<string, object?>()));
+        Assert.Contains("\"ok\":true", test, StringComparison.Ordinal);
+        Assert.Contains("\"state\":\"ONLINE\"", test, StringComparison.Ordinal);
+
+        // The VS Code form falls back to its legacy Test when an older exe lacks probe_test; it detects that by this text.
+        var unknown = await plain_unknown_tool_text(probe);
+        Assert.Contains("unknown tool", unknown, StringComparison.OrdinalIgnoreCase);
+
+        static async Task<string> plain_unknown_tool_text(McpClient c)
+        {
+            try
+            {
+                return Text(await c.CallToolAsync("probe_tool_that_does_not_exist", new Dictionary<string, object?>()));
+            }
+            catch (McpException ex)
+            {
+                return ex.Message;
+            }
+        }
     }
 
     [SkippableFact]

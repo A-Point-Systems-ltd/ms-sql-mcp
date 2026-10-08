@@ -37,6 +37,34 @@ public sealed class DatabaseStateOpsTests
     }
 
     [SkippableFact]
+    public async Task Check_open_classifies_offline_and_online_databases()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var name = scratch.Names[0];
+        var cs = scratch.ConnectionStrings[0];
+        try
+        {
+            Assert.Equal(new OpenCheckResult(true, null, false, DatabaseState.Online), await DatabaseStateOps.CheckOpenAsync(cs, CancellationToken.None));
+
+            await SetOfflineAsync(name);
+            var offline = await DatabaseStateOps.CheckOpenAsync(cs, CancellationToken.None);
+            Assert.False(offline.Ok);
+            Assert.True(offline.DatabaseUnavailable);
+            Assert.Equal(DatabaseState.Offline, offline.State);
+            Assert.False(string.IsNullOrEmpty(offline.Message));
+
+            var missing = await DatabaseStateOps.CheckOpenAsync(
+                new SqlConnectionStringBuilder(cs) { InitialCatalog = "NoSuchDb_" + Guid.NewGuid().ToString("N")[..8] }.ConnectionString, CancellationToken.None);
+            Assert.False(missing.Ok);
+            Assert.Null(missing.State); // unknown database: no state to offer, and nothing to bring online
+        }
+        finally
+        {
+            await BringOnlineQuietlyAsync(name);
+        }
+    }
+
+    [SkippableFact]
     public async Task Refuses_a_database_that_is_not_offline_and_an_unknown_one()
     {
         await using var scratch = await ScratchDatabases.CreateAsync(1);

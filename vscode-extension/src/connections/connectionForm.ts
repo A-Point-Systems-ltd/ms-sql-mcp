@@ -7,7 +7,7 @@ import { makeNonce } from '../webviewUtil';
 import { renderConnectionForm } from './connectionFormHtml';
 import {
   FormValues, ONLINE, PROBE_NAME, canBringOnline, databaseLabel, defaultFormValues, describeDatabaseList, formToProbeProfile, formToProfile,
-  isDatabaseUnavailableError, isOnline, stateCacheKey, parseDatabaseList, parseFormMessage, profileToFormValues,
+  OpenCheck, interpretOpenCheck, isDatabaseUnavailableError, isOnline, isUnknownToolError, stateCacheKey, parseDatabaseList, parseFormMessage, profileToFormValues,
 } from './connectionFormModel';
 import { PROBE_TIMEOUT_MS, withProbeClient } from './probe';
 import { describeServerInfo, withConnectionHint } from './serverInfo';
@@ -167,18 +167,18 @@ export class ConnectionFormManager implements vscode.Disposable {
 
     if (type === 'test') {
       const outcome = await this.probe(form, v, existing, type, PROBE_TIMEOUT_MS, async client => {
+        // probe_test opens the database once and classifies a failure by SQL error number; a database that is not
+        // ONLINE comes back with its state so the form can offer the fix.
+        let check: OpenCheck;
         try {
-          return { ok: true, text: describeServerInfo(await client.callTool('get_server_info', { connection: PROBE_NAME })) };
+          check = interpretOpenCheck(pick(await client.callTool(PROBE_TOOLS.test, { connection: PROBE_NAME }), 'data'), v.database.trim());
         } catch (err) {
-          // A database that is not ONLINE fails every connection to it: say so, and let the form offer the fix. Only
-          // for "cannot open database" errors: after a failed login (wrong password) a second login attempt would
-          // count twice toward a lockout policy.
-          const message = err instanceof Error ? err.message : String(err);
-          if (!isDatabaseUnavailableError(message)) throw err;
-          const state = await databaseState(client).catch(() => undefined);
-          if (!state || isOnline(state)) throw err;
-          return { ok: false, text: `Database '${v.database.trim()}' is ${state}. ${message}`, state };
+          if (!isUnknownToolError(err instanceof Error ? err.message : String(err))) throw err;
+          return legacyTest(client, v.database.trim());
         }
+        if (check.kind === 'notOnline') return { ok: false, text: check.text, state: check.state };
+        if (check.kind === 'failed') throw new Error(check.message);
+        return { ok: true, text: describeServerInfo(await client.callTool('get_server_info', { connection: PROBE_NAME })) };
       });
       if (outcome) {
         await this.post(form, { type: 'testResult', ok: outcome.ok, text: outcome.text });
@@ -284,7 +284,24 @@ const PROBE_TOOLS = {
   list: 'probe_list_databases',
   state: 'probe_database_state',
   bringOnline: 'probe_bring_online',
+  test: 'probe_test',
 } as const;
+
+/**
+ * Test against a server exe without probe_test: get_server_info, and on a failure whose English text says the
+ * database cannot be opened, its state. On a server with localized messages the offline hint is skipped (fails safe).
+ */
+async function legacyTest(client: McpStdioClient, database: string): Promise<{ ok: boolean; text: string; state?: string }> {
+  try {
+    return { ok: true, text: describeServerInfo(await client.callTool('get_server_info', { connection: PROBE_NAME })) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isDatabaseUnavailableError(message)) throw err;
+    const state = await databaseState(client).catch(() => undefined);
+    if (!state || isOnline(state)) throw err;
+    return { ok: false, text: `Database '${database}' is ${state}. ${message}`, state };
+  }
+}
 
 const BRING_ONLINE_DETAIL =
   'Runs ALTER DATABASE ... SET ONLINE on the server. If the database was taken offline on purpose (maintenance, ' +

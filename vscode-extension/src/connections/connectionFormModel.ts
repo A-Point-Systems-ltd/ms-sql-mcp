@@ -220,6 +220,32 @@ export function isDatabaseUnavailableError(message: string): boolean {
   return /cannot open database|cannot be opened|is being recovered|in the middle of a restore/i.test(message);
 }
 
+/** What Test should do with probe_test's data ({ok, message, databaseUnavailable, state}). */
+export type OpenCheck =
+  | { kind: 'ok' }
+  | { kind: 'notOnline'; state: string; text: string }
+  | { kind: 'failed'; message: string };
+
+/**
+ * Interprets probe_test. The server classified the failure by SQL error number (any message language) and looked up
+ * the state only for a database that could not be opened, so a wrong password never costs a second login.
+ */
+export function interpretOpenCheck(data: unknown, database: string): OpenCheck {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  if (d.ok === true) return { kind: 'ok' };
+  const message = typeof d.message === 'string' && d.message ? d.message : 'The connection failed.';
+  const state = typeof d.state === 'string' ? d.state : undefined;
+  if (d.databaseUnavailable === true && state && !isOnline(state)) {
+    return { kind: 'notOnline', state, text: `Database '${database || '(from the connection string)'}' is ${state}. ${message}` };
+  }
+  return { kind: 'failed', message };
+}
+
+/** An MCP "unknown tool" error: the server exe predates the tool (e.g. a custom msSqlMcp.serverPath). */
+export function isUnknownToolError(message: string): boolean {
+  return /unknown tool/i.test(message);
+}
+
 /** probe_list_databases data -> DatabaseInfo[] (any casing, malformed rows dropped). */
 export function parseDatabaseList(data: unknown): DatabaseInfo[] {
   if (!Array.isArray(data)) return [];

@@ -50,6 +50,7 @@ public static class ToolNames
     public const string ProbeListDatabases = "probe_list_databases";
     public const string ProbeDatabaseState = "probe_database_state";
     public const string ProbeBringOnline = "probe_bring_online";
+    public const string ProbeTest = "probe_test";
 
     /// <summary>All 23 tool names, in the order documented in README.md.</summary>
     public static readonly IReadOnlyList<string> All =
@@ -76,7 +77,7 @@ public static class ToolNames
     /// </summary>
     public static readonly IReadOnlySet<string> ProbeOnlyTools = new HashSet<string>(StringComparer.Ordinal)
     {
-        ProbeListDatabases, ProbeDatabaseState, ProbeBringOnline,
+        ProbeListDatabases, ProbeDatabaseState, ProbeBringOnline, ProbeTest,
     };
 
     /// <summary>Tools whose row results are re-encoded as TOON unless the call passes toon=false.</summary>

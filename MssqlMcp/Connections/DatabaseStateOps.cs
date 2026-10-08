@@ -63,6 +63,42 @@ internal static class DatabaseStateOps
         return list;
     }
 
+    /// <summary>
+    /// Opens the connection's own database once (unpooled). On failure, and only when the error says the database
+    /// cannot be opened (<see cref="DatabaseUnavailableErrors"/>), reads its state through master; a failed login is
+    /// not retried, so a wrong password counts once toward a lockout policy. Classified by error number, so it works
+    /// whatever the server's message language.
+    /// </summary>
+    public static async Task<OpenCheckResult> CheckOpenAsync(string connectionString, CancellationToken ct)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString) { Pooling = false };
+        try
+        {
+            await using var conn = new SqlConnection(builder.ConnectionString);
+            await conn.OpenAsync(ct).ConfigureAwait(false);
+            return new OpenCheckResult(true, null, false, DatabaseState.Online);
+        }
+        catch (SqlException ex)
+        {
+            if (!IsDatabaseUnavailable(ex) || string.IsNullOrWhiteSpace(builder.InitialCatalog))
+            {
+                return new OpenCheckResult(false, ex.Message, false, null);
+            }
+
+            string? state;
+            try
+            {
+                state = await GetStateAsync(connectionString, builder.InitialCatalog, ct).ConfigureAwait(false);
+            }
+            catch (SqlException)
+            {
+                state = null; // master is not reachable for this login: the original error says enough
+            }
+
+            return new OpenCheckResult(false, ex.Message, true, state);
+        }
+    }
+
     /// <summary>The database's state_desc, or null when no database has that name (or it is not visible to the login).</summary>
     public static async Task<string?> GetStateAsync(string connectionString, string database, CancellationToken ct)
     {
@@ -137,3 +173,9 @@ internal static class DatabaseStateOps
 }
 
 public sealed record BringOnlineResult(bool Success, string Message, string? State);
+
+/// <param name="Ok">The database opened.</param>
+/// <param name="Message">SQL Server's error when it did not.</param>
+/// <param name="DatabaseUnavailable">The login worked but the database could not be opened (offline, restoring, ...).</param>
+/// <param name="State">ONLINE when it opened; otherwise its state_desc when known (only looked up for DatabaseUnavailable).</param>
+public sealed record OpenCheckResult(bool Ok, string? Message, bool DatabaseUnavailable, string? State);

@@ -41,6 +41,18 @@ public sealed class ProbeTools(ILogger<ProbeTools> logger)
             return new DbOperationResult(true, data: new { name, state });
         }).ConfigureAwait(false);
 
+    [McpServerTool(Name = ToolNames.ProbeTest, Title = "Probe: test database", ReadOnly = true, Idempotent = true, Destructive = false),
+        Description("Internal tool of the MSSQL-MCP connection form: opens the connection's database once. success is true whenever the check ran; " +
+                    "data = {ok, message, databaseUnavailable, state}. state is looked up only when the database itself could not be opened.")]
+    public async Task<DbOperationResult> Test(
+        [Description(Tools.ConnectionParamDescription)] string? connection = null,
+        CancellationToken cancellationToken = default) =>
+        await RunAsync(async cs =>
+        {
+            var r = await DatabaseStateOps.CheckOpenAsync(cs, cancellationToken).ConfigureAwait(false);
+            return new DbOperationResult(true, data: new { ok = r.Ok, message = r.Message, databaseUnavailable = r.DatabaseUnavailable, state = r.State });
+        }).ConfigureAwait(false);
+
     [McpServerTool(Name = ToolNames.ProbeBringOnline, Title = "Probe: bring database online", ReadOnly = false, Idempotent = true, Destructive = false),
         Description("Internal tool of the MSSQL-MCP connection form: ALTER DATABASE ... SET ONLINE for an OFFLINE database, after the user confirmed it.")]
     public async Task<DbOperationResult> BringOnline(
