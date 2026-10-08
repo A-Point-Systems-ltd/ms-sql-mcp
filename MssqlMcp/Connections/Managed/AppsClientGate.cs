@@ -68,8 +68,34 @@ internal static class AppsClientGate
             if (!SupportsApps(context.Server.ClientCapabilities))
             {
                 result.Tools = [.. result.Tools.Where(t => !AppOnlyTools.Contains(t.Name))];
+                LogHiddenOnce(context.Server, context.Services);
             }
 
             return result;
         };
+
+    // stdio serves one client per process, so "once per process" is once per session.
+    private static int _hiddenLogged;
+
+    /// <summary>
+    /// A host that checks the view's calls against tools/list never forwards them, so the call filter's Warning would
+    /// never appear: say here, once, which client was refused and what it advertised.
+    /// </summary>
+    private static void LogHiddenOnce(ModelContextProtocol.Server.McpServer server, IServiceProvider? services)
+    {
+        if (Interlocked.Exchange(ref _hiddenLogged, 1) == 1)
+        {
+            return;
+        }
+
+        var caps = server.ClientCapabilities;
+        var advertised = (caps?.Extensions?.Keys ?? []).Select(k => "extensions." + k)
+            .Concat((caps?.Experimental?.Keys ?? []).Select(k => "experimental." + k))
+            .ToList();
+        services?.GetService<ILoggerFactory>()?.CreateLogger(typeof(AppsClientGate).FullName!).LogWarning(
+            "Connection-view tools hidden from client {Client} {Version}: it does not advertise {Extension} (advertised: {Advertised}). " +
+            "If its connection manager form shows but its buttons fail, set {Variable}=false.",
+            server.ClientInfo?.Name ?? "(unknown)", server.ClientInfo?.Version ?? "", UiExtensionId,
+            advertised.Count > 0 ? string.Join(", ", advertised) : "none", EnableVariable);
+    }
 }

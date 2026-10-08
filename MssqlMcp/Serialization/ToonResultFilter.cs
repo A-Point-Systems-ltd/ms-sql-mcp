@@ -87,7 +87,8 @@ internal static class ToonResultFilter
             }
 
             // Envelope fields first (so truncated/maxRows are read before the rows), nulls dropped, data last.
-            var envelope = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            // Fields of the original document, in place: no second copy of up to 10,000 rows.
+            var envelope = new List<KeyValuePair<string, JsonElement>>();
             string? dataName = null;
             foreach (var p in root.EnumerateObject())
             {
@@ -97,12 +98,12 @@ internal static class ToonResultFilter
                 }
                 else if (p.Value.ValueKind != JsonValueKind.Null)
                 {
-                    envelope[p.Name] = p.Value;
+                    envelope.Add(new(p.Name, p.Value));
                 }
             }
 
-            envelope[dataName!] = data;
-            return ToonEncoder.Encode(JsonSerializer.SerializeToElement(envelope));
+            envelope.Add(new(dataName!, data));
+            return ToonEncoder.EncodeFields(envelope);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {

@@ -157,10 +157,9 @@ internal class Program
         var probeToolsEnabled = ProbeTools.IsEnabled(Environment.GetEnvironmentVariable);
         // Row results as TOON unless a call passes toon=false; MSSQL_TOON=false flips the default without a rebuild.
         var toonByDefault = ToonResultFilter.IsDefaultOn(Environment.GetEnvironmentVariable);
-        if (!toonByDefault)
-        {
-            log.Append("TOON row results are off by default (MSSQL_TOON); calls can still pass toon=true.");
-        }
+        log.Append(toonByDefault
+            ? "TOON row results are on by default (read_data, list_objects, list_insights, get_insight_history); JSON consumers pass toon=false, or set MSSQL_TOON=false."
+            : "TOON row results are off by default (MSSQL_TOON); calls can still pass toon=true.");
 
         // The SDK creates a Tools instance per call via ActivatorUtilities, so Tools must stay stateless.
         var mcp = builder.Services

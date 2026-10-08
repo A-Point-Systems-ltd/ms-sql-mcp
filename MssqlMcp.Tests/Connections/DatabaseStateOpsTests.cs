@@ -100,6 +100,24 @@ public sealed class DatabaseStateOpsTests
         }
     }
 
+    [SkippableFact]
+    public async Task Listing_uses_the_own_database_and_falls_back_to_master_only_when_it_cannot_be_opened()
+    {
+        await using var scratch = await ScratchDatabases.CreateAsync(1);
+        var cs = scratch.ConnectionStrings[0];
+
+        // Online catalog: listed through it (what a contained-database user needs; such a user cannot log in to master).
+        Assert.Contains(await DatabaseStateOps.ListAsync(cs, CancellationToken.None), d => d.Name == scratch.Names[0]);
+
+        // A catalog that does not exist (4060) falls back to master.
+        var missing = new SqlConnectionStringBuilder(cs) { InitialCatalog = "NoSuchDb_" + Guid.NewGuid().ToString("N")[..8] }.ConnectionString;
+        Assert.Contains(await DatabaseStateOps.ListAsync(missing, CancellationToken.None), d => d.Name == "master");
+
+        // A failed login is not retried against master.
+        var badLogin = new SqlConnectionStringBuilder(cs) { IntegratedSecurity = false, UserID = "no_such_login_x", Password = "wrong" }.ConnectionString;
+        await Assert.ThrowsAsync<SqlException>(() => DatabaseStateOps.ListAsync(badLogin, CancellationToken.None));
+    }
+
     [Fact]
     public void For_master_switches_the_catalog_and_disables_pooling()
     {

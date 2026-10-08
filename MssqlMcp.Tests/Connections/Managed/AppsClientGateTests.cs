@@ -13,6 +13,9 @@ public sealed class AppsClientGateTests
         Assert.False(AppsClientGate.SupportsApps(new ClientCapabilities()));
         Assert.False(AppsClientGate.SupportsApps(new ClientCapabilities { Extensions = new Dictionary<string, object> { ["io.modelcontextprotocol/other"] = new { } } }));
         Assert.True(AppsClientGate.SupportsApps(new ClientCapabilities { Extensions = new Dictionary<string, object> { [AppsClientGate.UiExtensionId] = new { } } }));
+        // Older hosts announced extensions under experimental.
+        Assert.True(AppsClientGate.SupportsApps(new ClientCapabilities { Experimental = new Dictionary<string, object> { [AppsClientGate.UiExtensionId] = new { } } }));
+        Assert.False(AppsClientGate.SupportsApps(new ClientCapabilities { Experimental = new Dictionary<string, object> { ["other"] = new { } } }));
     }
 
     [Fact]

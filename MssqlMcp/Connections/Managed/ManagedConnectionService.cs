@@ -259,7 +259,7 @@ public sealed class ManagedConnectionService(
         }
     }
 
-    /// <summary>Lists every database of the form's server with its state (connects to master).</summary>
+    /// <summary>Lists every database of the form's server with its state (through the typed database, else master).</summary>
     public Task<ManagedProbeResult> ListDatabasesAsync(ManagedConnectionInput input, bool isNew, CancellationToken ct) =>
         ProbeAsync(input, isNew, listDatabases: true, ct);
 
@@ -292,7 +292,8 @@ public sealed class ManagedConnectionService(
     /// </summary>
     private string? ProbeConnectionString(ManagedConnectionInput input, bool isNew, out string? error, bool listDatabases = false)
     {
-        // The name is irrelevant to a probe; the database is not needed to list databases.
+        // The name is irrelevant to a probe. Listing needs no database (empty = master); a typed one is tried first by
+        // DatabaseStateOps.ListAsync, so contained-database users who cannot log in to master can still list.
         var probeInput = input with { Name = "probe", Database = listDatabases && string.IsNullOrWhiteSpace(input.Database) ? "master" : input.Database };
         string? savedPassword = null;
         if (!isNew && input.Auth == ManagedAuth.Sql && string.IsNullOrEmpty(input.Password))
@@ -311,7 +312,7 @@ public sealed class ManagedConnectionService(
         error = null;
         var entry = ManagedConnectionRules.ToEntry(probeInput, passwordProtected: null);
         return new SqlConnectionStringBuilder(ManagedConnectionRules.BuildConnectionString(
-            entry, string.IsNullOrEmpty(input.Password) ? savedPassword : input.Password, listDatabases ? "master" : null))
+            entry, string.IsNullOrEmpty(input.Password) ? savedPassword : input.Password, null))
         {
             ConnectTimeout = entry.Auth == ManagedAuth.EntraInteractive ? InteractiveProbeTimeoutSeconds : ProbeTimeoutSeconds,
             // One-off connections. A pool would also replay a failed open's error for seconds (blocking period), so

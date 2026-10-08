@@ -47,10 +47,33 @@ internal static class DatabaseStateOps
         return builder.ConnectionString;
     }
 
-    /// <summary>Every database of the server with its state, by name.</summary>
+    /// <summary>
+    /// Every database of the server (visible to the login) with its state, by name. Connects to the connection's own
+    /// database first - a contained-database user cannot log in to master - and falls back to master only when that
+    /// database cannot be opened (<see cref="DatabaseUnavailableErrors"/>), so a wrong password costs one login.
+    /// No catalog (or master) goes to master directly.
+    /// </summary>
     public static async Task<IReadOnlyList<DatabaseState>> ListAsync(string connectionString, CancellationToken ct)
     {
-        await using var conn = new SqlConnection(ForMaster(connectionString));
+        var own = new SqlConnectionStringBuilder(connectionString) { Pooling = false };
+        if (string.IsNullOrWhiteSpace(own.InitialCatalog) || string.Equals(own.InitialCatalog, "master", StringComparison.OrdinalIgnoreCase))
+        {
+            return await QueryDatabasesAsync(ForMaster(connectionString), ct).ConfigureAwait(false);
+        }
+
+        try
+        {
+            return await QueryDatabasesAsync(own.ConnectionString, ct).ConfigureAwait(false);
+        }
+        catch (SqlException ex) when (IsDatabaseUnavailable(ex))
+        {
+            return await QueryDatabasesAsync(ForMaster(connectionString), ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<IReadOnlyList<DatabaseState>> QueryDatabasesAsync(string connectionString, CancellationToken ct)
+    {
+        await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new SqlCommand("SELECT name, state_desc FROM sys.databases ORDER BY name", conn);
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -144,7 +167,9 @@ internal static class DatabaseStateOps
             await using (var cmd = new SqlCommand(BringOnlineSql, conn) { CommandTimeout = BringOnlineTimeoutSeconds })
             {
                 _ = cmd.Parameters.Add(new SqlParameter("@db", System.Data.SqlDbType.NVarChar, 128) { Value = database });
-                _ = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                // Not the request's token: a host that gives up on the call would send an attention mid-recovery and
+                // leave the database neither offline nor online. CommandTimeout still caps it; the outcome is logged.
+                _ = await cmd.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
             }
 
             var after = await ReadStateAsync(conn, database, ct).ConfigureAwait(false);

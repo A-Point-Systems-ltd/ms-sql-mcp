@@ -66,7 +66,10 @@ The extension's own documentation covers the explorer, query windows and setting
 
 1. Download `apoint-ms-sql-<version>.mcpb` from the repository's [GitHub releases](https://github.com/A-Point-Systems-ltd/ms-sql-mcp/releases) (tag `ext-v<version>`, 1.0.10 and later), or build it with `.\packaging\mcpb\build-mcpb.ps1` (see [Package the Claude Desktop extension](#package-the-claude-desktop-extension-mcpb)).
 2. Install it: double-click the file, or open Claude Desktop **Settings > Extensions** and drag the file in. Then confirm the install.
-3. **Optional:** the extension's settings have one switch, **AI Insights layer** (on by default).
+3. **Optional:** the extension's settings have three switches, all on by default:
+   - **AI Insights layer** (`USE_INSIGHTS_LAYER`).
+   - **Compact row results (TOON)** (`MSSQL_TOON`): turn off to return JSON rows by default.
+   - **Connection manager: require MCP Apps support** (`MSSQL_APPS_REQUIRE_UI_CAPABILITY`): turn off only if the connection manager form opens but its buttons fail (the server log then has a Warning naming the client).
 4. In a chat, ask Claude to **"manage connections"**. A form opens in the chat:
    - Click **Add connection**, fill it in, then **Test connection** and **Save**.
    - The connection is usable in the next message, without restarting Claude.
@@ -271,6 +274,8 @@ These three tools take no `connection` argument. Every other tool accepts an opt
     1,Acme Ltd,1250.00
     2,"Smith, J",80.5
   ```
+
+  **Upgrading to 1.1.0:** this is a breaking change for clients that parse these four tools as JSON. Pass `toon=false`, or set `MSSQL_TOON=false` (Claude Desktop extension: turn off **Compact row results (TOON)**). It only shows with 2+ rows, so test with multi-row results.
 
   Values that could be misread (commas, `:`, brackets, quotes, leading/trailing spaces, `true`/`false`/`null`, number-like text) are quoted and JSON-escaped. Numbers are copied exactly from the JSON (no rounding of decimals or bigints). Errors, single rows, nested shapes and `toon=false` give the usual JSON. Clients that parse results as JSON must pass `toon=false`; the VS Code extension does so for all its own calls.
 - **insert_data / update_data / create_table / drop_table** — only the matching statement type (`INSERT`, `UPDATE`, `CREATE TABLE`, `DROP TABLE`) is accepted, so `insert_data("DROP TABLE x")` is refused.
@@ -490,7 +495,7 @@ Ask Claude to "manage connections". It calls `manage_connections`, the only one 
 | **Fields** | The same as the VS Code form: name, authentication (Windows, SQL login, Entra interactive, Entra default, raw connection string without a password), server, database, user, password, encryption, trust server certificate, read-only (default on), AI insights. |
 | **Passwords** | SQL-login passwords are stored as `passwordProtected`, encrypted with Windows DPAPI for the current Windows user. They are never written in clear text and never returned. An entry another Windows account saved is listed with an error until the password is entered again. |
 | **Applies** | At once, with no restart: the server updates its connection list. Other server processes that share the file (another Claude window) reload it on their next tool call. |
-| **Databases** | **List databases** connects to `master` and lists every database; one that is not online is labelled, e.g. `Sales (offline)`. |
+| **Databases** | **List databases** connects through the typed database (or `master` when it is empty or cannot be opened, so contained-database users can list) and lists every database; one that is not online is labelled, e.g. `Sales (offline)`. |
 | **Offline database** | When **Test connection** fails because the database is OFFLINE, or **Save** of a new connection finds it OFFLINE, the form offers **Bring online** (Save also offers **Save anyway**). It asks for a second click to confirm, then runs `ALTER DATABASE [db] SET ONLINE` through `master` (300 s timeout). Only `OFFLINE` qualifies; `RESTORING`, `SUSPECT`, `EMERGENCY` and other states are shown but never changed. It is allowed on read-only connections, because the read-only flag limits the model, not the person at the form. The login needs ALTER permission on the database (for example `dbcreator`). Undo, if the database was offline on purpose: `ALTER DATABASE [db] SET OFFLINE WITH ROLLBACK IMMEDIATE` (disconnects its sessions). |
 | **Other connections** | Connections from `MSSQL_CONNECTIONS_FILE` (the extension's file), `MSSQL_CONNECTIONS` or `CONNECTION_STRING` are listed read-only. A managed name that collides with one of them is reported, not registered. |
 | **File safety** | Changes are written under a cross-process lock, atomically, with the previous version kept as `<file>.bak`. A file that cannot be parsed is reported in the form and never overwritten; connections already loaded keep working. |

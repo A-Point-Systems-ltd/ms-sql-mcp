@@ -149,6 +149,13 @@ public sealed class McpProtocolTests
             Assert.Contains("only available to the connection manager view", Text(refused), StringComparison.Ordinal);
         }
 
+        // The operator switch: with the gate off, a plain client sees and can call them (host-side visibility only).
+        await using (var ungated = await StartClientAsync(null, insights: false, managedConnectionsFile: file, appsGate: false))
+        {
+            Assert.Contains(ToolNames.ConnectionsUiBringOnline, (await ungated.ListToolsAsync()).Select(t => t.Name));
+            Assert.NotEqual(true, (await ungated.CallToolAsync(ToolNames.ConnectionsUiList, new Dictionary<string, object?>())).IsError);
+        }
+
         await using var host = await StartClientAsync(null, insights: false, managedConnectionsFile: file, capabilities: apps);
         var hostNames = (await host.ListToolsAsync()).Select(t => t.Name).ToList();
         Assert.Contains(ToolNames.ConnectionsUiBringOnline, hostNames);
@@ -572,7 +579,7 @@ public sealed class McpProtocolTests
     /// <param name="stderrLines">Receives each line the server writes to stderr; null discards them.</param>
     private static async Task<McpClient> StartClientAsync(
         string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null, Action<string>? stderrLines = null,
-        bool probeTools = false, string? managedConnectionsFile = null, ClientCapabilities? capabilities = null)
+        bool probeTools = false, string? managedConnectionsFile = null, ClientCapabilities? capabilities = null, bool appsGate = true)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -591,7 +598,7 @@ public sealed class McpProtocolTests
                 ["MSSQL_SCRIPT_RUNNER"] = scriptRunner ? "true" : null,
                 ["MSSQL_PROBE_TOOLS"] = probeTools ? "true" : null,
                 ["MSSQL_MANAGED_CONNECTIONS_FILE"] = managedConnectionsFile,
-                ["MSSQL_APPS_REQUIRE_UI_CAPABILITY"] = null,
+                ["MSSQL_APPS_REQUIRE_UI_CAPABILITY"] = appsGate ? null : "false",
                 ["MSSQL_CONSOLE_LOG_LEVEL"] = null,
                 ["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log"),
             },

@@ -11,7 +11,7 @@ namespace Mssql.McpServer;
 /// and bring an OFFLINE database online after the user confirmed it in the form. Deliberately not an
 /// <see cref="McpServerToolTypeAttribute"/> class: <c>WithToolsFromAssembly</c> must not list them to agents; Program
 /// registers them only when MSSQL_PROBE_TOOLS=true, which only the extension's short-lived probe process sets.
-/// Every tool reaches the server through master, so the bound connection's own database may be offline.
+/// State and bring-online go through master, and listing falls back to it, so the bound connection's own database may be offline.
 /// </summary>
 public sealed class ProbeTools(ILogger<ProbeTools> logger)
 {

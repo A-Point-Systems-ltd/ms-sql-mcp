@@ -36,6 +36,18 @@ internal static partial class ToonEncoder
         return string.Join('\n', lines);
     }
 
+    /// <summary>An object given as its fields, in order (same output as <see cref="Encode"/> of that object).</summary>
+    public static string EncodeFields(IEnumerable<KeyValuePair<string, JsonElement>> fields)
+    {
+        var lines = new List<string>();
+        foreach (var (name, value) in fields)
+        {
+            EncodeField(name, value, lines, 0);
+        }
+
+        return lines.Count == 0 ? "{}" : string.Join('\n', lines);
+    }
+
     /// <summary>Uniform array of 1+ non-empty objects with identical key sets and only primitive values.</summary>
     public static bool IsTabular(JsonElement array)
     {
@@ -156,9 +168,33 @@ internal static partial class ToonEncoder
             Push(lines, depth, prefix + Header(count, key, fields));
             // A list-item header ("- key[N]{...}:") sits one level deeper than its own depth.
             var rowDepth = depth + (prefix.Length > 0 ? 2 : 1);
+            var cells = new string[fields.Count];
             foreach (var row in array.EnumerateArray())
             {
-                Push(lines, rowDepth, string.Join(Delimiter, fields.Select(f => EncodePrimitive(row.GetProperty(f)))));
+                // One pass per row: rows almost always repeat the header's order, so match by position and look up by
+                // name (a linear scan in JsonElement) only for a row whose order differs.
+                var i = 0;
+                var inOrder = true;
+                foreach (var p in row.EnumerateObject())
+                {
+                    if (i >= cells.Length || !p.NameEquals(fields[i]))
+                    {
+                        inOrder = false;
+                        break;
+                    }
+
+                    cells[i++] = EncodePrimitive(p.Value);
+                }
+
+                if (!inOrder)
+                {
+                    for (var f = 0; f < cells.Length; f++)
+                    {
+                        cells[f] = EncodePrimitive(row.GetProperty(fields[f]));
+                    }
+                }
+
+                Push(lines, rowDepth, string.Join(Delimiter, cells));
             }
 
             return;

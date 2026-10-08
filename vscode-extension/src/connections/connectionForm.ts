@@ -187,7 +187,7 @@ export class ConnectionFormManager implements vscode.Disposable {
       return;
     }
 
-    // probe_list_databases goes through master; the override only lets an empty Database field pass validation.
+    // probe_list_databases tries the typed database, then master; 'master' only lets an empty Database field validate.
     const databases = await this.probe(form, v, existing, type, PROBE_TIMEOUT_MS,
       async client => parseDatabaseList(pick(await client.callTool(PROBE_TOOLS.list, { connection: PROBE_NAME }), 'data')),
       { database: v.auth !== 'raw' && !v.database.trim() ? 'master' : undefined });
