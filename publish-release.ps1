@@ -5,13 +5,18 @@
 # copy the new exe in -> verify SHA256. If anything fails after the rename, the previous exe is restored.
 # Running MssqlMcp.exe processes keep the old binary until they restart (Windows allows renaming a running exe).
 #
-# The same exe is also packed as the Claude Desktop extension: <ReleaseDir>\ClaudeDesktop\APoint-ms-sql.mcpb
-# (previous bundle kept as APoint-ms-sql_yyyyMMdd_HHmm.mcpb). Install it by opening the file in Claude Desktop.
+# The same exe is also packed as
+#   - the Claude Desktop extension: <ReleaseDir>\ClaudeDesktop\APoint-ms-sql.mcpb (install by opening it in Claude Desktop);
+#   - the VS Code / Cursor extension: <ReleaseDir>\extension\APoint-ms-sql.vsix (install with install-APoint-ms-sql.ps1
+#     there), also left as vscode-extension\ms-sql-mcp-win32-x64-<version>.vsix (older versions there are removed).
+# Previous bundles are kept as <name>_yyyyMMdd_HHmm.<ext>. The VSIX is packaged locally like the publish workflow does
+# (same content as the Marketplace build of the same commit, not byte-identical).
 #
 # Usage:
-#   .\publish-release.ps1                 # publish exe + Claude Desktop bundle
+#   .\publish-release.ps1                 # publish exe + Claude Desktop bundle + VSIX
 #   .\publish-release.ps1 -DryRun         # build + smoke-start + pack only, show what would be renamed/copied
-#   .\publish-release.ps1 -SkipClaudeDesktop   # exe only
+#   .\publish-release.ps1 -SkipClaudeDesktop   # no .mcpb
+#   .\publish-release.ps1 -SkipExtension       # no .vsix
 #   .\publish-release.ps1 -ReleaseDir D:\Some\Folder
 # Extra args after -- are forwarded to dotnet publish (e.g. .\publish-release.ps1 -- --verbosity normal).
 #
@@ -23,6 +28,7 @@ param(
     [string]$ReleaseDir = 'C:\Development\MCPs\MS-SQL-Release',
     [switch]$DryRun,
     [switch]$SkipClaudeDesktop,
+    [switch]$SkipExtension,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$PublishArgs
 )
 
@@ -32,6 +38,24 @@ $exeName = 'MssqlMcp.exe'
 $staging = Join-Path ([IO.Path]::GetTempPath()) ("MssqlMcp-publish-" + [Guid]::NewGuid().ToString('N'))
 
 function Get-Sha256([string]$path) { (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash }
+
+# Copies a packaged bundle over $target, keeping the previous file as <base>_<stamp><ext>, and verifies the copy.
+# Bundles are not live (editors and Claude Desktop install a copy), so a plain replace is safe.
+function Publish-Bundle([string]$source, [string]$target, [string]$stamp, [string]$label) {
+    $dir = Split-Path $target
+    $null = New-Item -ItemType Directory -Force $dir
+    if (Test-Path -LiteralPath $target) {
+        $base = [IO.Path]::GetFileNameWithoutExtension($target); $ext = [IO.Path]::GetExtension($target)
+        $backup = Join-Path $dir ("{0}_{1}{2}" -f $base, $stamp, $ext)
+        for ($i = 2; Test-Path -LiteralPath $backup; $i++) { $backup = Join-Path $dir ("{0}_{1}_{2}{3}" -f $base, $stamp, $i, $ext) }
+        Rename-Item -LiteralPath $target -NewName (Split-Path $backup -Leaf)
+        Write-Host "Previous $label kept as $backup" -ForegroundColor Cyan
+    }
+    Copy-Item -LiteralPath $source -Destination $target
+    $hash = Get-Sha256 $target
+    if ($hash -ne (Get-Sha256 $source)) { throw "SHA256 mismatch after copying the $label." }
+    Write-Host "${label}: $target ($(Split-Path $source -Leaf), SHA256 $hash)" -ForegroundColor Green
+}
 
 try {
     # 1. Rebuild the embedded MCP Apps view (MssqlMcp/Apps/connections.html), then build into staging
@@ -76,8 +100,32 @@ try {
         $newBundle = Get-ChildItem -LiteralPath $bundleStaging -Filter '*.mcpb' | Select-Object -First 1
         if (-not $newBundle) { throw "Claude Desktop bundle was not produced in $bundleStaging." }
     }
-    $bundleDir = Join-Path $ReleaseDir 'ClaudeDesktop'
-    $bundleTarget = Join-Path $bundleDir 'APoint-ms-sql.mcpb'
+    $bundleTarget = Join-Path $ReleaseDir 'ClaudeDesktop\APoint-ms-sql.mcpb'
+
+    # 2c. Package the VS Code / Cursor extension around the same exe, as the publish workflow does
+    #     (stage-exe copies it into vscode-extension\bin; vscode:prepublish compiles; vsce packs win32-x64).
+    $newVsix = $null
+    if (-not $SkipExtension) {
+        Push-Location "$repoRoot\vscode-extension"
+        # npm / vsce print warnings on stderr; Windows PowerShell 5.1 turns those into terminating errors under
+        # 'Stop'. Judge these native calls by exit code only (the outer preference is restored in finally).
+        $outerPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed in vscode-extension (exit $LASTEXITCODE)." }
+            node scripts/check-version.mjs
+            if ($LASTEXITCODE -ne 0) { throw "Server and extension versions differ (scripts/check-version.mjs)." }
+            node scripts/stage-exe.mjs $newExe --sha256 $newHash.ToLowerInvariant()
+            if ($LASTEXITCODE -ne 0) { throw "stage-exe failed (exit $LASTEXITCODE)." }
+            $extVersion = node -p "require('./package.json').version"
+            $newVsix = Join-Path $staging "ms-sql-mcp-win32-x64-$extVersion.vsix"
+            npx vsce package --target win32-x64 -o $newVsix
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $newVsix)) { throw "vsce package failed (exit $LASTEXITCODE)." }
+        }
+        finally { $ErrorActionPreference = $outerPreference; Pop-Location }
+    }
+    $vsixTarget = Join-Path $ReleaseDir 'extension\APoint-ms-sql.vsix'
 
     $target = Join-Path $ReleaseDir $exeName
     $stamp = Get-Date -Format 'yyyyMMdd_HHmm'
@@ -89,6 +137,7 @@ try {
         if (Test-Path -LiteralPath $target) { Write-Host "[DryRun] Would rename $target -> $backup" -ForegroundColor Yellow }
         Write-Host "[DryRun] Would copy the new exe to $target" -ForegroundColor Yellow
         if ($newBundle) { Write-Host "[DryRun] Would copy $($newBundle.Name) to $bundleTarget (previous kept with a timestamp)" -ForegroundColor Yellow }
+        if ($newVsix) { Write-Host "[DryRun] Would copy $(Split-Path $newVsix -Leaf) to $vsixTarget (previous kept with a timestamp) and to vscode-extension\" -ForegroundColor Yellow }
         return
     }
 
@@ -129,20 +178,16 @@ try {
 
     Write-Host "Done. $target (SHA256 $newHash)" -ForegroundColor Green
 
-    # 6. Claude Desktop bundle: keep the previous one with a timestamp, copy the new one, verify.
-    #    Not live (Claude Desktop copies an installed bundle), so a plain replace is safe.
-    if ($newBundle) {
-        $null = New-Item -ItemType Directory -Force $bundleDir
-        if (Test-Path -LiteralPath $bundleTarget) {
-            $bundleBackup = Join-Path $bundleDir ("APoint-ms-sql_{0}.mcpb" -f $stamp)
-            for ($i = 2; Test-Path -LiteralPath $bundleBackup; $i++) { $bundleBackup = Join-Path $bundleDir ("APoint-ms-sql_{0}_{1}.mcpb" -f $stamp, $i) }
-            Rename-Item -LiteralPath $bundleTarget -NewName (Split-Path $bundleBackup -Leaf)
-            Write-Host "Previous Claude Desktop bundle kept as $bundleBackup" -ForegroundColor Cyan
-        }
-        Copy-Item -LiteralPath $newBundle.FullName -Destination $bundleTarget
-        $bundleHash = Get-Sha256 $bundleTarget
-        if ($bundleHash -ne (Get-Sha256 $newBundle.FullName)) { throw "SHA256 mismatch after copying the Claude Desktop bundle." }
-        Write-Host "Claude Desktop bundle: $bundleTarget ($($newBundle.Name), SHA256 $bundleHash)" -ForegroundColor Green
+    # 6. Bundles: keep the previous one with a timestamp, copy the new one, verify.
+    if ($newBundle) { Publish-Bundle $newBundle.FullName $bundleTarget $stamp 'Claude Desktop bundle' }
+    if ($newVsix) {
+        Publish-Bundle $newVsix $vsixTarget $stamp 'VS Code extension'
+        # The repo copy is a git-ignored build output: keep only the current version so a stale one is never installed.
+        $localVsix = Join-Path "$repoRoot\vscode-extension" (Split-Path $newVsix -Leaf)
+        Get-ChildItem -LiteralPath "$repoRoot\vscode-extension" -Filter 'ms-sql-mcp-win32-x64-*.vsix' |
+            Where-Object { $_.FullName -ne $localVsix } | Remove-Item -Force
+        Copy-Item -LiteralPath $newVsix -Destination $localVsix -Force
+        Write-Host "Also at $localVsix. Install it with $(Join-Path $ReleaseDir 'extension\install-APoint-ms-sql.ps1') (close the editors first)." -ForegroundColor Green
     }
     Write-Host "Restart MCP clients (Cursor / Claude) to pick up the new exe; running processes still use the old one." -ForegroundColor Green
 }

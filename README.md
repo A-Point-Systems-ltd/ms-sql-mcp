@@ -653,7 +653,11 @@ dotnet test MssqlMcp.sln -c Release
 
 Output path is configured in `MssqlMcp/MssqlMcp.csproj` and `Properties/PublishProfiles/ReleaseSingleFile.pubxml` (default: `C:\Development\MCPs\MS-SQL-Release\MssqlMcp.exe`).
 
-The script also packs the same exe as the Claude Desktop extension, `<release folder>\ClaudeDesktop\APoint-ms-sql.mcpb`. The previous bundle is kept as `APoint-ms-sql_yyyyMMdd_HHmm.mcpb`, as the script does for the exe. Pass `-SkipClaudeDesktop` to publish the exe only. `-DryRun` builds and packs both and shows what it would copy.
+The script also packs the same exe as:
+- the Claude Desktop extension, `<release folder>\ClaudeDesktop\APoint-ms-sql.mcpb`;
+- the VS Code / Cursor extension, `<release folder>\extension\APoint-ms-sql.vsix` (install it with `install-APoint-ms-sql.ps1` in that folder). The same file is left as `vscode-extension\ms-sql-mcp-win32-x64-<version>.vsix`, and older `.vsix` files there are removed. It is packaged locally the way the publish workflow does it: same content as the Marketplace build of that commit, but not byte-identical.
+
+Each previous bundle is kept as `<name>_yyyyMMdd_HHmm.<ext>`, as the script does for the exe. `-SkipClaudeDesktop` skips the `.mcpb` and `-SkipExtension` skips the `.vsix`. `-DryRun` builds and packs everything and shows what it would copy.
 
 ### Versioning
 
