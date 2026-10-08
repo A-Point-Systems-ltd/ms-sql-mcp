@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1
+
+- Marketplace / Open VSX icon: the A Point logo (`media/icon.png`, 512x512). No functional changes.
+
 ## 1.1.0
 
 - The bundled server (1.1.0) returns TOON rows by default to agents; see the server changelog's BREAKING note. The extension's own views are unaffected (they ask for JSON).

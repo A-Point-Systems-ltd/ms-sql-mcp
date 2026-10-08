@@ -83,6 +83,8 @@ try {
     [IO.File]::WriteAllText((Join-Path $staging 'manifest.json'), ($manifest | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding $false))
     Copy-Item "$repoRoot\vscode-extension\LICENSE" (Join-Path $staging 'LICENSE')
     Copy-Item "$repoRoot\THIRD-PARTY-NOTICES.txt" (Join-Path $staging 'THIRD-PARTY-NOTICES.txt')
+    # Same icon as the VS Code extension (manifest "icon": "icon.png").
+    Copy-Item "$repoRoot\vscode-extension\media\icon.png" (Join-Path $staging 'icon.png')
 
     # 5. Validate and pack.
     $null = New-Item -ItemType Directory -Force $OutDir

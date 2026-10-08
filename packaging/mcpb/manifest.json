@@ -4,6 +4,7 @@
   "name": "apoint-ms-sql",
   "display_name": "APoint-ms-sql",
   "version": "0.0.0",
+  "icon": "icon.png",
   "description": "SQL Server for Claude: inspect schemas, query data and manage connections from a form in the chat.",
   "long_description": "APoint-ms-sql connects Claude to Microsoft SQL Server. Ask Claude to \"manage connections\" to add, edit, test and remove connections in a form inside the chat; they apply without a restart. Passwords are stored encrypted for your Windows account (DPAPI) and Claude never sees them. Connections are read-only by default. Includes schema introspection, read-only queries, optional writes on read-write connections, and the AI Insights layer (cached object summaries).",
   "author": {
