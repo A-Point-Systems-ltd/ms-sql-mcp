@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1
+
+- The Claude Desktop extension (`.mcpb`) has the A Point icon (`icon.png`, copied from `vscode-extension/media/icon.png` by `build-mcpb.ps1`). No server changes.
+
 ## 1.1.0
 
 ### BREAKING
