@@ -105,6 +105,79 @@ public sealed class McpProtocolTests
     }
 
     [SkippableFact]
+    public async Task Row_results_are_toon_by_default_and_json_with_toon_false()
+    {
+        await using var client = await StartClientAsync();
+        const string sql = "SELECT TOP 3 name, database_id FROM sys.databases ORDER BY database_id";
+
+        var toon = Text(await client.CallToolAsync(ToolNames.ReadData, new Dictionary<string, object?> { ["sql"] = sql }));
+        Assert.StartsWith("success: true\ndata[3]{name,database_id}:\n  master,1\n", toon, StringComparison.Ordinal);
+
+        var json = Text(await client.CallToolAsync(ToolNames.ReadData, new Dictionary<string, object?> { ["sql"] = sql, ["toon"] = false }));
+        Assert.Contains("\"success\":true", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"name\":\"master\"", json, StringComparison.Ordinal);
+
+        var tools = await client.ListToolsAsync();
+        Assert.All(tools, t => Assert.Equal(
+            ToolNames.ToonTools.Contains(t.Name),
+            t.ProtocolTool.InputSchema.GetRawText().Contains("\"toon\"", StringComparison.Ordinal)));
+        Assert.Contains("toon=false", client.ServerInstructions ?? string.Empty, StringComparison.Ordinal);
+
+        // The default is the operator's (MSSQL_TOON), so the schema must not promise one.
+        var toonSchema = tools.Single(t => t.Name == ToolNames.ReadData).ProtocolTool.InputSchema.GetProperty("properties").GetProperty("toon");
+        Assert.False(toonSchema.TryGetProperty("default", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.True, toonSchema.GetRawText());
+    }
+
+    [SkippableFact]
+    public async Task Connection_view_tools_are_listed_and_callable_only_for_mcp_apps_clients()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", $"managed-{Guid.NewGuid():N}.json");
+        var apps = new ClientCapabilities
+        {
+            Extensions = new Dictionary<string, object> { [Mssql.McpServer.Connections.Managed.AppsClientGate.UiExtensionId] =
+                System.Text.Json.JsonDocument.Parse("""{"mimeTypes":["text/html;profile=mcp-app"]}""").RootElement.Clone() },
+        };
+
+        await using (var plain = await StartClientAsync(null, insights: false, managedConnectionsFile: file))
+        {
+            var names = (await plain.ListToolsAsync()).Select(t => t.Name).ToList();
+            Assert.Contains(ToolNames.ManageConnections, names);
+            Assert.DoesNotContain(names, n => n.StartsWith("connections_ui_", StringComparison.Ordinal));
+
+            var refused = await plain.CallToolAsync(ToolNames.ConnectionsUiBringOnline, new Dictionary<string, object?>());
+            Assert.True(refused.IsError);
+            Assert.Contains("only available to the connection manager view", Text(refused), StringComparison.Ordinal);
+        }
+
+        await using var host = await StartClientAsync(null, insights: false, managedConnectionsFile: file, capabilities: apps);
+        var hostNames = (await host.ListToolsAsync()).Select(t => t.Name).ToList();
+        Assert.Contains(ToolNames.ConnectionsUiBringOnline, hostNames);
+        Assert.Contains(ToolNames.ConnectionsUiSave, hostNames);
+        var list = await host.CallToolAsync(ToolNames.ConnectionsUiList, new Dictionary<string, object?>());
+        Assert.NotEqual(true, list.IsError);
+    }
+
+    [SkippableFact]
+    public async Task Probe_tools_are_listed_only_with_the_probe_flag()
+    {
+        await using (var plain = await StartClientAsync())
+        {
+            Assert.DoesNotContain(await plain.ListToolsAsync(), t => ToolNames.ProbeOnlyTools.Contains(t.Name));
+        }
+
+        await using var probe = await StartClientAsync(null, insights: false, probeTools: true);
+        var tools = await probe.ListToolsAsync();
+        Assert.Equal(23 + ToolNames.ProbeOnlyTools.Count, tools.Count);
+
+        var list = Text(await probe.CallToolAsync(ToolNames.ProbeListDatabases, new Dictionary<string, object?>()));
+        Assert.Contains("\"name\":\"master\",\"state\":\"ONLINE\"", list, StringComparison.Ordinal);
+        var state = Text(await probe.CallToolAsync(ToolNames.ProbeDatabaseState, new Dictionary<string, object?> { ["database"] = "master" }));
+        Assert.Contains("\"state\":\"ONLINE\"", state, StringComparison.Ordinal);
+        var refused = Text(await probe.CallToolAsync(ToolNames.ProbeBringOnline, new Dictionary<string, object?> { ["database"] = "master" }));
+        Assert.Contains("not OFFLINE", refused, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Multi_connection_requires_argument_routes_and_enforces_read_only()
     {
         await using var client = await StartClientAsync(multiConnection: true);
@@ -475,10 +548,12 @@ public sealed class McpProtocolTests
     /// <param name="connectionsJson">MSSQL_CONNECTIONS value; null runs the single CONNECTION_STRING profile.</param>
     /// <param name="insights">Value of USE_INSIGHTS_LAYER for the server process.</param>
     /// <param name="scriptRunner">True sets MSSQL_SCRIPT_RUNNER=true (registers run_script); false removes it.</param>
+    /// <param name="probeTools">True sets MSSQL_PROBE_TOOLS=true (registers the connection-form probe tools); false removes it.</param>
     /// <param name="protocolVersion">MCP revision the client requests; null keeps the SDK default.</param>
     /// <param name="stderrLines">Receives each line the server writes to stderr; null discards them.</param>
     private static async Task<McpClient> StartClientAsync(
-        string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null, Action<string>? stderrLines = null)
+        string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null, Action<string>? stderrLines = null,
+        bool probeTools = false, string? managedConnectionsFile = null, ClientCapabilities? capabilities = null)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -495,6 +570,9 @@ public sealed class McpProtocolTests
                 ["MSSQL_CONNECTIONS_FILE"] = null,
                 ["USE_INSIGHTS_LAYER"] = insights ? "true" : "false",
                 ["MSSQL_SCRIPT_RUNNER"] = scriptRunner ? "true" : null,
+                ["MSSQL_PROBE_TOOLS"] = probeTools ? "true" : null,
+                ["MSSQL_MANAGED_CONNECTIONS_FILE"] = managedConnectionsFile,
+                ["MSSQL_APPS_REQUIRE_UI_CAPABILITY"] = null,
                 ["MSSQL_CONSOLE_LOG_LEVEL"] = null,
                 ["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log"),
             },
@@ -504,7 +582,7 @@ public sealed class McpProtocolTests
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion }, cancellationToken: timeout.Token);
+            return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion, Capabilities = capabilities }, cancellationToken: timeout.Token);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
         {

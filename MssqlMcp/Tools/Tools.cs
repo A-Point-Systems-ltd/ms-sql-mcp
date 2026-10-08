@@ -33,6 +33,13 @@ public partial class Tools(
         "May include insight, insightFreshness, enrichmentSuggested and insightEnrichment; call " + ToolNames.UpsertInsight +
         " only when insightEnrichment is present (see server instructions).";
 
+    internal const string ToonParamDescription =
+        "Row format; omit for the server default (TOON unless the server sets MSSQL_TOON=false). true: compact TOON - 'key: value' lines (success, truncated, maxRows), " +
+        "then a header data[N]{col1,col2,...}: and N lines, one comma-separated row each in header order (a plain list is data[N]: a,b,c). " +
+        "Unquoted values are numbers, true/false, null or plain text; a quoted value is a JSON-escaped string, used for text with commas, " +
+        "colons, brackets, quotes or edge spaces, or that looks like a number/true/false/null (\"42\" is text, 42 a number; \"\" is empty text). " +
+        "false: JSON objects. Results with fewer than 2 rows, rows with differing columns, nested values and errors are always JSON.";
+
     internal const string MultiConnectionNote = " With more than one connection, pass 'connection' (see " + ToolNames.ListConnections + ").";
 
     /// <summary>

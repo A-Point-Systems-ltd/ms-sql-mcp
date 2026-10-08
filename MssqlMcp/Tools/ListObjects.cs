@@ -19,6 +19,7 @@ public partial class Tools
         [Description("Logical object type to list: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject, DatabaseTrigger, Type, Login, ServerRole, DatabaseUser, or DatabaseRole.")] string objectType,
         [Description("Optional partial name filter (substring match). Matches object name and qualified schema.name (e.g. 'Doc' matches dbo.Documents). Pass null for no filter.")] string? partialName = null,
         [Description("Optional sys.objects type code used only when objectType='SysObject' (e.g., 'U','V','P','FN','IF','TF','TR'). Pass null to list all user-defined sys.objects.")] string? sysObjectType = null,
+        [Description(ToonParamDescription)] bool? toon = null,
         [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {

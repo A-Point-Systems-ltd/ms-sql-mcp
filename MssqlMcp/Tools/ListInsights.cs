@@ -20,6 +20,7 @@ public partial class Tools
         [Description("Schema filter. Pass 'dbo' to limit to dbo; pass null for no filter.")] string? schemaName = null,
         [Description("Object type filter ('Table' | 'View' | 'Procedure' | 'Function' | 'Trigger'). Pass null for no filter.")] string? objectType = null,
         [Description("Maximum rows to return. Clamped server-side to 1..2000. Use small values (e.g. 50) for triage.")] int take = 100,
+        [Description(ToonParamDescription)] bool? toon = null,
         [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {

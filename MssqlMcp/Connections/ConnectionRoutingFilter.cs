@@ -64,17 +64,19 @@ internal static class ConnectionRoutingFilter
     /// <param name="scriptRunnerEnabled">
     /// True when MSSQL_SCRIPT_RUNNER registered the extension-only tools; otherwise they are unknown tools and pass through.
     /// </param>
-    public static bool IsRouted(string toolName, bool scriptRunnerEnabled = false) =>
+    /// <param name="probeToolsEnabled">Same, for the MSSQL_PROBE_TOOLS connection-form probe tools.</param>
+    public static bool IsRouted(string toolName, bool scriptRunnerEnabled = false, bool probeToolsEnabled = false) =>
         (ToolNames.All.Contains(toolName, StringComparer.Ordinal)
-            || (scriptRunnerEnabled && ToolNames.ExtensionOnlyTools.Contains(toolName)))
+            || (scriptRunnerEnabled && ToolNames.ExtensionOnlyTools.Contains(toolName))
+            || (probeToolsEnabled && ToolNames.ProbeOnlyTools.Contains(toolName)))
         && !ToolNames.ConnectionManagementTools.Contains(toolName);
 
     public static McpRequestHandler<CallToolRequestParams, CallToolResult> Create(
-        McpRequestHandler<CallToolRequestParams, CallToolResult> next, bool scriptRunnerEnabled) =>
+        McpRequestHandler<CallToolRequestParams, CallToolResult> next, bool scriptRunnerEnabled, bool probeToolsEnabled = false) =>
         async (context, cancellationToken) =>
         {
             var toolName = context.Params?.Name ?? string.Empty;
-            if (!IsRouted(toolName, scriptRunnerEnabled))
+            if (!IsRouted(toolName, scriptRunnerEnabled, probeToolsEnabled))
             {
                 return await next(context, cancellationToken).ConfigureAwait(false);
             }

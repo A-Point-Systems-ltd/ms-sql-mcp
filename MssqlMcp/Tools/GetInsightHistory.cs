@@ -20,6 +20,7 @@ public partial class Tools
         [Description("Schema filter. Pass null for no filter.")] string? schemaName = null,
         [Description("Object name filter (exact match, no wildcards). Pass null for no filter.")] string? objectName = null,
         [Description("Maximum rows to return. Clamped server-side to 1..2000.")] int take = 100,
+        [Description(ToonParamDescription)] bool? toon = null,
         [Description(ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
     {

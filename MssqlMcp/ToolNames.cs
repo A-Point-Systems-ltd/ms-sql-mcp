@@ -41,10 +41,15 @@ public static class ToolNames
     public const string ConnectionsUiRemove = "connections_ui_remove";
     public const string ConnectionsUiTest = "connections_ui_test";
     public const string ConnectionsUiListDatabases = "connections_ui_list_databases";
+    public const string ConnectionsUiBringOnline = "connections_ui_bring_online";
     // Extension-only: registered only when MSSQL_SCRIPT_RUNNER=true, never part of the agent tool set.
     public const string RunScript = "run_script";
     public const string DdlHistory = "ddl_history";
     public const string LanguageService = "language_service";
+    // Connection-form probe: registered only when MSSQL_PROBE_TOOLS=true (the VS Code extension's short-lived probe process).
+    public const string ProbeListDatabases = "probe_list_databases";
+    public const string ProbeDatabaseState = "probe_database_state";
+    public const string ProbeBringOnline = "probe_bring_online";
 
     /// <summary>All 23 tool names, in the order documented in README.md.</summary>
     public static readonly IReadOnlyList<string> All =
@@ -62,6 +67,22 @@ public static class ToolNames
     public static readonly IReadOnlySet<string> ExtensionOnlyTools = new HashSet<string>(StringComparer.Ordinal)
     {
         RunScript, DdlHistory, LanguageService,
+    };
+
+    /// <summary>
+    /// Probe-process tools for the VS Code connection form, not in <see cref="All"/>. Routed like data tools but listed
+    /// only when MSSQL_PROBE_TOOLS=true. Deliberately not in <see cref="WriteTools"/>: bringing a database online is a
+    /// confirmed human action in the form, and the read-only flag restricts the model, not the person.
+    /// </summary>
+    public static readonly IReadOnlySet<string> ProbeOnlyTools = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ProbeListDatabases, ProbeDatabaseState, ProbeBringOnline,
+    };
+
+    /// <summary>Tools whose row results are re-encoded as TOON unless the call passes toon=false.</summary>
+    public static readonly IReadOnlySet<string> ToonTools = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ReadData, ListObjects, ListInsights, GetInsightHistory,
     };
 
     /// <summary>Tools refused on a read-only connection profile.</summary>
