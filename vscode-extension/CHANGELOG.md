@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - **Format SQL**: right-click **Format Document / Format Selection / Format SQL** or **Ctrl+F2** (selection, else the document) formats T-SQL in the team style (ScriptDom parser; only whitespace and keyword case change, verified on every run). Settings `msSqlMcp.format.keywordCase`, `msSqlMcp.format.maxItemsPerRow`. Works without a connection: the runner process now starts without one.
 - **Enhanced completions** (switch in the SQL editor tab's **...** menu and right-click menu; setting `msSqlMcp.completion.enhanced`): JOIN clauses and ON conditions from foreign keys or matching key names, generated table aliases, the **Pick columns…** checklist, `*` expansion (light bulb), and quick snippets with a **⇥ Tab** hint (`ssf` → `select top(100) * from`, and more).
