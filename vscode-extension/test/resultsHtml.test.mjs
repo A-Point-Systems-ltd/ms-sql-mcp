@@ -178,3 +178,12 @@ test('a value cut by the server cap is marked and explains the full size in its 
   const plain = render(done(result({ resultSets: [set({ columns: [{ name: 's', type: 'nvarchar' }], rows: [['(truncated, 5 chars) is just text']] })] })));
   assert.ok(!plain.includes('class="trunc"'));
 });
+
+test('a run with no rows and no messages says it completed, like SSMS', async () => {
+  const { COMPLETED_TEXT } = await import('../out/query/resultsHtml.js');
+  const html = render({ kind: 'done', connection: 'dev', result: { resultSets: [], messages: [], hadErrors: false, batches: 1, elapsedMs: 5 } });
+  assert.ok(html.includes(COMPLETED_TEXT));
+  assert.match(html, /Messages \(0\)/);
+  const withMessages = render({ kind: 'done', connection: 'dev', result: { resultSets: [], messages: [{ kind: 'info', text: 'x', line: null }], hadErrors: false, batches: 1, elapsedMs: 5 } });
+  assert.ok(!withMessages.includes(COMPLETED_TEXT));
+});
