@@ -19,7 +19,13 @@ test('column metadata and writable columns: identity, computed and binary / spat
   assert.deepEqual(meta[0], { name: 'Id', type: 'int', identity: true, computed: false, hasDefault: false, nullable: false });
   assert.deepEqual(writableColumns(columns, meta), [false, true, true, true, true]);
   assert.deepEqual(writableColumns([{ name: 'Missing', type: 'int' }], meta), [false]);
-  for (const t of ['varbinary', 'timestamp', 'geography', 'sql_variant', 'db.dbo.udt', '']) assert.ok(!isEditableType(t), t);
+  for (const t of ['varbinary', 'timestamp', 'geography', 'db.dbo.udt', '']) assert.ok(!isEditableType(t), t);
+  // sql_variant is edited as nvarchar text.
+  assert.ok(isEditableType('sql_variant'));
+  assert.deepEqual(writableColumns([{ name: 'V', type: 'sql_variant' }], [{ name: 'V', type: 'sql_variant', identity: false, computed: false, hasDefault: false, nullable: true }]), [true]);
+  assert.equal(sqlLiteral('sql_variant', "it's 5"), "N'it''s 5'");
+  assert.equal(sqlLiteral('sql_variant', null), 'NULL');
+  assert.equal(validateValue('sql_variant', 'anything'), undefined);
 });
 
 test('capabilities: views, read-only connections and tables without a primary key', () => {

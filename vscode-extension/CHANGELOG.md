@@ -10,6 +10,7 @@
 - Failures of IntelliSense and Format SQL calls are logged without their message (it can quote the script).
 - Object explorer: database roles, users, server roles and logins script with titled sections and their permissions, owned schemas and memberships (logins also with their user in the connection's database).
 - Data View: double-clicking a cell that cannot be edited shows why (read-only connection, view, no primary key, identity / computed column, value too long) instead of opening the value in a new tab; the hover button still opens the viewer. Results grids are unchanged.
+- Data View: `sql_variant` columns can be edited; values are saved as text (`N'...'`), so the stored base type becomes nvarchar.
 
 ## 1.1.1
 

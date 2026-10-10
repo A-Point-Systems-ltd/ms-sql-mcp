@@ -12,7 +12,8 @@ import { GridColumn, TRUNCATED_SUFFIX, cellText, isNumericType } from './gridMod
 export interface ColumnMeta { name: string; type: string; identity: boolean; computed: boolean; hasDefault: boolean; nullable: boolean }
 
 /** Types the grid cannot edit as text (binary, spatial, row versions, variants, CLR types). */
-const NOT_EDITABLE_TYPES = new Set(['image', 'binary', 'varbinary', 'timestamp', 'rowversion', 'geography', 'geometry', 'hierarchyid', 'sql_variant']);
+// sql_variant is edited like nvarchar: the value is saved as N'...', so its base type becomes nvarchar.
+const NOT_EDITABLE_TYPES = new Set(['image', 'binary', 'varbinary', 'timestamp', 'rowversion', 'geography', 'geometry', 'hierarchyid']);
 const INTEGER_TYPES = new Set(['bigint', 'int', 'smallint', 'tinyint']);
 const FLOAT_TYPES = new Set(['float', 'real']);
 /** Date / time types: literals go through CAST(N'...' AS datetime2(7) / datetimeoffset(7) / time(7)). */
