@@ -75,9 +75,8 @@ public static class EnhancedCompletion
             }
         }
 
-        // Name matches between a single-column key and a column of the same name that is not the other table's
-        // single-column key (Id = Id between two keyed tables joins unrelated rows; a composite-key part such as
-        // OrderLines.OrderId does join). Indexed lookups, so the catalog's size does not matter.
+        // Name matches anchored on a single-column key (see NameMatchAllowed). Indexed lookups, so the catalog's size
+        // does not matter.
         foreach (var (table, obj) in inScope)
         {
             var objKey = obj.SingleKey;
@@ -85,15 +84,22 @@ public static class EnhancedCompletion
             {
                 foreach (var other in catalog.TablesKeyedBy(column.Name).Where(o => !scopeObjects.Contains(o)))
                 {
-                    Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(other.SingleKey!.Name, column.Name)], "same column name");
+                    if (NameMatchAllowed(catalog, other, other.SingleKey!, obj, column))
+                    {
+                        Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(other.SingleKey!.Name, column.Name)], "same column name");
+                    }
                 }
             }
 
-            if (obj.SingleKey is { } key)
+            if (objKey is not null)
             {
-                foreach (var other in catalog.TablesWithNonKeyColumn(key.Name).Where(o => !scopeObjects.Contains(o)))
+                foreach (var other in catalog.TablesWithNonKeyColumn(objKey.Name).Where(o => !scopeObjects.Contains(o)))
                 {
-                    Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(other.Column(key.Name)!.Name, key.Name)], "same column name");
+                    var match = other.Column(objKey.Name)!;
+                    if (NameMatchAllowed(catalog, obj, objKey, other, match))
+                    {
+                        Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(match.Name, objKey.Name)], "same column name");
+                    }
                 }
             }
         }
@@ -144,9 +150,7 @@ public static class EnhancedCompletion
 
             foreach (var column in joinedObject.Columns)
             {
-                // A key on at least one side, but not the single-column key on both (Id = Id joins unrelated rows).
-                if (otherObject.Column(column.Name) is { } match && (column.IsKey || match.IsKey)
-                    && !(ReferenceEquals(column, joinedObject.SingleKey) && ReferenceEquals(match, otherObject.SingleKey)))
+                if (otherObject.Column(column.Name) is { } match && NameMatchAllowed(catalog, joinedObject, column, otherObject, match))
                 {
                     Add(1, [(column.Name, match.Name)], other, "same column name");
                 }
@@ -163,6 +167,30 @@ public static class EnhancedCompletion
                 results.Add((rank, new CompletionItemInfo(text, CompletionKinds.Join, detail, text, "0")));
             }
         }
+    }
+
+    /// <summary>
+    /// Whether two same-named columns (no foreign key between their tables) are suggested as a join. One side must be
+    /// a table's single-column key; the other side may be a non-key column (Units.BID → Buildings.BID), or a part of a
+    /// composite key only when no other table is keyed by that name (OrderLines.OrderId → Orders.OrderId). Refused:
+    /// single key = single key, composite part = composite part, non-key = non-key, and a composite part matched to a
+    /// key name many tables share (Id, LineNo) — those pair unrelated rows.
+    /// </summary>
+    internal static bool NameMatchAllowed(CatalogSnapshot catalog, CatalogObject a, CatalogColumn ca, CatalogObject b, CatalogColumn cb)
+    {
+        static int Kind(CatalogObject o, CatalogColumn c) => ReferenceEquals(c, o.SingleKey) ? 2 : c.IsKey ? 1 : 0;
+        var (ka, kb) = (Kind(a, ca), Kind(b, cb));
+        if (ka < kb)
+        {
+            (ka, kb) = (kb, ka);
+        }
+
+        return (ka, kb) switch
+        {
+            (2, 0) => true,
+            (2, 1) => catalog.TablesKeyedBy(ca.Name).Count == 1,
+            _ => false,
+        };
     }
 
     /// <summary>A schema-qualified name, without the schema when it is the default one.</summary>
