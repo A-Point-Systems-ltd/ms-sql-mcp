@@ -47,6 +47,12 @@ function header(state: ResultsState): string {
   }
 }
 
+/**
+ * Shown in Messages when a run returned no rows and no messages (as SSMS does): with SET NOCOUNT ON and no SELECT, a
+ * script that ran fine sends nothing back, and an empty pane looked as if it had not run.
+ */
+export const COMPLETED_TEXT = 'Commands completed successfully.';
+
 function body(state: ResultsState, gen: number, views: readonly (GridViewState | undefined)[]): string {
   if (state.kind === 'empty') return `<p class="hint">${escapeHtml(EMPTY_TEXT)}</p>`;
   if (state.kind !== 'done') return '';
@@ -61,7 +67,7 @@ function body(state: ResultsState, gen: number, views: readonly (GridViewState |
   return `<nav class="tabs" role="tablist">${tab('results', `Results (${resultSets.length})`)}${tab('messages', `Messages (${messages.length})`)}</nav>
 <div class="content">
 ${pane('results', resultSets.length ? resultSets.map((set, i) => grid(set, i, multi, gen, views[i])).join('\n') : '<p class="none">No result sets.</p>')}
-${pane('messages', messages.map(message).join('\n'))}
+${pane('messages', messages.length ? messages.map(message).join('\n') : `<div class="msg info">${escapeHtml(COMPLETED_TEXT)}</div>`)}
 </div>`;
 }
 

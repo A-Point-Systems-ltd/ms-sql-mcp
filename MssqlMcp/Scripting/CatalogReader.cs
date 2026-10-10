@@ -195,7 +195,7 @@ internal static class CatalogReader
             : null;
     }
 
-    public static async Task<LoginMeta?> ReadLoginAsync(SqlConnection conn, string name, CancellationToken ct)
+    public static async Task<LoginMeta?> ReadLoginAsync(SqlConnection conn, string name, SqlServerVersion version, CancellationToken ct)
     {
         var rows = await QueryAsync(conn, """
             SELECT sp.name, sp.type, sp.is_disabled, sp.default_database_name, sp.default_language_name, sl.is_policy_checked, sl.is_expiration_checked
@@ -214,7 +214,118 @@ internal static class CatalogReader
             JOIN sys.server_principals p ON p.principal_id = m.member_principal_id WHERE p.name = @Name ORDER BY r.name;
             """, name, ct).ConfigureAwait(false);
         var l = rows[0];
-        return new LoginMeta(l.Name, l.Type, l.Disabled, l.Db, l.Lang, l.Policy, l.Expiration, roles);
+        var serverPermissions = version.HasServerPermissions ? await ReadServerPermissionsAsync(conn, name, ct).ConfigureAwait(false) : [];
+
+        // The login's user in the connection's database (by SID): its schemas, roles and permissions there.
+        LoginDatabaseMeta? database = null;
+        var mapped = await QueryAsync(conn, """
+            SELECT dp.name, DB_NAME() FROM sys.database_principals dp JOIN sys.server_principals sp ON sp.sid = dp.sid
+            WHERE sp.name = @Name AND dp.type IN ('S','U','G');
+            """, c => AddName(c, "@Name", name), r => (User: r.GetString(0), Database: r.GetString(1)), ct).ConfigureAwait(false);
+        if (mapped.Count > 0)
+        {
+            if (await ReadDatabaseUserAsync(conn, mapped[0].User, version, ct).ConfigureAwait(false) is { } user)
+            {
+                database = new LoginDatabaseMeta(mapped[0].Database, user, user.OwnedSchemas ?? [], user.Permissions ?? []);
+            }
+        }
+
+        return new LoginMeta(l.Name, l.Type, l.Disabled, l.Db, l.Lang, l.Policy, l.Expiration, roles, serverPermissions, database);
+    }
+
+    /// <summary>Schemas the database principal owns.</summary>
+    public static Task<List<string>> ReadOwnedSchemasAsync(SqlConnection conn, string principal, CancellationToken ct) =>
+        Names(conn, """
+            SELECT s.name FROM sys.schemas s JOIN sys.database_principals p ON p.principal_id = s.principal_id
+            WHERE p.name = @Name ORDER BY s.name;
+            """, principal, ct);
+
+    /// <summary>
+    /// The database permissions granted, denied or revoked to the principal, with each securable rendered as an ON
+    /// clause (objects and columns, schemas, principals, assemblies, types, XML schema collections, keys and
+    /// certificates). Other classes come back marked unsupported. Only what the caller may see (VIEW DEFINITION).
+    /// </summary>
+    public static async Task<List<PermissionMeta>> ReadDatabasePermissionsAsync(SqlConnection conn, string principal, CancellationToken ct)
+    {
+        var rows = await QueryAsync(conn, """
+            SELECT p.state, p.permission_name, p.class, p.class_desc,
+                   CASE p.class WHEN 1 THEN OBJECT_SCHEMA_NAME(p.major_id) WHEN 3 THEN SCHEMA_NAME(p.major_id)
+                       WHEN 6 THEN SCHEMA_NAME(t.schema_id) WHEN 10 THEN SCHEMA_NAME(x.schema_id) END,
+                   CASE p.class WHEN 1 THEN OBJECT_NAME(p.major_id) WHEN 4 THEN dp.name WHEN 5 THEN a.name WHEN 6 THEN t.name
+                       WHEN 10 THEN x.name WHEN 24 THEN sk.name WHEN 25 THEN ce.name WHEN 26 THEN ak.name END,
+                   CASE WHEN p.class = 1 AND p.minor_id > 0 THEN COL_NAME(p.major_id, p.minor_id) END,
+                   dp.type
+            FROM sys.database_permissions p
+                JOIN sys.database_principals g ON g.principal_id = p.grantee_principal_id
+                LEFT JOIN sys.database_principals dp ON p.class = 4 AND dp.principal_id = p.major_id
+                LEFT JOIN sys.assemblies a ON p.class = 5 AND a.assembly_id = p.major_id
+                LEFT JOIN sys.types t ON p.class = 6 AND t.user_type_id = p.major_id
+                LEFT JOIN sys.xml_schema_collections x ON p.class = 10 AND x.xml_collection_id = p.major_id
+                LEFT JOIN sys.symmetric_keys sk ON p.class = 24 AND sk.symmetric_key_id = p.major_id
+                LEFT JOIN sys.certificates ce ON p.class = 25 AND ce.certificate_id = p.major_id
+                LEFT JOIN sys.asymmetric_keys ak ON p.class = 26 AND ak.asymmetric_key_id = p.major_id
+            WHERE g.name = @Name
+            ORDER BY p.class, 5, 6, 7, p.state, p.permission_name;
+            """, c => AddName(c, "@Name", principal),
+            r => (State: r.GetString(0)[0], Permission: r.GetString(1), Class: (int)r.GetByte(2), ClassDesc: r.GetString(3),
+                  Schema: Str(r, 4), Name: Str(r, 5), Column: Str(r, 6), PrincipalType: Str(r, 7)),
+            ct).ConfigureAwait(false);
+        return [.. rows.Select(p =>
+        {
+            var (on, unsupported) = DatabaseSecurable(p.Class, p.ClassDesc, p.Schema, p.Name, p.Column, p.PrincipalType);
+            return new PermissionMeta(p.State, p.Permission, on, unsupported);
+        })];
+    }
+
+    /// <summary>The ON clause of a database permission, or (null, class) when the class is not scripted.</summary>
+    internal static (string? On, string? Unsupported) DatabaseSecurable(int cls, string classDesc, string? schema, string? name, string? column, string? principalType)
+    {
+        string Named(string keyword) => name is null ? throw new InvalidOperationException() : $"{keyword}::{Sql.Q(name)}";
+        try
+        {
+            return cls switch
+            {
+                0 => (null, null),
+                1 when schema is not null && name is not null => (Sql.Qualified(schema, name) + (column is null ? "" : $" ({Sql.Q(column)})"), null),
+                3 when name is null && schema is not null => ($"SCHEMA::{Sql.Q(schema)}", null),
+                4 => (Named(principalType switch { "R" => "ROLE", "A" => "APPLICATION ROLE", _ => "USER" }), null),
+                5 => (Named("ASSEMBLY"), null),
+                6 when schema is not null && name is not null => ($"TYPE::{Sql.Qualified(schema, name)}", null),
+                10 when schema is not null && name is not null => ($"XML SCHEMA COLLECTION::{Sql.Qualified(schema, name)}", null),
+                24 => (Named("SYMMETRIC KEY"), null),
+                25 => (Named("CERTIFICATE"), null),
+                26 => (Named("ASYMMETRIC KEY"), null),
+                _ => (null, classDesc.Replace('_', ' ').ToLowerInvariant()),
+            };
+        }
+        catch (InvalidOperationException)
+        {
+            return (null, classDesc.Replace('_', ' ').ToLowerInvariant());
+        }
+    }
+
+    /// <summary>Server permissions of a login or server role (server level, logins / server roles, endpoints).</summary>
+    public static async Task<List<PermissionMeta>> ReadServerPermissionsAsync(SqlConnection conn, string principal, CancellationToken ct)
+    {
+        var rows = await QueryAsync(conn, """
+            SELECT p.state, p.permission_name, p.class, p.class_desc, t.name, t.type, e.name
+            FROM sys.server_permissions p
+                JOIN sys.server_principals g ON g.principal_id = p.grantee_principal_id
+                LEFT JOIN sys.server_principals t ON p.class = 101 AND t.principal_id = p.major_id
+                LEFT JOIN sys.endpoints e ON p.class = 105 AND e.endpoint_id = p.major_id
+            WHERE g.name = @Name
+            ORDER BY p.class, 5, 7, p.state, p.permission_name;
+            """, c => AddName(c, "@Name", principal),
+            r => (State: r.GetString(0)[0], Permission: r.GetString(1), Class: (int)r.GetByte(2), ClassDesc: r.GetString(3),
+                  Principal: Str(r, 4), PrincipalType: Str(r, 5), Endpoint: Str(r, 6)),
+            ct).ConfigureAwait(false);
+        return [.. rows.Select(p => p.Class switch
+        {
+            100 => new PermissionMeta(p.State, p.Permission, null),
+            101 when p.Principal is not null => new PermissionMeta(p.State, p.Permission, $"{(p.PrincipalType == "R" ? "SERVER ROLE" : "LOGIN")}::{Sql.Q(p.Principal)}"),
+            105 when p.Endpoint is not null => new PermissionMeta(p.State, p.Permission, $"ENDPOINT::{Sql.Q(p.Endpoint)}"),
+            _ => new PermissionMeta(p.State, p.Permission, null, p.ClassDesc.Replace('_', ' ').ToLowerInvariant()),
+        })];
     }
 
     public static async Task<ServerRoleMeta?> ReadServerRoleAsync(SqlConnection conn, string name, SqlServerVersion version, CancellationToken ct)
@@ -233,7 +344,8 @@ internal static class CatalogReader
             SELECT p.name FROM sys.server_role_members m JOIN sys.server_principals r ON r.principal_id = m.role_principal_id
             JOIN sys.server_principals p ON p.principal_id = m.member_principal_id WHERE r.name = @Name ORDER BY p.name;
             """, name, ct).ConfigureAwait(false);
-        return new ServerRoleMeta(rows[0].Name, version.Major < 11 || rows[0].Fixed, members);
+        var permissions = version.HasServerPermissions ? await ReadServerPermissionsAsync(conn, name, ct).ConfigureAwait(false) : [];
+        return new ServerRoleMeta(rows[0].Name, version.Major < 11 || rows[0].Fixed, members, permissions);
     }
 
     public static async Task<DatabaseUserMeta?> ReadDatabaseUserAsync(SqlConnection conn, string name, SqlServerVersion version, CancellationToken ct)
@@ -257,7 +369,9 @@ internal static class CatalogReader
             JOIN sys.database_principals p ON p.principal_id = m.member_principal_id WHERE p.name = @Name ORDER BY r.name;
             """, name, ct).ConfigureAwait(false);
         var u = rows[0];
-        return new DatabaseUserMeta(u.Name, u.Type, u.Login, u.Schema, u.WithoutLogin, roles, u.Auth == 2);
+        var owned = await ReadOwnedSchemasAsync(conn, u.Name, ct).ConfigureAwait(false);
+        var permissions = await ReadDatabasePermissionsAsync(conn, u.Name, ct).ConfigureAwait(false);
+        return new DatabaseUserMeta(u.Name, u.Type, u.Login, u.Schema, u.WithoutLogin, roles, u.Auth == 2, owned, permissions);
     }
 
     public static async Task<DatabaseRoleMeta?> ReadDatabaseRoleAsync(SqlConnection conn, string name, CancellationToken ct)
@@ -279,7 +393,9 @@ internal static class CatalogReader
             JOIN sys.database_principals p ON p.principal_id = m.member_principal_id WHERE r.name = @Name ORDER BY p.name;
             """, name, ct).ConfigureAwait(false);
         var d = rows[0];
-        return new DatabaseRoleMeta(d.Name, d.Fixed, d.App, d.Owner, d.Schema, members);
+        var owned = await ReadOwnedSchemasAsync(conn, d.Name, ct).ConfigureAwait(false);
+        var permissions = await ReadDatabasePermissionsAsync(conn, d.Name, ct).ConfigureAwait(false);
+        return new DatabaseRoleMeta(d.Name, d.Fixed, d.App, d.Owner, d.Schema, members, owned, permissions);
     }
 
     /// <summary>

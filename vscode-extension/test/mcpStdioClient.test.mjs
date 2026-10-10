@@ -130,3 +130,19 @@ test('dispose is idempotent: a second call neither throws nor logs a second term
   assert.equal(log.lines.filter(l => /Terminating private server process/.test(l.message)).length, 1);
   await assert.rejects(client.callTool('echo', {}), /not running/);
 });
+
+test('a failed IntelliSense / format call is logged without its message, which can quote the script', async () => {
+  const { client, log } = await startClient();
+  const full = [];
+  for (const level of ['error', 'warn', 'info', 'debug']) {
+    const original = log[level];
+    log[level] = (scope, message, err) => { full.push({ level, text: `${message} ${err instanceof Error ? err.message : err ?? ''}` }); original(scope, message, err); };
+  }
+  for (const tool of ['format_sql', 'language_service']) {
+    await assert.rejects(client.callTool(tool, { failWith: "Incorrect syntax near 'Moshe Cohen'.", text: 'x' }), /Moshe Cohen/);
+  }
+  assert.ok(full.some(l => l.level === 'warn' && /format_sql FAILED/.test(l.text)));
+  assert.ok(!full.some(l => /Moshe Cohen/.test(l.text)), JSON.stringify(full));
+  await assert.rejects(client.callTool('echo', { failWith: 'plain failure' }), /plain failure/);
+  assert.ok(full.some(l => l.level === 'error' && /plain failure/.test(l.text)));
+});

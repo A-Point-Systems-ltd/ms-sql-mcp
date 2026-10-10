@@ -366,10 +366,15 @@ public sealed class McpProtocolTests
         await using var client = await StartClientAsync(TwoProfiles(cs), insights: false, scriptRunner: true);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(26, tools.Count);
+        Assert.Equal(27, tools.Count);
         var runScript = Assert.Single(tools, t => t.Name == ToolNames.RunScript);
         Assert.True(runScript.ProtocolTool.Annotations?.DestructiveHint);
         Assert.Single(tools, t => t.Name == ToolNames.DdlHistory);
+        Assert.Single(tools, t => t.Name == ToolNames.FormatSql);
+
+        // format_sql is bound to no connection: with two profiles it still needs no 'connection' argument.
+        var formatted = await client.CallToolAsync(ToolNames.FormatSql, new Dictionary<string, object?> { ["text"] = "SELECT 1" });
+        Assert.Contains("\"success\":true", Text(formatted).Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
 
         var main = await client.CallToolAsync(
             ToolNames.RunScript,
@@ -579,7 +584,8 @@ public sealed class McpProtocolTests
     /// <param name="stderrLines">Receives each line the server writes to stderr; null discards them.</param>
     private static async Task<McpClient> StartClientAsync(
         string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null, Action<string>? stderrLines = null,
-        bool probeTools = false, string? managedConnectionsFile = null, ClientCapabilities? capabilities = null, bool appsGate = true)
+        bool probeTools = false, string? managedConnectionsFile = null, ClientCapabilities? capabilities = null, bool appsGate = true,
+        bool noConnections = false, bool skipOnStartupFailure = true)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -591,9 +597,10 @@ public sealed class McpProtocolTests
             Command = exe!,
             EnvironmentVariables = new Dictionary<string, string?>
             {
-                ["CONNECTION_STRING"] = connectionsJson is null ? Environment.GetEnvironmentVariable("CONNECTION_STRING") : null,
+                ["CONNECTION_STRING"] = connectionsJson is null && !noConnections ? Environment.GetEnvironmentVariable("CONNECTION_STRING") : null,
                 ["MSSQL_CONNECTIONS"] = connectionsJson,
                 ["MSSQL_CONNECTIONS_FILE"] = null,
+                ["MSSQL_ALLOW_ADHOC_CONNECTIONS"] = null,
                 ["USE_INSIGHTS_LAYER"] = insights ? "true" : "false",
                 ["MSSQL_SCRIPT_RUNNER"] = scriptRunner ? "true" : null,
                 ["MSSQL_PROBE_TOOLS"] = probeTools ? "true" : null,
@@ -610,11 +617,41 @@ public sealed class McpProtocolTests
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion, Capabilities = capabilities }, cancellationToken: timeout.Token);
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        catch (Exception ex) when (skipOnStartupFailure && ex is IOException or InvalidOperationException or OperationCanceledException)
         {
             // The server exits at startup when SQL Server is unreachable.
             throw new SkipException($"MCP server did not start (SQL Server unreachable?): {ex.Message}");
         }
+    }
+
+    [SkippableFact]
+    public async Task The_runner_starts_with_no_connection_and_formats()
+    {
+        // Needs no SQL Server: a start failure here is the regression itself, so it fails instead of skipping.
+        await using var client = await StartClientAsync(null, insights: false, scriptRunner: true, noConnections: true, skipOnStartupFailure: false);
+        var formatted = await client.CallToolAsync(ToolNames.FormatSql, new Dictionary<string, object?> { ["text"] = "SELECT 1" });
+        Assert.Contains("\"success\":true", Text(formatted).Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+        var completion = await client.CallToolAsync(ToolNames.LanguageService, new Dictionary<string, object?> { ["action"] = "warm" });
+        Assert.Contains("\"success\":false", Text(completion).Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Without_the_runner_a_server_with_no_connection_still_refuses_to_start()
+    {
+        var exe = FindServerExe();
+        Skip.If(exe is null, "MssqlMcp.exe not built.");
+        var start = new System.Diagnostics.ProcessStartInfo(exe!) { RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true, UseShellExecute = false };
+        foreach (var name in new[] { "CONNECTION_STRING", "MSSQL_CONNECTIONS", "MSSQL_CONNECTIONS_FILE", "MSSQL_MANAGED_CONNECTIONS_FILE", "MSSQL_ALLOW_ADHOC_CONNECTIONS", "MSSQL_SCRIPT_RUNNER" })
+        {
+            start.Environment.Remove(name);
+        }
+
+        start.Environment["LOG_FILE_PATH"] = Path.Combine(Path.GetTempPath(), "MssqlMcpTests", "protocol.log");
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var stderr = await process.StandardError.ReadToEndAsync();
+        Assert.True(process.WaitForExit(30_000));
+        Assert.Equal(1, process.ExitCode);
+        Assert.Contains("no connection configured", stderr, StringComparison.Ordinal);
     }
 
     private static string? FindServerExe()

@@ -4,6 +4,8 @@ import { refreshDataViewColors, showDataView } from '../dataPanel';
 import type { CellViewer } from '../grid/cellViewer';
 import type { ObjectRef } from '../explorer/catalog';
 import { openEditableDdl } from '../explorer/editableDdl';
+import { copyNameText, dependentsSql, renameSql, renameUnsupported, renameWarning, validateNewName } from '../explorer/objectRename';
+import { parseRunScriptResult } from '../query/runScript';
 import { isEditable } from '../explorer/objectEdit';
 import type { ConnectionStore } from '../connections/store';
 import { findProfile } from '../query/editorState';
@@ -12,6 +14,7 @@ import type { SqlDocFileSystem } from '../query/sqlDocFs';
 import type { DdlDocumentProvider } from '../explorer/ddlDocuments';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import type { ExplorerNode, ExplorerTreeProvider } from '../explorer/explorerTree';
+import type { CategoryNode } from '../explorer/treeModel';
 import { DDL_SCHEME, ddlUri } from '../explorer/sqlText';
 import { DEFAULT_TOP, clampTop } from '../grid/gridModel';
 import { Logger } from '../logger';
@@ -101,25 +104,40 @@ export function registerExplorerCommands(
     if (!arg && active?.scheme === DDL_SCHEME) ddl.reload(active);
   });
 
-  // The object filter: a title-bar button (or Ctrl+F in the tree) opens an input that filters as you type. The tree
-  // view shows the active term in its title, and Clear Filter appears while one is set.
+  // Name filters are per group (Tables, Views, ...) and per connection: the filter icon on a group (or the title-bar
+  // button / Ctrl+F on a selected group or object) opens an input that filters that group as you type. The group
+  // shows its term; the view title shows how many groups are filtered, and Clear All Filters appears then.
   const showFilter = () => {
-    const term = tree.filter;
-    treeView.description = term ? `filter: ${term}` : undefined;
-    void vscode.commands.executeCommand('setContext', 'msSqlMcp.filterActive', term.length > 0);
+    const count = tree.filterCount;
+    treeView.description = count ? `${count} filter${count === 1 ? '' : 's'}` : undefined;
+    void vscode.commands.executeCommand('setContext', 'msSqlMcp.filterActive', count > 0);
   };
   showFilter();
 
-  reg('filter', () => {
+  /** The group a filter command acts on: the clicked or selected group, or the group of the selected object. */
+  const filterTarget = (arg: unknown): CategoryNode | undefined => {
+    const node = (arg ?? treeView.selection[0]) as ExplorerNode | undefined;
+    if (node?.kind === 'category') return node.def.listType ? node : undefined;
+    if (node?.kind === 'object') return { kind: 'category', connection: node.ref.connection, def: node.def };
+    return undefined;
+  };
+
+  reg('filter', arg => {
+    const target = filterTarget(arg);
+    if (!target) {
+      void vscode.window.showInformationMessage('APoint-ms-sql: select a group (Tables, Views, Stored Procedures, ...) or an object in it, then filter.');
+      return;
+    }
+    const { connection, def } = target;
     const box = vscode.window.createInputBox();
-    box.title = 'Filter objects by name';
+    box.title = `Filter ${def.label} of ${connection}`;
     box.placeholder = 'Part of a name, e.g. Customer or dbo.Order (Esc keeps the filter, empty clears it)';
-    box.value = tree.filter;
+    box.value = tree.filterOf(connection, def.id);
     let timer: NodeJS.Timeout | undefined;
     const apply = () => {
       if (timer) clearTimeout(timer);
       timer = undefined;
-      tree.setFilter(box.value);
+      tree.setFilter(connection, def.id, box.value);
       showFilter();
     };
     box.onDidChangeValue(() => {
@@ -131,8 +149,84 @@ export function registerExplorerCommands(
     box.show();
   });
 
-  reg('clearFilter', () => {
-    tree.setFilter('');
+  // Copy Name / Rename act on the clicked item, or on the selected one (F2 in the tree passes no argument).
+  const targetRef = (arg: unknown): ObjectRef | undefined => refOf(arg) ?? refOf(treeView.selection[0]);
+
+  reg('copyName', async arg => {
+    const ref = targetRef(arg);
+    if (!ref) return;
+    const text = copyNameText(ref);
+    await vscode.env.clipboard.writeText(text);
+    vscode.window.setStatusBarMessage(`APoint-ms-sql: copied ${text}`, 2500);
+  });
+
+  reg('renameObject', async arg => {
+    const ref = targetRef(arg);
+    if (!ref) {
+      void vscode.window.showInformationMessage('APoint-ms-sql: select an object in the APoint-ms-sql tree.');
+      return;
+    }
+    const unsupported = renameUnsupported(ref);
+    if (unsupported) {
+      void vscode.window.showInformationMessage(`APoint-ms-sql: ${unsupported}`);
+      return;
+    }
+    const profile = findProfile(store.list(), ref.connection);
+    if (!profile?.open) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${ref.connection}' first.`);
+      return;
+    }
+    if (profile.readOnly) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: '${ref.connection}' is read-only; objects cannot be renamed through it.`);
+      return;
+    }
+    // A tree item cannot be edited in place (VS Code has no API for it): an input box prefilled with the name.
+    const newName = await vscode.window.showInputBox({
+      title: `Rename ${copyNameText(ref)}`,
+      prompt: ref.schema ? `New name (the schema ${ref.schema} stays)` : 'New name',
+      value: ref.name,
+      valueSelection: [0, ref.name.length],
+      validateInput: value => validateNewName(ref, value),
+    });
+    if (newName === undefined || validateNewName(ref, newName)) return;
+
+    const dependents: string[] = [];
+    let checkFailed = false;
+    const check = dependentsSql(ref);
+    if (check) {
+      try {
+        const result = parseRunScriptResult(await runner.callResult(ref.connection, 'run_script', { script: check, maxRows: 20 }));
+        checkFailed = result.hadErrors;
+        for (const row of result.resultSets[0]?.rows ?? []) if (typeof row[0] === 'string') dependents.push(row[0]);
+      } catch (err) {
+        checkFailed = true;
+        log.warn('renameObject', `Dependency check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const answer = await vscode.window.showWarningMessage(renameWarning(ref, newName, dependents, checkFailed), { modal: true }, 'Rename');
+    if (answer !== 'Rename') return;
+
+    const result = parseRunScriptResult(await runner.callResult(ref.connection, 'run_script', { script: renameSql(ref, newName), maxRows: 1 }));
+    const error = result.messages.find(m => m.kind === 'error');
+    if (result.hadErrors || error) {
+      void vscode.window.showErrorMessage(`APoint-ms-sql: rename failed: ${error?.text ?? 'see the Output channel.'}`);
+      return;
+    }
+    log.info('renameObject', `Renamed ${ref.scriptType} ${copyNameText(ref)} to ${newName} on '${ref.connection}'.`);
+    vscode.window.setStatusBarMessage(`APoint-ms-sql: renamed to ${newName}`, 3000);
+    tree.refreshConnection(profile.name);
+  });
+
+  // On a group: clears that group's filter; elsewhere (no group target): clears every filter.
+  reg('clearFilter', arg => {
+    const target = filterTarget(arg);
+    if (target) tree.setFilter(target.connection, target.def.id, '');
+    else tree.clearAllFilters();
+    showFilter();
+  });
+
+  reg('clearAllFilters', () => {
+    tree.clearAllFilters();
     showFilter();
   });
 }

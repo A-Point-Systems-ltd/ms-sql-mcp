@@ -29,7 +29,9 @@ test('root categories exclude security sub-categories; security has 4', () => {
   assert.deepEqual(rootCategories('dev').map(n => n.def.id), ['tables', 'views', 'procedures', 'tvfs', 'scalars', 'dbTriggers', 'types', 'security']);
   assert.deepEqual(subCategories('dev', cat('security')).map(n => n.def.label), ['Logins', 'Server Roles', 'Database Users', 'Database Roles']);
   const item = describeNode(rootCategories('dev')[0]);
-  assert.equal(item.contextValue, 'msSqlMcp.category');
+  // Listing groups are filterable one by one; Security (sub-groups only) is not.
+  assert.equal(item.contextValue, 'msSqlMcp.category.list');
+  assert.equal(describeNode(rootCategories('dev').find(n => n.def.id === 'security')).contextValue, 'msSqlMcp.category');
   assert.equal(item.collapsible, true);
   assert.equal(item.label, 'Tables');
   assert.equal(item.description, undefined);
@@ -144,4 +146,13 @@ test('data view request: one run_script SELECT with one extra row so the server 
     { script: 'SELECT TOP (2) * FROM [s].[v]]]', maxRows: 1 });
   assert.deepEqual(dataViewRequest({ connection: 'dev', scriptType: 'Table', schema: 'dbo', name: 'T' }, 10, { column: 'Na]me', type: 'nvarchar', dir: 'desc' }),
     { script: 'SELECT TOP (11) * FROM [dbo].[T] ORDER BY [Na]]me] DESC', maxRows: 10 });
+});
+
+test('a filtered group shows its term and n of m, and gets its own contextValue', () => {
+  const tables = rootCategories('dev')[0];
+  const item = describeNode(tables, { shown: 2, total: 10 }, { filter: 'Order' });
+  assert.equal(item.description, 'filter: Order · 2 of 10');
+  assert.equal(item.contextValue, 'msSqlMcp.category.list.filtered');
+  assert.match(item.tooltip, /names containing 'Order'/);
+  assert.equal(describeNode(tables, undefined, { filter: '' }).contextValue, 'msSqlMcp.category.list');
 });

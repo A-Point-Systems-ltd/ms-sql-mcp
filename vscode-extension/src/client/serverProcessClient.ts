@@ -18,6 +18,11 @@ export interface ServerProcessOptions {
   forceReadOnly: boolean;
   /** Extra env for the process, e.g. `{ MSSQL_SCRIPT_RUNNER: 'true' }`. */
   extraEnv?: Record<string, string>;
+  /**
+   * Start the process even when no connection is open (the runner: `format_sql` needs none, and the server accepts an
+   * empty connection set when MSSQL_SCRIPT_RUNNER is on). Bound calls still fail fast without an open connection.
+   */
+  allowNoConnections?: boolean;
 }
 
 /**
@@ -28,7 +33,10 @@ export const RUNNER_OPTIONS: Readonly<ServerProcessOptions> = Object.freeze({
   label: 'runner',
   forceReadOnly: false,
   extraEnv: Object.freeze({ MSSQL_SCRIPT_RUNNER: 'true' }),
+  allowNoConnections: true,
 });
+
+const NO_OPEN_CONNECTIONS = 'No open connections. Add or open a connection first.';
 
 /** A start that was overtaken by reset()/dispose() while spawning. */
 class SupersededError extends Error {}
@@ -50,6 +58,8 @@ export class ServerProcessClient implements vscode.Disposable {
   /** Processes already disposed by this client (each one is disposed once only). */
   private readonly killed = new WeakSet<McpStdioClient>();
   private starting?: Promise<McpStdioClient>;
+  /** Per process: open profiles left out of it for a missing password (lower-case names), known at start. */
+  private readonly skippedNames = new WeakMap<McpStdioClient, ReadonlySet<string>>();
   private generation = 0;
   private timer?: NodeJS.Timeout;
   private disposed = false;
@@ -86,16 +96,34 @@ export class ServerProcessClient implements vscode.Disposable {
    */
   async callResult(connection: string, tool: string, args: Record<string, unknown>, opts?: CallToolOptions): Promise<unknown> {
     if (opts?.signal?.aborted) throw cancelledError();
+    // The runner may run without this connection: say why here instead of a server "unknown connection" error.
+    if (this.options.allowNoConnections && !this.store.list().some(p => p.open)) throw new Error(NO_OPEN_CONNECTIONS);
+    return this.invoke(tool, { ...args, connection }, `connection='${connection}'`, opts, connection);
+  }
+
+  /**
+   * Calls a tool that is bound to no connection (the runner's `format_sql`) and returns the whole payload. Works with
+   * no connection open when the process allows it ({@link ServerProcessOptions.allowNoConnections}).
+   */
+  async callUnbound(tool: string, args: Record<string, unknown>, opts?: CallToolOptions): Promise<unknown> {
+    if (opts?.signal?.aborted) throw cancelledError();
+    return this.invoke(tool, args, 'unbound', opts);
+  }
+
+  private async invoke(tool: string, args: Record<string, unknown>, what: string, opts?: CallToolOptions, connection?: string): Promise<unknown> {
     // A pending debounced reset means the running process has a stale profile set: apply it first.
     if (this.timer) this.reset();
     // Starting the process can take seconds: a Cancel during that time rejects at once (the start goes on).
     // The process must still be the current one when the call is counted, or a reset in between would dispose it.
     const client = await acquireCurrent(() => this.ensure(), c => c === this.client, opts?.signal);
     // Counted synchronously after the check: no reset can run in between.
+    if (connection !== undefined && this.skippedNames.get(client)?.has(connection.toLowerCase())) {
+      throw new Error(missingPasswordMessage(connection));
+    }
     const end = this.counterOf(client).begin();
-    this.log.debug(this.options.label, `${tool} connection='${connection}'`);
+    this.log.debug(this.options.label, `${tool} ${what}`);
     try {
-      return await client.callTool(tool, { ...args, connection }, opts);
+      return await client.callTool(tool, args, opts);
     } finally {
       end();
     }
@@ -190,10 +218,8 @@ export class ServerProcessClient implements vscode.Disposable {
     const open = profiles.filter(p => p.open);
     const skipped = missingPasswords(profiles, passwords);
     // The server exits (FATAL) on an empty config, so fail fast instead of spawning it.
-    if (open.length - skipped.length <= 0) {
-      throw new Error(skipped.length
-        ? skipped.map(missingPasswordMessage).join(' ')
-        : 'No open connections. Add or open a connection first.');
+    if (open.length - skipped.length <= 0 && !this.options.allowNoConnections) {
+      throw new Error(skipped.length ? skipped.map(missingPasswordMessage).join(' ') : NO_OPEN_CONNECTIONS);
     }
     const client = new McpStdioClient(exe.path, explorerProcessEnv(
       buildServerConnections(profiles, passwords, { forceReadOnly: this.options.forceReadOnly, insights: false }),
@@ -212,6 +238,7 @@ export class ServerProcessClient implements vscode.Disposable {
       client.dispose();
       throw new SupersededError(`${this.title} restarted while starting.`);
     }
+    this.skippedNames.set(client, new Set(skipped.map(n => n.toLowerCase())));
     this.client = client;
     return client;
   }

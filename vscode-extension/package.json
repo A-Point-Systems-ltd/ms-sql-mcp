@@ -3,7 +3,7 @@
   "displayName": "APoint-ms-sql",
   "description": "SQL Server MCP server for VS Code, Cursor and Claude - multi-connection, object explorer with DDL, read-only profiles, AI schema insights.",
   "publisher": "apoint",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "icon": "media/icon.png",
   "license": "MIT",
   "repository": {
@@ -155,13 +155,13 @@
       },
       {
         "command": "msSqlMcp.filter",
-        "title": "Filter Objects by Name…",
+        "title": "Filter Group by Name…",
         "category": "APoint-ms-sql",
         "icon": "$(filter)"
       },
       {
         "command": "msSqlMcp.clearFilter",
-        "title": "Clear Filter",
+        "title": "Clear Group Filter",
         "category": "APoint-ms-sql",
         "icon": "$(filter-filled)"
       },
@@ -207,22 +207,69 @@
         "title": "Refresh IntelliSense Cache",
         "category": "APoint-ms-sql",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "msSqlMcp.formatSql",
+        "title": "Format SQL (selection or document)",
+        "category": "APoint-ms-sql",
+        "icon": "$(symbol-ruler)"
+      },
+      {
+        "command": "msSqlMcp.goToObjectDefinition",
+        "title": "Go to Object Definition (new tab)",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.selectTopRows",
+        "title": "Select Top Rows of Object Under Cursor",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.pickColumns",
+        "title": "Pick Columns…",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.expandWildcard",
+        "title": "Expand * to Column List",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.disableEnhancedCompletions",
+        "title": "✓ Enhanced Completions (click to turn off)",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.enableEnhancedCompletions",
+        "title": "Enhanced Completions (off, click to turn on)",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.newQueryWithText",
+        "title": "New Query With Text",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.copyName",
+        "title": "Copy Name",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.renameObject",
+        "title": "Rename… (F2)",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.clearAllFilters",
+        "title": "Clear All Filters",
+        "category": "APoint-ms-sql",
+        "icon": "$(clear-all)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "msSqlMcp.filter",
-          "when": "view == msSqlMcp.explorer && msSqlMcp.hasConnections && !msSqlMcp.filterActive",
-          "group": "navigation@0"
-        },
-        {
-          "command": "msSqlMcp.clearFilter",
-          "when": "view == msSqlMcp.explorer && msSqlMcp.filterActive",
-          "group": "navigation@0"
-        },
-        {
-          "command": "msSqlMcp.filter",
+          "command": "msSqlMcp.clearAllFilters",
           "when": "view == msSqlMcp.explorer && msSqlMcp.filterActive",
           "group": "navigation@0"
         },
@@ -322,6 +369,36 @@
           "command": "msSqlMcp.removeConnection",
           "when": "viewItem =~ /^msSqlMcp\\.conn/",
           "group": "2@2"
+        },
+        {
+          "command": "msSqlMcp.copyName",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "9_cutcopypaste@1"
+        },
+        {
+          "command": "msSqlMcp.renameObject",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "9_cutcopypaste@2"
+        },
+        {
+          "command": "msSqlMcp.filter",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.category\\.list/",
+          "group": "inline@1"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.category.list.filtered",
+          "group": "inline@2"
+        },
+        {
+          "command": "msSqlMcp.filter",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.category\\.list/",
+          "group": "2_filter@1"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.category.list.filtered",
+          "group": "2_filter@2"
         }
       ],
       "commandPalette": [
@@ -340,10 +417,6 @@
         {
           "command": "msSqlMcp.showDdlNewTab",
           "when": "false"
-        },
-        {
-          "command": "msSqlMcp.clearFilter",
-          "when": "msSqlMcp.filterActive"
         },
         {
           "command": "msSqlMcp.showHistory",
@@ -368,6 +441,54 @@
         {
           "command": "msSqlMcp.refreshIntelliSense",
           "when": "msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.newQueryWithText",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.formatSql",
+          "when": "editorLangId == sql"
+        },
+        {
+          "command": "msSqlMcp.goToObjectDefinition",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.selectTopRows",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.pickColumns",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.expandWildcard",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected"
+        },
+        {
+          "command": "msSqlMcp.disableEnhancedCompletions",
+          "when": "msSqlMcp.enhancedCompletions"
+        },
+        {
+          "command": "msSqlMcp.enableEnhancedCompletions",
+          "when": "!msSqlMcp.enhancedCompletions"
+        },
+        {
+          "command": "msSqlMcp.copyName",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.renameObject",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.clearAllFilters",
+          "when": "msSqlMcp.filterActive"
         }
       ],
       "editor/title": [
@@ -405,6 +526,16 @@
           "command": "msSqlMcp.refreshIntelliSense",
           "when": "msSqlMcp.editorConnected && resource in msSqlMcp.intellisenseDocs",
           "group": "navigation@4"
+        },
+        {
+          "command": "msSqlMcp.disableEnhancedCompletions",
+          "when": "editorLangId == sql && msSqlMcp.enhancedCompletions",
+          "group": "1_msSqlMcp@1"
+        },
+        {
+          "command": "msSqlMcp.enableEnhancedCompletions",
+          "when": "editorLangId == sql && !msSqlMcp.enhancedCompletions",
+          "group": "1_msSqlMcp@1"
         }
       ],
       "editor/context": [
@@ -412,6 +543,38 @@
           "command": "msSqlMcp.refreshIntelliSense",
           "when": "msSqlMcp.editorConnected",
           "group": "msSqlMcp@1"
+        },
+        {
+          "command": "msSqlMcp.formatSql",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl",
+          "group": "1_modification@9"
+        },
+        {
+          "command": "msSqlMcp.goToObjectDefinition",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected",
+          "group": "navigation@9"
+        },
+        {
+          "command": "msSqlMcp.selectTopRows",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected",
+          "group": "msSqlMcp@2"
+        },
+        {
+          "command": "msSqlMcp.pickColumns",
+          "when": "editorLangId == sql && msSqlMcp.editorConnected && msSqlMcp.enhancedCompletions",
+          "group": "msSqlMcp@3"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "msSqlMcp.disableEnhancedCompletions",
+          "when": "editorLangId == sql && msSqlMcp.enhancedCompletions",
+          "group": "1_msSqlMcp@1"
+        },
+        {
+          "command": "msSqlMcp.enableEnhancedCompletions",
+          "when": "editorLangId == sql && !msSqlMcp.enhancedCompletions",
+          "group": "1_msSqlMcp@1"
         }
       ]
     },
@@ -462,6 +625,33 @@
           "default": true,
           "description": "SQL IntelliSense (completion, hover, signature help) in editors bound to an open connection, from the bundled server (Microsoft SqlParser). Other SQL extensions keep their own suggestions."
         },
+        "msSqlMcp.completion.enhanced": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enhanced completions in SQL editors: whole JOIN clauses and ON conditions from foreign keys, table aliases, the column picker, * expansion and quick snippets (ssf, then Tab). Also switched from the editor tab's ... menu."
+        },
+        "msSqlMcp.format.keywordCase": {
+          "type": "string",
+          "enum": [
+            "lower",
+            "upper",
+            "preserve"
+          ],
+          "default": "lower",
+          "description": "Format SQL (Ctrl+F2): the case of keywords, system data types and built-in functions. Identifiers, aliases and column names are never changed."
+        },
+        "msSqlMcp.format.formatFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Format Document / Format Selection (and format-on-save) also for .sql files and untitled SQL editors. Off: only the extension's query windows and object scripts; Ctrl+F2 works in every SQL editor either way."
+        },
+        "msSqlMcp.format.maxItemsPerRow": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Format SQL: most columns or values per row in SELECT, INSERT, VALUES, SET, GROUP BY and ORDER BY lists."
+        },
         "msSqlMcp.logLevel": {
           "type": "string",
           "enum": [
@@ -496,7 +686,36 @@
         "command": "msSqlMcp.filter",
         "key": "ctrl+f",
         "mac": "cmd+f",
-        "when": "focusedView == msSqlMcp.explorer"
+        "when": "focusedView == msSqlMcp.explorer && !inputFocus"
+      },
+      {
+        "command": "msSqlMcp.formatSql",
+        "key": "ctrl+f2",
+        "mac": "cmd+f2",
+        "when": "editorTextFocus && editorLangId == sql && !editorReadonly"
+      },
+      {
+        "command": "msSqlMcp.goToObjectDefinition",
+        "key": "ctrl+f12",
+        "mac": "cmd+f12",
+        "when": "editorTextFocus && editorLangId == sql && msSqlMcp.editorConnected"
+      },
+      {
+        "command": "msSqlMcp.selectTopRows",
+        "key": "ctrl+3",
+        "mac": "cmd+3",
+        "when": "editorTextFocus && editorLangId == sql && msSqlMcp.editorConnected"
+      },
+      {
+        "command": "msSqlMcp.renameObject",
+        "key": "f2",
+        "when": "focusedView == msSqlMcp.explorer && !inputFocus"
+      },
+      {
+        "command": "msSqlMcp.copyName",
+        "key": "ctrl+c",
+        "mac": "cmd+c",
+        "when": "focusedView == msSqlMcp.explorer && !inputFocus"
       }
     ]
   },

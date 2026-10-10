@@ -447,7 +447,7 @@ internal static class ObjectScripter
         switch (type)
         {
             case "Login":
-                if (await CatalogReader.ReadLoginAsync(conn, principal, ct).ConfigureAwait(false) is { } login)
+                if (await CatalogReader.ReadLoginAsync(conn, principal, version, ct).ConfigureAwait(false) is { } login)
                 {
                     ddl = SecurityDdlRenderer.RenderLogin(login, version, out warnings);
                 }
@@ -470,7 +470,7 @@ internal static class ObjectScripter
             default:
                 if (await CatalogReader.ReadDatabaseRoleAsync(conn, principal, ct).ConfigureAwait(false) is { } role)
                 {
-                    ddl = SecurityDdlRenderer.RenderDatabaseRole(role, version);
+                    ddl = SecurityDdlRenderer.RenderDatabaseRole(role, version, out warnings);
                 }
 
                 break;

@@ -2,6 +2,7 @@
 // - `initialize` gets a result after FAKE_INIT_DELAY_MS (default 0) ms;
 // - `tools/call` `slow` answers after `arguments.ms` (default 500) ms, even when cancelled (to exercise late responses);
 // - `tools/call` `echo` answers at once with its arguments;
+// - any `tools/call` with `arguments.failWith` answers success=false with that error;
 // - every notification received is written to stderr as `NOTIFY <json>`.
 import { createInterface } from 'node:readline';
 
@@ -24,6 +25,10 @@ rl.on('line', line => {
   }
   if (msg.method === 'tools/call') {
     const { name, arguments: args = {} } = msg.params ?? {};
+    if (typeof args.failWith === 'string') {
+      send({ jsonrpc: '2.0', id: msg.id, result: toolResult({ success: false, error: args.failWith }) });
+      return;
+    }
     if (name === 'slow') {
       setTimeout(() => send({ jsonrpc: '2.0', id: msg.id, result: toolResult({ success: true, data: { slept: args.ms ?? 500 } }) }), args.ms ?? 500);
       return;

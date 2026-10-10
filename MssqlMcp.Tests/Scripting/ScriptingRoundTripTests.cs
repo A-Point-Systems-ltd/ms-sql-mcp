@@ -313,11 +313,12 @@ public sealed class ScriptingRoundTripTests
             var orphan = await ScriptAsync(cs, "DatabaseUser", "orphan");
             const string OrphanWarning = "user [orphan] has no matching login; scripted as CREATE USER [orphan] WITHOUT LOGIN";
             Assert.Equal(OrphanWarning, Assert.Single(orphan.Warnings));
-            Assert.Equal($"-- WARNING: {OrphanWarning}\r\nCREATE USER [orphan] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];", orphan.Ddl);
+            // Every new user gets an implicit GRANT CONNECT, which the permissions section shows.
+            Assert.Equal($"--create\r\n-- WARNING: {OrphanWarning}\r\nCREATE USER [orphan] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];\r\n\r\n--permissions\r\nGRANT CONNECT TO [orphan];", orphan.Ddl);
 
             var loginless = await ScriptAsync(cs, "DatabaseUser", "loginless");
             Assert.Empty(loginless.Warnings);
-            Assert.Equal("CREATE USER [loginless] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];", loginless.Ddl);
+            Assert.Equal("--create\r\nCREATE USER [loginless] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];\r\n\r\n--permissions\r\nGRANT CONNECT TO [loginless];", loginless.Ddl);
         }
         finally
         {

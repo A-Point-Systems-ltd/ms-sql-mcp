@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { McpToolError } from '../client/parse';
+import { McpToolError, pick } from '../client/parse';
 import type { ServerProcessClient } from '../client/serverProcessClient';
 import { pickProfile } from '../connections/connectionCommands';
 import type { ConnectionProfile } from '../connections/profile';
@@ -245,6 +245,18 @@ export function registerQueryCommands(
     }
     // An empty mssql-sql: document titled "Query N - <server> - <database>" (not untitled: its tab shows the target).
     await lifecycle.createQuery(p);
+  });
+
+  // Internal (Select Top Rows of a table-valued function): a new query window on a connection, filled with text.
+  reg('newQueryWithText', async arg => {
+    const connection = typeof pick(arg, 'connection') === 'string' ? String(pick(arg, 'connection')) : '';
+    const text = typeof pick(arg, 'text') === 'string' ? String(pick(arg, 'text')) : '';
+    const p = findProfile(store.list(), connection);
+    if (!p?.open) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${connection}' first.`);
+      return;
+    }
+    await lifecycle.createQuery(p, text);
   });
 
   // Palette and the explorer title: kept query windows (closed with text), newest first.

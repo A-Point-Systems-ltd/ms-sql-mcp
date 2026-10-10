@@ -46,6 +46,9 @@ public static class ToolNames
     public const string RunScript = "run_script";
     public const string DdlHistory = "ddl_history";
     public const string LanguageService = "language_service";
+
+    // Extension-only too (MSSQL_SCRIPT_RUNNER=true), but bound to no connection: the routing filter passes it through.
+    public const string FormatSql = "format_sql";
     // Connection-form probe: registered only when MSSQL_PROBE_TOOLS=true (the VS Code extension's short-lived probe process).
     public const string ProbeListDatabases = "probe_list_databases";
     public const string ProbeDatabaseState = "probe_database_state";

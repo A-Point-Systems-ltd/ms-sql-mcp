@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0
+
+- **Format SQL**: right-click **Format Document / Format Selection / Format SQL** or **Ctrl+F2** (selection, else the document) formats T-SQL in the team style (ScriptDom parser; only whitespace and keyword case change, verified on every run). Settings `msSqlMcp.format.keywordCase`, `msSqlMcp.format.maxItemsPerRow`. Works without a connection: the runner process now starts without one.
+- **Enhanced completions** (switch in the SQL editor tab's **...** menu and right-click menu; setting `msSqlMcp.completion.enhanced`): JOIN clauses and ON conditions from foreign keys or matching key names, generated table aliases, the **Pick columns…** checklist, `*` expansion (light bulb), and quick snippets with a **⇥ Tab** hint (`ssf` → `select top(100) * from`, and more).
+- **Ctrl+3** Select Top Rows of the table / view under the cursor (Data View) or a table-valued function (new query with its parameters, not run). **Ctrl+F12** opens the object's script in a new tab. Both scoped to SQL editors bound to a connection.
+- In SQL editors only, the new keys replace VS Code's **Change All Occurrences** (Ctrl+F2), **Focus Third Editor Group** (Ctrl+3) and **Go to Implementations** (Ctrl+F12); rebind them in Keyboard Shortcuts if you prefer the defaults.
+- Format Document / format-on-save serve the extension's query windows only; `msSqlMcp.format.formatFiles` (off) opts `.sql` files and untitled editors in. A script that does not parse is reported in the status bar on save, not in a dialog.
+- Failures of IntelliSense and Format SQL calls are logged without their message (it can quote the script).
+- Object explorer: database roles, users, server roles and logins script with titled sections and their permissions, owned schemas and memberships (logins also with their user in the connection's database).
+- Data View: double-clicking a cell that cannot be edited shows why (read-only connection, view, no primary key, identity / computed column, value too long) instead of opening the value in a new tab; the hover button still opens the viewer. Results grids are unchanged.
+- Data View: `sql_variant` columns can be edited; values are saved as text (`N'...'`), so the stored base type becomes nvarchar.
+- Object explorer: **Copy Name** (also Ctrl+C in the tree) and **Rename…** (also F2) on objects. Rename opens an input box with the name selected (VS Code trees cannot edit labels in place), lists the views / procedures / functions that reference the object and will break, asks for confirmation, then runs `sp_rename` (tables, views, procedures, functions, triggers, foreign keys, indexes, types) or `ALTER ROLE / USER / LOGIN / SERVER ROLE ... WITH NAME`. Refused on read-only connections; database triggers are not supported.
+- Object explorer filters are per group and per connection (Tables of one connection, Views of another, ...), set from the filter icon on each group, its right-click menu or Ctrl+F; each group shows its term and `n of m`; **Clear All Filters** in the view title. Filters are kept across restarts. (Before: one filter for the whole tree.)
+- Query results: a run that returns no rows and no messages (for example a script with `SET NOCOUNT ON` and no SELECT) shows "Commands completed successfully." in Messages, as SSMS does, instead of an empty pane.
+
 ## 1.1.1
 
 - Marketplace / Open VSX icon: the A Point logo (`media/icon.png`, 512x512). No functional changes.

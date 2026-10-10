@@ -8,6 +8,7 @@ SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles th
 - **Editing views, procedures and functions**: their DDL opens as an editable document bound to its connection; **Run** (F5) applies it to the database.
 - **Query windows**: New Query on a connection, run with F5 (the selection or the whole document) and cancel.
 - **IntelliSense**: SSMS-style completion, hover and signature help in SQL editors bound to a connection (Microsoft SqlParser, in the bundled server); **Ctrl+Shift+R** refreshes its cache.
+- **SQL editor tools**: whole JOIN clauses and ON conditions from foreign keys, table aliases, a column picker, `*` expansion, quick snippets (`ssf` then Tab), **Ctrl+3** Select Top Rows, **Ctrl+F12** Go to Object Definition, and **Ctrl+F2** Format SQL (team style, ScriptDom).
 - **Results panel**: one grid per result set and a Messages tab, kept on your machine.
 - **Data grid** (Data View and Results): one-line rows, resizable and auto-fitting columns and rows, a copy button on every cell, and column sort.
 - **Agent server and registration**: VS Code agent mode and Cursor get the MCP server automatically; Cursor CLI, Claude Desktop and Claude Code with one command.
@@ -53,7 +54,7 @@ The **APoint-ms-sql** view in the activity bar lists your connections. Each open
   - **Copy row**: the row-number gutter's hover button (or right-click) offers **Copy row (tab-separated)** and **Copy row (JSON)** (column names as keys, NULL as `null`; tabs and line breaks become spaces in the tab-separated form).
   - **Export CSV** asks first, every time: "Export N rows to a CSV file? The data may contain personal information; keep the file inside the company." Then you choose the file (default `<object or results>_<yyyyMMdd_HHmm>.csv`). The file is UTF-8 with a byte order mark (so Excel shows Hebrew correctly), RFC 4180 quoted, with the visible columns in the displayed order and every loaded row that passes the filters. In text columns, a value that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is written as `'` + the value (quoted), so Excel shows it as text instead of running it as a formula (the confirmation says so); numeric, date and binary columns are written as they are. The `msSqlMcp.export.neutralizeFormulas` setting (default on) turns this off.
   - Copied text (a cell, a row, a selection) is put on the clipboard exactly as it is, without that formula prefix: check what you paste into a spreadsheet.
-- **Filter** shows only objects whose name contains the text you type (case-insensitive).
+- **Filter** is per group and per connection: the filter icon on a group (Tables, Views, Stored Procedures, ...), its right-click menu, or Ctrl+F on a selected group or object shows only that group's objects whose name contains the text you type (case-insensitive). Each group can have its own filter in each connection; the group shows `filter: <text> · n of m`, its clear icon removes it, and **Clear All Filters** in the view title removes all. Filters are kept across restarts.
 - Closed connections stay in the list; right-click **Open** to browse them again.
 
 ### MCP server for agents
@@ -199,6 +200,41 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 - **Removing it**: `DROP TRIGGER [DDL_Audit] ON DATABASE; DROP USER [DDL_Audit_Writer];` stops all logging at once. If you also want the history gone, back up `dbo.DDL_AuditLog` first, then `DROP TABLE dbo.DDL_AuditLog;`. A table created by the extension also has the index `IX_DDL_AuditLog_ObjectName`, which is dropped with it.
 - An existing `dbo.DDL_AuditLog` is used only when its columns are wide enough and of the right types (for example `ObjectName` at least 100 characters, `CommandXML` of type `xml`); otherwise nothing is created and a warning asks a DBA to align the table (the server's `ddl_history install` error lists each problem). A `varchar(max)` `CommandText` is accepted, but non-Latin text in DDL is then stored lossy.
 
+## SQL editor tools
+
+### Enhanced completions
+
+On by default; switch them off or on from the SQL editor tab's **...** menu (or the tab's right-click menu): **✓ Enhanced Completions** / **Enhanced Completions (off)**, or the setting `msSqlMcp.completion.enhanced`. They need an editor bound to an open connection, except the snippets.
+
+- **JOIN completion**: after `JOIN ` (or `APPLY `) the list starts with whole clauses for the tables already in the statement, from foreign keys in both directions and then from matching names (a single-column key and the column that references it, for example `Buildings b on b.BID = u.BID` or `OrderLines.OrderId`; generic names such as `Id`, `LineNo`, `Code` or `Name`, IDENTITY columns and the last part of a composite key join only through a foreign key). Tables already in the statement are not offered again.
+- **ON completion**: after a join's `ON ` the list starts with the conditions between the table just joined and the earlier ones.
+- **Table aliases**: a table or view completed after `FROM` or `JOIN` gets an alias: the lower-case initials of its name (`TableProblemsLastSub` → `tpls`, `CC_Meshulam_Buildings` → `cmb`), numbered when taken or reserved. Aliases you wrote are never changed.
+- **Column picker**: in a SELECT list, the first entry is **Pick columns…**: a filterable checklist of the statement's columns (with type, key and nullability); Enter inserts the checked ones at the caret. Also in the editor's right-click menu.
+- **`*` expansion**: on a `*` or `alias.*` of a SELECT list, the light bulb (**Ctrl+.**) offers **Expand * to its columns**.
+- **Snippets**: type the prefix and press **Tab**; the list shows each one with a **⇥ Tab** hint and a preview. `ssf` → `select top(100) * from`, `scf` count, `sw` select-where, `ii` / `is` insert, `uu` update, `df` delete, `ij` / `lj` joins, `gb`, `ob`, `ex`, `bt` transaction (rolls back until you switch to commit), `tc` TRY/CATCH, `cp` / `cf` / `ctf` new procedure / scalar function / inline function (with `--with encryption` ready to enable; `CREATE OR ALTER` needs SQL Server 2016 SP1 or later), `dc` cursor loop.
+
+The catalog behind JOIN / ON, the picker and `*` (tables, views, table-valued functions, their columns and foreign keys) is read once per connection with two catalog queries and refreshed every 10 minutes or with **Refresh IntelliSense Cache**.
+
+### Shortcuts (SQL editors)
+
+| Key | Command | Notes |
+|-----|---------|-------|
+| **Ctrl+F2** | Format SQL | The selection (widened to the statements it touches), or the whole document. Works without a connection. Replaces VS Code's *Change All Occurrences* in SQL editors. |
+| **Ctrl+3** | Select Top Rows | The selected or under-cursor table or view opens in Data View (`TOP` = `msSqlMcp.dataViewRows`, read-only). A table-valued function opens a new query with its parameters declared, not run. Replaces *Focus Third Editor Group* in SQL editors. |
+| **Ctrl+F12** | Go to Object Definition | The object's script in a new tab: views, procedures and functions editable, tables read-only. Synonyms are followed; names of another database (three- or four-part names, synonyms to them) are reported as not found. Replaces *Go to Implementations* in SQL editors. |
+
+The three keys replace VS Code's defaults only in SQL editors (Ctrl+F2 only when the editor is writable; Ctrl+3 and Ctrl+F12 only when it is bound to a connection). To keep a VS Code default, open **Keyboard Shortcuts** (Ctrl+K Ctrl+S), search for the APoint-ms-sql command and remove or change its key.
+
+### Format SQL
+
+Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ctrl+F2**. Format Document / Selection (and format-on-save) apply to the extension's query windows and object scripts; set `msSqlMcp.format.formatFiles` to `true` to also format `.sql` files and untitled editors with them. **Ctrl+F2** works in every SQL editor. The formatter parses with Microsoft ScriptDom and changes only whitespace and the case of keywords, system data types and built-in functions (`msSqlMcp.format.keywordCase`, default `lower`). It never changes identifiers, aliases, column names, strings or comments, never adds or removes `AS`, `;`, brackets or `GO`, and checks this on every run: if the result would differ in anything else, nothing changes. Text that does not parse is refused with the line and column of the error (when only a selection parses, the selection alone is formatted).
+
+- `declare`: the first variable on the `declare` line (or under it, if you put it there), later ones under it with a leading comma; variables of one type without a value share a line.
+- SELECT / INSERT / VALUES / SET / GROUP BY / ORDER BY lists: up to 4 items on one line (`msSqlMcp.format.maxItemsPerRow`); longer lists start on the next line, 4 per row, keeping rows you broke yourself; INSERT…SELECT / VALUES rows follow the column rows.
+- `from`, `where`, `group by`, `having`, `order by` at the statement's indent; joins on their own line one level in, `on` on the join line; two or more WHERE conditions one per line with `and` / `or` first; a bracketed OR group on its own lines with its comments.
+- Procedures and functions: parameters one per line, `as` / `begin` / `end` at column 0, the body one level in. Short UPDATE / DELETE / INSERT written on one line stay on one line.
+- Indentation follows the editor (tab size, spaces or tabs); blank lines are kept (at most 2 in a row).
+
 ## Settings
 
 | Setting | Default | Description |
@@ -209,6 +245,10 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 | `msSqlMcp.export.neutralizeFormulas` | `true` | Export CSV prefixes text values that start with `=` `+` `-` `@` (or a tab / CR) with `'` so spreadsheets do not run them as formulas. |
 | `msSqlMcp.query.maxRows` | `1000` | Rows kept per result set when a query window runs (1-10000); further rows are only counted. |
 | `msSqlMcp.intellisense.enabled` | `true` | SQL IntelliSense in editors bound to an open connection (see [IntelliSense](#intellisense)). |
+| `msSqlMcp.completion.enhanced` | `true` | JOIN / ON suggestions, aliases, column picker, `*` expansion and snippets (see [SQL editor tools](#sql-editor-tools)); also switched from the editor tab's menu. |
+| `msSqlMcp.format.keywordCase` | `lower` | Format SQL: `lower`, `upper` or `preserve` for keywords, system types and built-in functions. |
+| `msSqlMcp.format.formatFiles` | `false` | Format Document / Selection and format-on-save also for `.sql` files and untitled editors (Ctrl+F2 works everywhere). |
+| `msSqlMcp.format.maxItemsPerRow` | `4` | Format SQL: most items per row of column and value lists (1-50). |
 | `msSqlMcp.serverPath` | bundled | Path to a different `MssqlMcp.exe`. |
 | `msSqlMcp.logLevel` | `error` (installed) | Output channel verbosity: `off`, `error`, `warn`, `info`, `debug`, `trace`. |
 
@@ -218,7 +258,8 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 - **The data view and query results stay on your machine.** Rows are shown in the editor and in the Results panel and are never sent anywhere automatically. They leave the grid only when you copy them (a cell, a row, a selection, or Ctrl+A) or export them to a CSV file, which asks for confirmation every time. The Output channel logs only row counts, never values.
 - **Cell viewer tabs are normal editor tabs**; AI assistants in your editor may read open tabs as context. Close viewer tabs holding client personal data before using AI chat.
 - **Agents see what they query.** Data returned by `read_data` goes to the AI model the agent uses. Use read-only connections and least-privilege logins for databases with personal data.
-- **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged; for IntelliSense only the document length and item counts). Use `trace` only for troubleshooting and clear the channel afterwards.
+- **Errors of IntelliSense and Format SQL** are logged without their message (a syntax error quotes the script); the message is only in `trace` logs.
+- **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged; for IntelliSense and Format SQL only the document length and item counts). Use `trace` only for troubleshooting and clear the channel afterwards.
 - Passwords are never written to settings, logs, the Output channel, tree labels or DDL documents.
 
 ## License

@@ -145,12 +145,16 @@ export function traceablePayload(tool: string, payload: unknown): unknown {
   return { rowCount: Array.isArray(rows) ? rows.length : 0, truncated: pick(payload, 'truncated') === true };
 }
 
+/** Tools whose arguments carry the editor's document: their error messages may quote it (a syntax error near 'x'). */
+export const DOCUMENT_TOOLS: ReadonlySet<string> = new Set(['language_service', 'format_sql']);
+
 /**
  * What trace logging may record for a tool call's arguments. language_service sends the whole document on every
  * keystroke: only its length is kept. Other arguments are returned unchanged.
  */
 export function traceableArguments(tool: string, args: Record<string, unknown>): Record<string, unknown> {
-  if (tool !== 'language_service' || !('text' in args)) return args;
+  // The document text can hold client data: trace its length only.
+  if (!DOCUMENT_TOOLS.has(tool) || !('text' in args)) return args;
   const { text, ...rest } = args;
   return { action: rest.action, textLength: typeof text === 'string' ? text.length : 0, ...rest };
 }

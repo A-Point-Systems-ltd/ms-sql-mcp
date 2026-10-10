@@ -279,3 +279,17 @@ test('Results message validation: copy needs a set, row and column in range and 
   ];
   for (const m of bad) assert.equal(parseResultsMessage(m, sets, 9), undefined, JSON.stringify(m));
 });
+
+test('Data View: double-click on a cell that cannot be edited explains why instead of opening a viewer tab', async () => {
+  const { renderGrid } = await import('../out/grid/gridHtml.js');
+  const ro = renderGrid({ id: 'g1', columns: [{ name: 'a', type: 'int' }], rows: [[1]], sortMode: 'server', gen: 1, readOnlyReason: 'Read-only <connection>.' });
+  assert.match(ro, /data-ro="Read-only &lt;connection&gt;\."/);
+  assert.match(ro, /<div class="gtip" role="status" style="display:none"><\/div>/);
+  const results = renderGrid({ id: 'g2', columns: [{ name: 'a', type: 'int' }], rows: [[1]], sortMode: 'local', gen: 1 });
+  assert.doesNotMatch(results, /data-ro=/);
+  // The script tells Data View grids apart and shows the reason instead of posting openCell.
+  const { gridScript } = await import('../out/grid/gridHtml.js');
+  const script = gridScript();
+  assert.doesNotThrow(() => new Function(script));
+  assert.match(script, /if \(isDataView\) \{ e\.preventDefault\(\); hideHover\(\); showTip\(td, whyNotEditable\(td\)\); return; \}/);
+});
