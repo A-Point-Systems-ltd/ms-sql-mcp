@@ -84,7 +84,8 @@ internal class Program
 
         // Connections the user manages in the connections view; the file may not exist yet (first run).
         var managedPath = ManagedConnectionTools.ConfiguredPath(Environment.GetEnvironmentVariable);
-        if (profiles.Count == 0 && !adhocAllowed && managedPath is null)
+        // The extension's runner also formats SQL (format_sql), which needs no connection, so it may start without one.
+        if (profiles.Count == 0 && !adhocAllowed && managedPath is null && !ScriptRunnerTools.IsEnabled(Environment.GetEnvironmentVariable))
         {
             const string errorMsg = "FATAL: no connection configured. Set CONNECTION_STRING, MSSQL_CONNECTIONS, MSSQL_CONNECTIONS_FILE or MSSQL_MANAGED_CONNECTIONS_FILE (or MSSQL_ALLOW_ADHOC_CONNECTIONS=true).";
             Console.Error.WriteLine(errorMsg);
