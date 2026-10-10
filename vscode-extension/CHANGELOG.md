@@ -8,6 +8,8 @@
 - In SQL editors only, the new keys replace VS Code's **Change All Occurrences** (Ctrl+F2), **Focus Third Editor Group** (Ctrl+3) and **Go to Implementations** (Ctrl+F12); rebind them in Keyboard Shortcuts if you prefer the defaults.
 - Format Document / format-on-save serve the extension's query windows only; `msSqlMcp.format.formatFiles` (off) opts `.sql` files and untitled editors in. A script that does not parse is reported in the status bar on save, not in a dialog.
 - Failures of IntelliSense and Format SQL calls are logged without their message (it can quote the script).
+- Object explorer: database roles, users, server roles and logins script with titled sections and their permissions, owned schemas and memberships (logins also with their user in the connection's database).
+- Data View: double-clicking a cell that cannot be edited shows why (read-only connection, view, no primary key, identity / computed column, value too long) instead of opening the value in a new tab; the hover button still opens the viewer. Results grids are unchanged.
 
 ## 1.1.1
 

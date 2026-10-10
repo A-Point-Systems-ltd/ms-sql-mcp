@@ -80,6 +80,11 @@ export interface GridSpec {
   scroll?: readonly [number, number];
   /** Data View editing (in-cell edits, new and deleted rows); omitted when the grid is read-only. */
   edit?: GridEditSpec;
+  /**
+   * Data View without editing: why (read-only connection, a view, ...). With it (or with `edit`) a double-click on a
+   * cell that cannot be edited explains why instead of opening the value in a viewer tab; Results grids keep that.
+   */
+  readOnlyReason?: string;
 }
 
 const SAFE_ID = /^[A-Za-z][\w-]*$/;
@@ -198,6 +203,7 @@ export function renderGrid(spec: GridSpec): string {
     ...(v?.widths ? [`data-widths="${ints(v.widths)}"`] : []),
     ...(spec.scroll ? [`data-scroll="${ints(spec.scroll)}"`] : []),
     ...(spec.focus !== undefined ? [`data-focus="${Math.floor(spec.focus)}"`] : []),
+    ...(!ed && spec.readOnlyReason !== undefined ? [`data-ro="${escapeHtml(spec.readOnlyReason)}"`] : []),
   ].join(' ');
 
   const checklist = columns.map((c, i) =>
@@ -216,7 +222,8 @@ export function renderGrid(spec: GridSpec): string {
 <div class="gscroll"><table class="gt"><thead><tr class="gh"><th class="rn" aria-label="Row number"></th>${head}</tr><tr class="gf"><th class="rn"></th>${filterRow}</tr></thead><tbody>${body}</tbody></table>
 <button type="button" class="ghover gcopy" title="Copy to clipboard" aria-label="Copy cell value to clipboard" style="display:none">${COPY_ICON}</button>
 <button type="button" class="ghover gview" title="Open in viewer" aria-label="Open cell value in a viewer" style="display:none">${VIEW_ICON}</button>
-<button type="button" class="ghover growbtn" title="Row actions" aria-label="Row actions" aria-haspopup="menu" style="display:none">${MORE_ICON}</button>${ed ? '<textarea class="gedit" rows="1" spellcheck="false" aria-label="Cell value (Enter saves, Alt+Enter new line, Esc cancels)" style="display:none"></textarea>' : ''}</div>
+<button type="button" class="ghover growbtn" title="Row actions" aria-label="Row actions" aria-haspopup="menu" style="display:none">${MORE_ICON}</button>
+<div class="gtip" role="status" style="display:none"></div>${ed ? '<textarea class="gedit" rows="1" spellcheck="false" aria-label="Cell value (Enter saves, Alt+Enter new line, Esc cancels)" style="display:none"></textarea>' : ''}</div>
 </div>`;
 }
 
@@ -309,6 +316,10 @@ export const GRID_CSS = `
   .gt tbody tr > td[data-hit="2"] { --ov: var(--g-cur); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .gt td.null { color: var(--vscode-descriptionForeground); font-style: italic; }
   .gt td.trunc { text-decoration: underline dotted var(--vscode-descriptionForeground); }
+  .gtip { position: absolute; z-index: 6; max-width: 360px; padding: 4px 8px; font-size: 12px; pointer-events: none;
+          color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+          background: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background));
+          border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border)); border-radius: 3px; }
   .gt tbody tr[data-fit="1"] > td, .dgrid[data-wrap="1"] .gt tbody tr:not([data-fit="0"]) > td { white-space: pre-wrap;
     overflow-wrap: anywhere; text-overflow: clip; max-height: ${ROW_FIT_MAX_HEIGHT}px; overflow: auto; }
   .gt tbody tr > td[data-ed="1"] { --ov: color-mix(in srgb, var(--vscode-editorGutter-modifiedBackground, #1b81a8) 28%, transparent); }
@@ -777,6 +788,31 @@ function initGrids(vscode) {
     var loadedRows = Number(grid.getAttribute('data-loaded')) || 0;
     var editor = grid.querySelector('.gedit');
     var editing = null;
+    var isDataView = editFlags !== null || grid.hasAttribute('data-ro');
+    var tip = grid.querySelector('.gtip');
+    var tipTimer = 0;
+    function showTip(td, text) {
+      if (!tip) return;
+      var sr = scroll.getBoundingClientRect(), cr = td.getBoundingClientRect();
+      tip.textContent = text;
+      tip.style.top = (cr.bottom - sr.top + scroll.scrollTop + 2) + 'px';
+      tip.style.left = (cr.left - sr.left + scroll.scrollLeft) + 'px';
+      tip.style.display = 'block';
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(function () { tip.style.display = 'none'; }, 4000);
+    }
+    /** Why a Data View cell is not editable (the double-click hint). */
+    function whyNotEditable(td) {
+      if (editFlags === null) return 'Read-only: ' + (grid.getAttribute('data-ro') || 'this view cannot be edited.');
+      var tr = td.parentNode;
+      var c = Array.prototype.indexOf.call(tr.children, td) - 1;
+      if (tr.getAttribute('data-del') === '1') return 'This row is marked for deletion (right-click to revert).';
+      if (td.getAttribute('data-auto') === '1') return 'Identity or computed column: filled in by the server.';
+      if ((td.getAttribute('class') || '').indexOf('trunc') !== -1) return 'The value is too long to edit here (it was cut for display). Use the viewer button to read it.';
+      if (c >= 0 && heads[c].getAttribute('data-w') !== '1') return 'This column cannot be edited here (identity, computed, or a type such as timestamp / xml / CLR).';
+      if (tr.getAttribute('data-new') !== '1' && editFlags.indexOf('u') === -1) return 'No primary key: existing rows cannot be changed (new rows can be added).';
+      return 'This cell cannot be edited.';
+    }
     function canEdit(td) {
       if (editFlags === null || !td || td.tagName !== 'TD') return false;
       var tr = td.parentNode;
@@ -992,6 +1028,9 @@ function initGrids(vscode) {
         var td = t.closest ? t.closest('tbody td') : null;
         if (!td) return;
         if (canEdit(td)) { e.preventDefault(); startEdit(td); return; }
+        // A Data View edits in place: a cell that cannot be edited says why instead of opening a viewer tab (the
+        // hover button still opens one). The Results grid, which never edits, keeps opening the viewer.
+        if (isDataView) { e.preventDefault(); hideHover(); showTip(td, whyNotEditable(td)); return; }
         var p = td.parentNode;
         vscode.postMessage(withSet({ type: 'openCell', gen: gen, row: Number(p.getAttribute('data-r')), col: Array.prototype.indexOf.call(p.children, td) - 1 }));
       }
@@ -1251,7 +1290,8 @@ export function renderDataView(model: DataViewModel, nonce: string): string {
     meta = `${rowCountLabel(result.rows.length, result.truncated)} · ${cols} column${cols === 1 ? '' : 's'} · ${mode}`;
     content = renderGrid({
       id: 'gd', columns: result.columns, rows: result.rows, sortMode: 'server', sort: model.sort, filters: model.filters, gen: model.gen,
-      view: model.view, focus: model.focus, scroll: model.scroll, toolbarExtra: extra, ...(model.edit ? { edit: model.edit } : {}),
+      view: model.view, focus: model.focus, scroll: model.scroll, toolbarExtra: extra,
+      ...(model.edit ? { edit: model.edit } : { readOnlyReason: model.readOnlyReason ?? 'this view cannot be edited.' }),
     }) + (result.rows.length === 0 ? '<p class="hint">No rows.</p>' : '');
   } else if (model.error === undefined) {
     content = '<p class="hint">Loading…</p>';
