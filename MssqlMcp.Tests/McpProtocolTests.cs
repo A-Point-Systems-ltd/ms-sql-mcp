@@ -366,10 +366,15 @@ public sealed class McpProtocolTests
         await using var client = await StartClientAsync(TwoProfiles(cs), insights: false, scriptRunner: true);
 
         var tools = await client.ListToolsAsync();
-        Assert.Equal(26, tools.Count);
+        Assert.Equal(27, tools.Count);
         var runScript = Assert.Single(tools, t => t.Name == ToolNames.RunScript);
         Assert.True(runScript.ProtocolTool.Annotations?.DestructiveHint);
         Assert.Single(tools, t => t.Name == ToolNames.DdlHistory);
+        Assert.Single(tools, t => t.Name == ToolNames.FormatSql);
+
+        // format_sql is bound to no connection: with two profiles it still needs no 'connection' argument.
+        var formatted = await client.CallToolAsync(ToolNames.FormatSql, new Dictionary<string, object?> { ["text"] = "SELECT 1" });
+        Assert.Contains("\"success\":true", Text(formatted).Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
 
         var main = await client.CallToolAsync(
             ToolNames.RunScript,
