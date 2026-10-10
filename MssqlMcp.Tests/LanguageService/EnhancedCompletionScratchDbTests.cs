@@ -103,6 +103,21 @@ public sealed class EnhancedCompletionScratchDbTests(LanguageServiceDatabase db)
     }
 
     [SkippableFact]
+    public async Task The_catalog_reads_identity_and_key_positions()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+        await ScratchDatabases.ExecAsync(db.ConnectionString!, "IF OBJECT_ID(N'dbo.Lines') IS NULL CREATE TABLE dbo.Lines (HeadId int NOT NULL, LineId int IDENTITY NOT NULL, CONSTRAINT PK_Lines PRIMARY KEY (HeadId, LineId));");
+        await cache.ScopeAsync(main, "select 1", 1, 1, CancellationToken.None);
+        cache.Refresh(main);
+        var catalog = await cache.TryCatalogAsync(main, TimeSpan.FromSeconds(60), CancellationToken.None);
+        var lines = catalog!.Find("dbo", "Lines")!;
+        Assert.Equal((1, false), (lines.Column("HeadId")!.KeyOrdinal, lines.Column("HeadId")!.IsIdentity));
+        Assert.Equal((2, true), (lines.Column("LineId")!.KeyOrdinal, lines.Column("LineId")!.IsIdentity));
+        Assert.True(lines.IsLastKeyPart(lines.Column("LineId")!));
+    }
+
+    [SkippableFact]
     public async Task Scope_columns_carry_bracketed_names_when_needed()
     {
         var (cache, _, main) = Create();

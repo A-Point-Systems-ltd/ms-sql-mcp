@@ -3,7 +3,7 @@
 ## Unreleased
 
 - New extension-only tool `format_sql` (runner process, `MSSQL_SCRIPT_RUNNER=true`): formats T-SQL with ScriptDom's parser and a layout pass that only rewrites whitespace and keyword case; the output is reparsed and compared token by token before any edit is returned. Bound to no connection (the routing filter passes it through), and a runner process may now start with no connection configured.
-- `language_service`: `completion` takes `enhanced` (JOIN / ON suggestions from foreign keys or key-name matches, generated table aliases, a column-picker entry); new actions `scope` (the statement's tables with columns) and `objectInfo` (OBJECT_ID resolution, synonyms followed, parameter defaults read from the definition). A per-connection catalog snapshot (two catalog queries, 10-minute refresh, dropped on refresh / close / idle) backs them. Read-only.
+- `language_service`: `completion` takes `enhanced` (JOIN / ON suggestions from foreign keys or key-name matches, generated table aliases, a column-picker entry); new actions `scope` (the statement's tables with columns) and `objectInfo` (OBJECT_ID resolution, synonyms followed, parameter defaults read from the definition). A per-connection catalog snapshot (two catalog queries over sys.objects / sys.columns / sys.indexes / sys.foreign_keys, including IDENTITY and primary-key column order; 10-minute refresh, dropped on refresh / close / idle) backs them. Name-matched joins pair a single-column key with the column that references it only, never generic names, IDENTITY columns or the last part of a composite key. Read-only.
 - The agent tool set is unchanged (23 tools).
 
 ## 1.1.1

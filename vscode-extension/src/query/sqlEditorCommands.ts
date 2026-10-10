@@ -30,6 +30,10 @@ const SCOPE_TIMEOUT_MS = 20_000;
 const config = () => vscode.workspace.getConfiguration('msSqlMcp');
 const enhanced = () => enhancedEnabled(config().get(ENHANCED_SETTING));
 
+/** Up to 2,000 characters before a line (what a * at the line's start follows). */
+const textBeforeLine = (document: vscode.TextDocument, line: number): string =>
+  document.getText(new vscode.Range(Math.max(0, line - 40), 0, line, 0)).slice(-2000);
+
 const toRange = (e: LsEdit) => new vscode.Range(e.startLine - 1, e.startColumn - 1, e.endLine - 1, e.endColumn - 1);
 
 /**
@@ -215,7 +219,7 @@ export function registerSqlEditorFeatures(context: vscode.ExtensionContext, deps
     provideCodeActions: (document, range) => {
       if (!enhanced() || !profileOf(document, false)) return undefined;
       const line = document.lineAt(range.start.line).text;
-      const star = wildcardAt(line, range.start.character);
+      const star = wildcardAt(line, range.start.character, textBeforeLine(document, range.start.line));
       if (!star) return undefined;
       const action = new vscode.CodeAction(`Expand ${star.qualifier ? star.qualifier + '.' : ''}* to its columns`, vscode.CodeActionKind.RefactorRewrite);
       action.command = { title: action.title, command: 'msSqlMcp.expandWildcard', arguments: [document.uri, range.start.line, star.start] };
@@ -232,7 +236,7 @@ export function registerSqlEditorFeatures(context: vscode.ExtensionContext, deps
     const lineNo = typeof lineArg === 'number' ? lineArg : editor.selection.active.line;
     const character = typeof charArg === 'number' ? charArg : editor.selection.active.character;
     const version = editor.document.version;
-    const star = wildcardAt(editor.document.lineAt(lineNo).text, character);
+    const star = wildcardAt(editor.document.lineAt(lineNo).text, character, textBeforeLine(editor.document, lineNo));
     if (!star) {
       void vscode.window.showInformationMessage('APoint-ms-sql: put the cursor on a * of a SELECT list.');
       return;

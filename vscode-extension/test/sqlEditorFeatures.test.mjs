@@ -127,7 +127,7 @@ test('a * of a SELECT list is found; count(*) and multiplication are not', () =>
   assert.deepEqual(wildcardAt('select top (10) * from t', 16), { start: 16, end: 17 });
   assert.equal(wildcardAt('select count(*) from t', 13), undefined);
   assert.equal(wildcardAt('select a * b from t', 9), undefined);
-  assert.deepEqual(wildcardAt('    *', 4), { start: 4, end: 5 });
+
 });
 
 test('* expands to every column, or to one table for alias.*', () => {
@@ -193,4 +193,11 @@ test('the document tools are the ones whose text and errors are kept out of logs
 
 test('creating procedures says which SQL Server versions CREATE OR ALTER needs', () => {
   for (const p of ['cp', 'cf', 'ctf']) assert.match(SQL_SNIPPETS.find(s => s.prefix === p).description, /2016 SP1/);
+});
+
+test('a * at the start of a line is a wildcard only after a select list start', () => {
+  assert.equal(wildcardAt('       * Qty as Total', 7, 'select Price\n'), undefined);
+  assert.deepEqual(wildcardAt('    *', 4, 'select\n'), { start: 4, end: 5 });
+  assert.deepEqual(wildcardAt('    t.*', 6, 'select a,\n'), { start: 4, end: 7, qualifier: 't' });
+  assert.equal(wildcardAt('    *', 4, ''), undefined);
 });

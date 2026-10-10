@@ -3,8 +3,12 @@ using Microsoft.Data.SqlClient;
 
 namespace Mssql.McpServer.LanguageService;
 
-/// <summary>A column of a table, view or table-valued function; <paramref name="IsKey"/> marks primary-key columns.</summary>
-public sealed record CatalogColumn(string Name, string Type, bool Nullable, bool IsKey);
+/// <summary>
+/// A column of a table, view or table-valued function; <paramref name="IsKey"/> marks primary-key columns,
+/// <paramref name="KeyOrdinal"/> its 1-based position in the key (0 when not a key column), <paramref name="IsIdentity"/>
+/// an IDENTITY column.
+/// </summary>
+public sealed record CatalogColumn(string Name, string Type, bool Nullable, bool IsKey, bool IsIdentity = false, int KeyOrdinal = 0);
 
 /// <summary>A table (U), view (V) or table-valued function (IF / TF) and its columns in column order.</summary>
 public sealed record CatalogObject(string Schema, string Name, string Kind, IReadOnlyList<CatalogColumn> Columns)
@@ -15,6 +19,14 @@ public sealed record CatalogObject(string Schema, string Name, string Kind, IRea
     public CatalogColumn? SingleKey => Columns.Count(c => c.IsKey) == 1 ? Columns.First(c => c.IsKey) : null;
 
     public CatalogColumn? Column(string name) => Columns.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>True when the column is the last column of a composite primary key (the row's own number within its parent).</summary>
+    public bool IsLastKeyPart(CatalogColumn column)
+    {
+        var keyColumns = Columns.Count(c => c.IsKey);
+        return column.IsKey && keyColumns > 1 && (column.KeyOrdinal == keyColumns
+            || (column.KeyOrdinal == 0 && ReferenceEquals(Columns.Last(c => c.IsKey), column)));
+    }
 }
 
 /// <summary>A foreign key: <paramref name="Columns"/> pairs (referencing column, referenced column) in key order.</summary>
@@ -144,12 +156,12 @@ public sealed class CatalogSnapshot
 
     private const string ObjectsQuery = """
         SELECT s.name, o.name, RTRIM(o.type), c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable,
-               CAST(CASE WHEN pk.column_id IS NULL THEN 0 ELSE 1 END AS bit)
+               CAST(CASE WHEN pk.column_id IS NULL THEN 0 ELSE 1 END AS bit), c.is_identity, ISNULL(pk.key_ordinal, 0)
         FROM sys.objects o
             INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
             INNER JOIN sys.columns c ON c.object_id = o.object_id
             INNER JOIN sys.types t ON t.user_type_id = c.user_type_id
-            LEFT JOIN (SELECT ic.object_id, ic.column_id
+            LEFT JOIN (SELECT ic.object_id, ic.column_id, CAST(ic.key_ordinal AS int) AS key_ordinal
                        FROM sys.indexes i
                            INNER JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
                        WHERE i.is_primary_key = 1) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
@@ -195,7 +207,9 @@ public sealed class CatalogSnapshot
                     reader.GetString(3),
                     TypeText(reader.GetString(4), reader.GetInt16(5), reader.GetByte(6), reader.GetByte(7)),
                     reader.GetBoolean(8),
-                    reader.GetBoolean(9)));
+                    reader.GetBoolean(9),
+                    reader.GetBoolean(10),
+                    reader.GetInt32(11)));
             }
 
             Flush();

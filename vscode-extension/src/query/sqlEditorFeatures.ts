@@ -301,14 +301,16 @@ export function pickerItems(tables: readonly ScopeTable[]): PickerItem[] {
 }
 
 /** Where a `*` (or `alias.*`) of a SELECT list sits on the line, or undefined (count(*), multiplication, none). */
-export function wildcardAt(lineText: string, character: number): { start: number; end: number; qualifier?: string } | undefined {
+export function wildcardAt(lineText: string, character: number, textBefore = ''): { start: number; end: number; qualifier?: string } | undefined {
   const re = /(?:^|(?<=[\s,]))((?:\[[^\]]+\]|[A-Za-z_#][\w@#$]*)\.)?\*/g;
   for (let m = re.exec(lineText); m; m = re.exec(lineText)) {
     const start = m.index;
     const end = start + m[0].length;
     if (character < start || character > end) continue;
-    const prefix = lineText.slice(0, start).trimEnd();
-    const listStart = prefix === '' || /(?:\bselect|\bdistinct|,|\btop\s*\(\s*\d+\s*\)(?:\s*percent)?(?:\s*with\s+ties)?|\btop\s+\d+)$/i.test(prefix);
+    // A * at the start of its line continues the previous lines (`select Price` / `* Qty` is a multiplication).
+    const line = lineText.slice(0, start).trimEnd();
+    const prefix = line === '' ? textBefore.trimEnd() : line;
+    const listStart = /(?:\bselect|\bdistinct|,|\btop\s*\(\s*\d+\s*\)(?:\s*percent)?(?:\s*with\s+ties)?|\btop\s+\d+)$/i.test(prefix);
     if (!listStart) return undefined;
     const qualifier = m[1] ? m[1].slice(0, -1).replace(/^\[(.*)\]$/, '$1') : undefined;
     return { start, end, ...(qualifier ? { qualifier } : {}) };

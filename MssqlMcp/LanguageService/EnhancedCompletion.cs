@@ -169,28 +169,37 @@ public static class EnhancedCompletion
         }
     }
 
+    /// <summary>Column names that say nothing about a relationship: they join only through a foreign key.</summary>
+    private static readonly HashSet<string> GenericNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "id", "rowid", "row_id", "guid", "rowguid", "lineno", "line_no", "line", "seq", "sequence", "ordinal",
+    };
+
     /// <summary>
     /// Whether two same-named columns (no foreign key between their tables) are suggested as a join. One side must be
-    /// a table's single-column key; the other side may be a non-key column (Units.BID → Buildings.BID), or a part of a
-    /// composite key only when no other table is keyed by that name (OrderLines.OrderId → Orders.OrderId). Refused:
-    /// single key = single key, composite part = composite part, non-key = non-key, and a composite part matched to a
-    /// key name many tables share (Id, LineNo) — those pair unrelated rows.
+    /// a table's single-column key (the parent); the other side must be the reference to it: a non-key column
+    /// (Units.BID → Buildings.BID) or a leading part of a composite key (OrderLines.OrderId → Orders.OrderId). Never:
+    /// generic names (Id, LineNo), an IDENTITY column on the referencing side (a table's own surrogate number), the
+    /// last part of a composite key (the row's number within its parent), key = key or non-key = non-key. Those pair
+    /// unrelated rows; foreign keys still suggest any of them.
     /// </summary>
     internal static bool NameMatchAllowed(CatalogSnapshot catalog, CatalogObject a, CatalogColumn ca, CatalogObject b, CatalogColumn cb)
     {
-        static int Kind(CatalogObject o, CatalogColumn c) => ReferenceEquals(c, o.SingleKey) ? 2 : c.IsKey ? 1 : 0;
-        var (ka, kb) = (Kind(a, ca), Kind(b, cb));
-        if (ka < kb)
+        _ = catalog;
+        if (GenericNames.Contains(ca.Name))
         {
-            (ka, kb) = (kb, ka);
+            return false;
         }
 
-        return (ka, kb) switch
+        var aParent = ReferenceEquals(ca, a.SingleKey);
+        var bParent = ReferenceEquals(cb, b.SingleKey);
+        if (aParent == bParent)
         {
-            (2, 0) => true,
-            (2, 1) => catalog.TablesKeyedBy(ca.Name).Count == 1,
-            _ => false,
-        };
+            return false;
+        }
+
+        var (child, reference) = aParent ? (b, cb) : (a, ca);
+        return !reference.IsIdentity && !child.IsLastKeyPart(reference);
     }
 
     /// <summary>A schema-qualified name, without the schema when it is the default one.</summary>
