@@ -2,6 +2,7 @@
 // column picker and * expansion. No 'vscode' import — unit-testable with plain Node; sqlEditorCommands.ts is the glue.
 import { pick } from '../client/parse';
 import type { ObjectRef } from '../explorer/catalog';
+import { SQL_DOC_SCHEME } from './sqlDocNames';
 
 /** `msSqlMcp.completion.enhanced`: JOIN / ON suggestions, aliases, the column picker, * expansion and snippets. */
 export const ENHANCED_SETTING = 'completion.enhanced';
@@ -14,8 +15,11 @@ export const FORMAT_FILES_SETTING = 'format.formatFiles';
 
 /** The documents the formatting providers serve: the extension's query windows, plus files when the setting is on. */
 export function formatterSchemes(formatFiles: unknown): string[] {
-  return formatFiles === true ? ['mssql-sql', 'file', 'untitled'] : ['mssql-sql'];
+  return formatFiles === true ? [SQL_DOC_SCHEME, 'file', 'untitled'] : [SQL_DOC_SCHEME];
 }
+
+/** The status-bar note when Format Document / format-on-save did not format (no text from the error: it may quote the script). */
+export const FORMAT_SKIPPED_STATUS = 'APoint-ms-sql: not formatted; press Ctrl+F2 to see why';
 
 /** The runner tool that formats SQL (bound to no connection). */
 export const FORMAT_TOOL = 'format_sql';

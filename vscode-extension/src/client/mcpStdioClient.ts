@@ -106,7 +106,8 @@ export class McpStdioClient implements McpClient {
       } else if (DOCUMENT_TOOLS.has(name)) {
         // The message can quote the document (client data): the error line has none; trace (documented as possibly
         // holding SQL text) gets it for troubleshooting.
-        this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`);
+        // Usually a script still being written (format-on-save, completion in broken SQL): a warning, not an error.
+        this.log.warn('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`);
         this.log.trace('tool', `${name} failure`, err instanceof Error ? err.message : String(err));
       } else {
         this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`, err);

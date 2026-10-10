@@ -101,44 +101,154 @@ public static partial class SqlScope
     internal const int MaxWindow = 64 * 1024;
 
     /// <summary>
-    /// The GO batch that holds the caret, at most <see cref="MaxWindow"/> characters on each side, cut at line starts.
-    /// A GO inside a string or comment is taken as a separator too: the scope is approximate by design.
+    /// The GO batch that holds the caret, at most about <see cref="MaxWindow"/> characters on each side. One lexical
+    /// pass (strings, quoted names, line and nested block comments) finds the line starts that are in code: only those
+    /// can be a GO line or a cut point, so the window never starts or ends inside a literal or comment. When no such
+    /// line start lies within the cap (a huge literal), the batch boundary is kept instead.
     /// </summary>
     internal static (int Start, int End) Window(string text, int caret)
     {
         var start = 0;
         var end = text.Length;
-        foreach (System.Text.RegularExpressions.Match m in GoLine().Matches(text))
+        var cutStart = -1;
+        var cutEnd = -1;
+        foreach (var lineStart in CodeLineStarts(text))
         {
-            if (m.Index + m.Length <= caret)
+            if (lineStart <= caret)
             {
-                start = m.Index + m.Length;
-                start += start < text.Length && text[start] == '\r' ? 1 : 0;
-                start += start < text.Length && text[start] == '\n' ? 1 : 0;
+                if (IsGoLine(text, lineStart, out var next))
+                {
+                    if (next <= caret)
+                    {
+                        start = next;
+                        cutStart = -1;
+                    }
+                }
+                else if (cutStart < 0 && caret - lineStart <= MaxWindow)
+                {
+                    cutStart = lineStart;
+                }
             }
-            else if (m.Index >= caret)
+            else
             {
-                end = m.Index;
-                break;
+                if (IsGoLine(text, lineStart, out _))
+                {
+                    end = lineStart;
+                    break;
+                }
+
+                if (lineStart - caret <= MaxWindow)
+                {
+                    cutEnd = lineStart;
+                }
             }
         }
 
-        if (caret - start > MaxWindow)
+        if (caret - start > MaxWindow && cutStart > start)
         {
-            var cut = text.IndexOf('\n', caret - MaxWindow);
-            start = cut >= 0 && cut < caret ? cut + 1 : caret - MaxWindow;
+            start = cutStart;
         }
 
-        if (end - caret > MaxWindow)
+        if (end - caret > MaxWindow && cutEnd > caret)
         {
-            var cut = text.LastIndexOf('\n', caret + MaxWindow);
-            end = cut > caret ? cut : caret + MaxWindow;
+            end = cutEnd;
         }
 
         return (start, end);
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex(@"^[ \t]*go[ \t]*(?:\d+[ \t]*)?(?:--[^\n]*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline)]
+    /// <summary>Offsets of the line starts (0 included) that are outside strings, quoted names and comments.</summary>
+    private static IEnumerable<int> CodeLineStarts(string text)
+    {
+        yield return 0;
+        var depth = 0;
+        char quote = '\0';
+        var lineComment = false;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            var n = i + 1 < text.Length ? text[i + 1] : '\0';
+            if (c == '\n')
+            {
+                lineComment = false;
+                if (quote == '\0' && depth == 0)
+                {
+                    yield return i + 1;
+                }
+
+                continue;
+            }
+
+            if (lineComment)
+            {
+                continue;
+            }
+
+            if (quote != '\0')
+            {
+                if (c == quote)
+                {
+                    if (n == quote)
+                    {
+                        i++;
+                    }
+                    else
+                    {
+                        quote = '\0';
+                    }
+                }
+
+                continue;
+            }
+
+            if (depth > 0)
+            {
+                if (c == '*' && n == '/')
+                {
+                    depth--;
+                    i++;
+                }
+                else if (c == '/' && n == '*')
+                {
+                    depth++;
+                    i++;
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'':
+                    quote = '\'';
+                    break;
+                case '"':
+                    quote = '"';
+                    break;
+                case '[':
+                    quote = ']';
+                    break;
+                case '-' when n == '-':
+                    lineComment = true;
+                    break;
+                case '/' when n == '*':
+                    depth = 1;
+                    i++;
+                    break;
+            }
+        }
+    }
+
+    /// <summary>True when the line at <paramref name="lineStart"/> is a GO separator; <paramref name="next"/> is the next line's start.</summary>
+    private static bool IsGoLine(string text, int lineStart, out int next)
+    {
+        var nl = text.IndexOf('\n', lineStart);
+        next = nl < 0 ? text.Length : nl + 1;
+        var line = text.AsSpan(lineStart, (nl < 0 ? text.Length : nl) - lineStart).TrimEnd('\r');
+        return GoLine().IsMatch(line);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[ \t]*go[ \t]*(?:\d+[ \t]*)?(?:--.*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
     private static partial System.Text.RegularExpressions.Regex GoLine();
 
     internal static int OffsetOf(string text, int line, int column)
@@ -228,6 +338,34 @@ public static partial class SqlScope
         if (before >= 0 && tokens[before].TokenType == TSqlTokenType.Delete)
         {
             return true;
+        }
+
+        // DELETE TOP (n) [PERCENT] FROM.
+        var t = before;
+        if (t >= 0 && Is(tokens[t], "percent"))
+        {
+            t--;
+        }
+
+        if (t >= 0 && tokens[t].TokenType == TSqlTokenType.RightParenthesis)
+        {
+            var depth = 0;
+            for (; t >= 0; t--)
+            {
+                if (tokens[t].TokenType == TSqlTokenType.RightParenthesis)
+                {
+                    depth++;
+                }
+                else if (tokens[t].TokenType == TSqlTokenType.LeftParenthesis && --depth == 0)
+                {
+                    break;
+                }
+            }
+
+            if (t >= 2 && tokens[t - 1].TokenType == TSqlTokenType.Top && tokens[t - 2].TokenType == TSqlTokenType.Delete)
+            {
+                return true;
+            }
         }
 
         var i = before;

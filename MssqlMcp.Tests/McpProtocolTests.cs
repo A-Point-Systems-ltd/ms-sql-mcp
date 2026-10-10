@@ -585,7 +585,7 @@ public sealed class McpProtocolTests
     private static async Task<McpClient> StartClientAsync(
         string? connectionsJson, bool insights, bool scriptRunner = false, string? protocolVersion = null, Action<string>? stderrLines = null,
         bool probeTools = false, string? managedConnectionsFile = null, ClientCapabilities? capabilities = null, bool appsGate = true,
-        bool noConnections = false)
+        bool noConnections = false, bool skipOnStartupFailure = true)
     {
         TestConnectionString.EnsureInitialized();
         var exe = FindServerExe();
@@ -600,6 +600,7 @@ public sealed class McpProtocolTests
                 ["CONNECTION_STRING"] = connectionsJson is null && !noConnections ? Environment.GetEnvironmentVariable("CONNECTION_STRING") : null,
                 ["MSSQL_CONNECTIONS"] = connectionsJson,
                 ["MSSQL_CONNECTIONS_FILE"] = null,
+                ["MSSQL_ALLOW_ADHOC_CONNECTIONS"] = null,
                 ["USE_INSIGHTS_LAYER"] = insights ? "true" : "false",
                 ["MSSQL_SCRIPT_RUNNER"] = scriptRunner ? "true" : null,
                 ["MSSQL_PROBE_TOOLS"] = probeTools ? "true" : null,
@@ -616,7 +617,7 @@ public sealed class McpProtocolTests
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             return await McpClient.CreateAsync(transport, new McpClientOptions { ProtocolVersion = protocolVersion, Capabilities = capabilities }, cancellationToken: timeout.Token);
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException)
+        catch (Exception ex) when (skipOnStartupFailure && ex is IOException or InvalidOperationException or OperationCanceledException)
         {
             // The server exits at startup when SQL Server is unreachable.
             throw new SkipException($"MCP server did not start (SQL Server unreachable?): {ex.Message}");
@@ -626,7 +627,8 @@ public sealed class McpProtocolTests
     [SkippableFact]
     public async Task The_runner_starts_with_no_connection_and_formats()
     {
-        await using var client = await StartClientAsync(null, insights: false, scriptRunner: true, noConnections: true);
+        // Needs no SQL Server: a start failure here is the regression itself, so it fails instead of skipping.
+        await using var client = await StartClientAsync(null, insights: false, scriptRunner: true, noConnections: true, skipOnStartupFailure: false);
         var formatted = await client.CallToolAsync(ToolNames.FormatSql, new Dictionary<string, object?> { ["text"] = "SELECT 1" });
         Assert.Contains("\"success\":true", Text(formatted).Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
         var completion = await client.CallToolAsync(ToolNames.LanguageService, new Dictionary<string, object?> { ["action"] = "warm" });

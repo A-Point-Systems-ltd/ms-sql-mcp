@@ -54,7 +54,9 @@ public sealed class CatalogSnapshot
                 Index(_tablesBySingleKey, key.Name, o);
             }
 
-            foreach (var column in o.Columns.Where(c => !c.IsKey))
+            // Every column but the single-column key: parts of a composite key (OrderLines.OrderId) join by name too.
+            var single = o.SingleKey;
+            foreach (var column in o.Columns.Where(c => !ReferenceEquals(c, single)))
             {
                 Index(_tablesByNonKeyColumn, column.Name, o);
             }
@@ -134,7 +136,7 @@ public sealed class CatalogSnapshot
     /// <summary>Tables whose single-column primary key is named <paramref name="column"/>.</summary>
     public IReadOnlyList<CatalogObject> TablesKeyedBy(string column) => _tablesBySingleKey.TryGetValue(column, out var list) ? list : [];
 
-    /// <summary>Tables with a column named <paramref name="column"/> that is not part of their primary key.</summary>
+    /// <summary>Tables with a column named <paramref name="column"/> that is not their single-column primary key.</summary>
     public IReadOnlyList<CatalogObject> TablesWithNonKeyColumn(string column) => _tablesByNonKeyColumn.TryGetValue(column, out var list) ? list : [];
 
     /// <summary>Foreign keys where the object is the referencing or the referenced table.</summary>

@@ -75,12 +75,13 @@ public static class EnhancedCompletion
             }
         }
 
-        // Name matches, key to non-key only (a key on both sides, such as Id = Id, joins unrelated rows): a table whose
-        // single-column key names a non-key column of a table in scope, or a table with a non-key column named like the
-        // in-scope table's key. Indexed lookups, so the catalog's size does not matter.
+        // Name matches between a single-column key and a column of the same name that is not the other table's
+        // single-column key (Id = Id between two keyed tables joins unrelated rows; a composite-key part such as
+        // OrderLines.OrderId does join). Indexed lookups, so the catalog's size does not matter.
         foreach (var (table, obj) in inScope)
         {
-            foreach (var column in obj.Columns.Where(c => !c.IsKey))
+            var objKey = obj.SingleKey;
+            foreach (var column in obj.Columns.Where(c => !ReferenceEquals(c, objKey)))
             {
                 foreach (var other in catalog.TablesKeyedBy(column.Name).Where(o => !scopeObjects.Contains(o)))
                 {
@@ -143,8 +144,9 @@ public static class EnhancedCompletion
 
             foreach (var column in joinedObject.Columns)
             {
-                // Key to non-key only: Id = Id between two tables joins unrelated rows.
-                if (otherObject.Column(column.Name) is { } match && (column.IsKey ^ match.IsKey))
+                // A key on at least one side, but not the single-column key on both (Id = Id joins unrelated rows).
+                if (otherObject.Column(column.Name) is { } match && (column.IsKey || match.IsKey)
+                    && !(ReferenceEquals(column, joinedObject.SingleKey) && ReferenceEquals(match, otherObject.SingleKey)))
                 {
                     Add(1, [(column.Name, match.Name)], other, "same column name");
                 }

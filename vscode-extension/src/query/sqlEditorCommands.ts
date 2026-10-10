@@ -9,7 +9,7 @@ import { findProfile } from './editorState';
 import { LANGUAGE_SERVICE_TIMEOUT_MS, LANGUAGE_SERVICE_TOOL } from './intellisense';
 import { QueryDocuments, isNeverBound } from './queryDocuments';
 import {
-  ENHANCED_CONTEXT_KEY, ENHANCED_SETTING, FORMAT_FILES_SETTING, FORMAT_TOOL, LsEdit, formatterSchemes, SQL_SNIPPETS, enhancedEnabled, expandWildcard,
+  ENHANCED_CONTEXT_KEY, ENHANCED_SETTING, FORMAT_FILES_SETTING, FORMAT_SKIPPED_STATUS, FORMAT_TOOL, LsEdit, formatterSchemes, SQL_SNIPPETS, enhancedEnabled, expandWildcard,
   formatRequest, formatSettings, objectNameAt, objectRefOf, parseFormatEdits, parseObjectInfo, parseScope,
   pickerItems, snippetHint, snippetPreview, tvfQuery, wildcardAt,
 } from './sqlEditorFeatures';
@@ -122,7 +122,7 @@ export function registerSqlEditorFeatures(context: vscode.ExtensionContext, deps
       return await formatEdits(document, options, range);
     } catch (err) {
       if (!(err instanceof McpToolError && err.cancelled)) {
-        vscode.window.setStatusBarMessage('APoint-ms-sql: not formatted (the SQL does not parse); Ctrl+F2 shows why', 5000);
+        vscode.window.setStatusBarMessage(FORMAT_SKIPPED_STATUS, 5000);
       }
       return [];
     }

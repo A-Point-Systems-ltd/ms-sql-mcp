@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ENHANCED_CONTEXT_KEY, ENHANCED_SETTING, FORMAT_TOOL, SQL_SNIPPETS, enhancedEnabled, expandWildcard, formatRequest,
-  formatSettings, formatterSchemes, objectNameAt, objectRefOf, parseFormatEdits, parseObjectInfo, parseScope, pickerItems, quoteName,
+  FORMAT_SKIPPED_STATUS, formatSettings, formatterSchemes, objectNameAt, objectRefOf, parseFormatEdits, parseObjectInfo, parseScope, pickerItems, quoteName,
   snippetHint, snippetPreview, tvfQuery, wildcardAt,
 } from '../out/query/sqlEditorFeatures.js';
 import { completionKindName } from '../out/query/intellisense.js';
 import { DOCUMENT_TOOLS, traceableArguments } from '../out/client/parse.js';
+import { SQL_DOC_SCHEME } from '../out/query/sqlDocNames.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
@@ -177,9 +178,11 @@ test('reserved words are bracketed and the quoted names from the server win', ()
 });
 
 test('format-on-save serves only query windows unless .sql files are opted in', () => {
-  assert.deepEqual(formatterSchemes(undefined), ['mssql-sql']);
-  assert.deepEqual(formatterSchemes(false), ['mssql-sql']);
-  assert.deepEqual(formatterSchemes(true), ['mssql-sql', 'file', 'untitled']);
+  assert.deepEqual(formatterSchemes(undefined), [SQL_DOC_SCHEME]);
+  assert.deepEqual(formatterSchemes(false), [SQL_DOC_SCHEME]);
+  assert.deepEqual(formatterSchemes(true), [SQL_DOC_SCHEME, 'file', 'untitled']);
+  assert.match(FORMAT_SKIPPED_STATUS, /not formatted; press Ctrl\+F2/);
+  assert.doesNotMatch(FORMAT_SKIPPED_STATUS, /parse/);
   assert.equal(pkg.contributes.configuration.properties['msSqlMcp.format.formatFiles'].default, false);
 });
 
