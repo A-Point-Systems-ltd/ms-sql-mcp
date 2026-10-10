@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Third-party notices now list Microsoft ScriptDom (MIT), which ships in `MssqlMcp.exe`. No functional changes.
+
 ## 1.2.0
 
 - New extension-only tool `format_sql` (runner process, `MSSQL_SCRIPT_RUNNER=true`): formats T-SQL with ScriptDom's parser and a layout pass that only rewrites whitespace and keyword case; the output is reparsed and compared token by token before any edit is returned. Bound to no connection (the routing filter passes it through), and a runner process may now start with no connection configured.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Third-party notices (shipped in the package) now list Microsoft ScriptDom (MIT), which the bundled server uses. No functional changes.
+
 ## 1.2.0
 
 - **Format SQL**: right-click **Format Document / Format Selection / Format SQL** or **Ctrl+F2** (selection, else the document) formats T-SQL in the team style (ScriptDom parser; only whitespace and keyword case change, verified on every run). Settings `msSqlMcp.format.keywordCase`, `msSqlMcp.format.maxItemsPerRow`. Works without a connection: the runner process now starts without one.
