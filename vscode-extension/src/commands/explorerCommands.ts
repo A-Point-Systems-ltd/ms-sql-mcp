@@ -191,16 +191,19 @@ export function registerExplorerCommands(
     if (newName === undefined || validateNewName(ref, newName)) return;
 
     const dependents: string[] = [];
+    let checkFailed = false;
     const check = dependentsSql(ref);
     if (check) {
       try {
         const result = parseRunScriptResult(await runner.callResult(ref.connection, 'run_script', { script: check, maxRows: 20 }));
+        checkFailed = result.hadErrors;
         for (const row of result.resultSets[0]?.rows ?? []) if (typeof row[0] === 'string') dependents.push(row[0]);
       } catch (err) {
+        checkFailed = true;
         log.warn('renameObject', `Dependency check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    const answer = await vscode.window.showWarningMessage(renameWarning(ref, newName, dependents), { modal: true }, 'Rename');
+    const answer = await vscode.window.showWarningMessage(renameWarning(ref, newName, dependents, checkFailed), { modal: true }, 'Rename');
     if (answer !== 'Rename') return;
 
     const result = parseRunScriptResult(await runner.callResult(ref.connection, 'run_script', { script: renameSql(ref, newName), maxRows: 1 }));
@@ -211,7 +214,7 @@ export function registerExplorerCommands(
     }
     log.info('renameObject', `Renamed ${ref.scriptType} ${copyNameText(ref)} to ${newName} on '${ref.connection}'.`);
     vscode.window.setStatusBarMessage(`APoint-ms-sql: renamed to ${newName}`, 3000);
-    tree.refresh({ kind: 'connection', profile });
+    tree.refreshConnection(profile.name);
   });
 
   // On a group: clears that group's filter; elsewhere (no group target): clears every filter.

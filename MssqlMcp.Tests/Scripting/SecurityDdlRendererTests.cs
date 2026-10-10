@@ -269,4 +269,23 @@ public sealed class SecurityDdlRendererTests
         Assert.Null(unsupported);
         Assert.Equal("service", CatalogReader.DatabaseSecurable(17, "SERVICE", null, "s", null, null).Unsupported);
     }
+
+    [Fact]
+    public void A_fixed_role_owning_its_own_schema_has_nothing_to_script()
+    {
+        var ddl = SecurityDdlRenderer.RenderDatabaseRole(new("db_datareader", true, false, "dbo", null, [], ["db_datareader"], []), V2019);
+        Assert.StartsWith("-- ", ddl);
+        Assert.DoesNotContain("ALTER AUTHORIZATION", ddl);
+
+        var custom = SecurityDdlRenderer.RenderDatabaseRole(new("db_datareader", true, false, "dbo", null, [], ["reports"], []), V2019);
+        Assert.Contains("ALTER AUTHORIZATION ON SCHEMA::[reports] TO [db_datareader];", custom);
+    }
+
+    [Fact]
+    public void Azure_sql_database_has_no_server_permissions_but_managed_instance_does()
+    {
+        Assert.False(SqlServerVersion.Parse("12.0.2000.8", SqlServerVersion.EngineEditionAzureSqlDatabase).HasServerPermissions);
+        Assert.True(SqlServerVersion.Parse("12.0.2000.8", SqlServerVersion.EngineEditionAzureManagedInstance).HasServerPermissions);
+        Assert.True(V2008.HasServerPermissions);
+    }
 }

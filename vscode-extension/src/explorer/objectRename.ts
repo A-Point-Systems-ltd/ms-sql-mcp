@@ -75,8 +75,9 @@ export function dependentsSql(ref: ObjectRef): string | undefined {
 }
 
 /** The confirmation text: what is renamed, what breaks, and the stored-definition caveat for modules. */
-export function renameWarning(ref: ObjectRef, newName: string, dependents: readonly string[]): string {
+export function renameWarning(ref: ObjectRef, newName: string, dependents: readonly string[], checkFailed = false): string {
   const lines = [`Rename ${copyNameText(ref)} to ${newName}?`];
+  if (checkFailed) lines.push('The check for objects that reference it could not run: they are not listed here.');
   if (dependents.length) {
     lines.push(`${dependents.length >= 20 ? '20 or more' : dependents.length} object(s) reference it by name and will break: ${dependents.join(', ')}.`);
   }

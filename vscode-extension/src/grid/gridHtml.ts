@@ -809,7 +809,7 @@ function initGrids(vscode) {
       if (tr.getAttribute('data-del') === '1') return 'This row is marked for deletion (right-click to revert).';
       if (td.getAttribute('data-auto') === '1') return 'Identity or computed column: filled in by the server.';
       if ((td.getAttribute('class') || '').indexOf('trunc') !== -1) return 'The value is too long to edit here (it was cut for display). Use the viewer button to read it.';
-      if (c >= 0 && heads[c].getAttribute('data-w') !== '1') return 'This column cannot be edited here (identity, computed, or a type such as timestamp / xml / CLR).';
+      if (c >= 0 && heads[c].getAttribute('data-w') !== '1') return 'This column cannot be edited here (identity, computed, or a type such as timestamp / binary / spatial / CLR).';
       if (tr.getAttribute('data-new') !== '1' && editFlags.indexOf('u') === -1) return 'No primary key: existing rows cannot be changed (new rows can be added).';
       return 'This cell cannot be edited.';
     }

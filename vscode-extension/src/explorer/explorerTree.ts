@@ -46,10 +46,15 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     private readonly memento?: vscode.Memento,
   ) {
     this.filters = new CategoryFilters(memento?.get(FILTERS_KEY));
+    this.filters.retain(store.list().map(p => p.name));
     // No explorer.reset() here: ExplorerClient resets itself on store change (debounced), and the tree
     // refreshes again on its onDidReset once the new profile set applies.
     this.subs = [
-      store.onDidChange(() => this.refresh()),
+      store.onDidChange(() => {
+        // A removed connection's filters go with it (a new connection of the same name starts unfiltered).
+        if (this.filters.retain(this.store.list().map(p => p.name))) void this.memento?.update(FILTERS_KEY, this.filters.toState());
+        this.refresh();
+      }),
       explorer.onDidReset(() => this.refresh()),
     ];
   }
@@ -76,6 +81,15 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
   private filtersChanged(): void {
     void this.memento?.update(FILTERS_KEY, this.filters.toState());
     this.emitter.fire(undefined);
+  }
+
+  /**
+   * Refreshes one connection by name through the node instance the view holds (a new object would be ignored: tree
+   * events match elements by identity); the whole tree when the connection was never shown.
+   */
+  refreshConnection(name: string): void {
+    const known = [...this.nodes.values()].find(n => n.kind === 'connection' && n.profile.name.toLowerCase() === name.toLowerCase());
+    this.refresh(known);
   }
 
   /** Clears the cache under `node` (everything when omitted) and re-renders it. */

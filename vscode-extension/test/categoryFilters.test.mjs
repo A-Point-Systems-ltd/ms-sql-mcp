@@ -43,3 +43,22 @@ test('package.json: filter and clear on each group, Clear All Filters in the tit
   assert.ok(!title.includes('msSqlMcp.filter'));
   assert.ok(c.keybindings.some(k => k.command === 'msSqlMcp.filter' && k.key === 'ctrl+f'));
 });
+
+test('filters of removed connections are dropped', () => {
+  const f = new CategoryFilters();
+  f.set('dev', 'tables', 'Order');
+  f.set('Gone', 'views', 'v_');
+  assert.equal(f.retain(['DEV', 'prod']), true);
+  assert.equal(f.get('dev', 'tables'), 'Order');
+  assert.equal(f.get('gone', 'views'), '');
+  assert.equal(f.count, 1);
+  assert.equal(f.retain(['dev']), false);
+});
+
+test('tree keys do not fire while typing in an input', () => {
+  const c = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).contributes;
+  for (const id of ['msSqlMcp.renameObject', 'msSqlMcp.copyName', 'msSqlMcp.filter']) {
+    const k = c.keybindings.find(x => x.command === id && /focusedView == msSqlMcp\.explorer/.test(x.when));
+    assert.match(k.when, /!inputFocus/, id);
+  }
+});

@@ -195,7 +195,7 @@ internal static class CatalogReader
             : null;
     }
 
-    public static async Task<LoginMeta?> ReadLoginAsync(SqlConnection conn, string name, CancellationToken ct)
+    public static async Task<LoginMeta?> ReadLoginAsync(SqlConnection conn, string name, SqlServerVersion version, CancellationToken ct)
     {
         var rows = await QueryAsync(conn, """
             SELECT sp.name, sp.type, sp.is_disabled, sp.default_database_name, sp.default_language_name, sl.is_policy_checked, sl.is_expiration_checked
@@ -214,7 +214,7 @@ internal static class CatalogReader
             JOIN sys.server_principals p ON p.principal_id = m.member_principal_id WHERE p.name = @Name ORDER BY r.name;
             """, name, ct).ConfigureAwait(false);
         var l = rows[0];
-        var serverPermissions = await ReadServerPermissionsAsync(conn, name, ct).ConfigureAwait(false);
+        var serverPermissions = version.HasServerPermissions ? await ReadServerPermissionsAsync(conn, name, ct).ConfigureAwait(false) : [];
 
         // The login's user in the connection's database (by SID): its schemas, roles and permissions there.
         LoginDatabaseMeta? database = null;
@@ -224,7 +224,6 @@ internal static class CatalogReader
             """, c => AddName(c, "@Name", name), r => (User: r.GetString(0), Database: r.GetString(1)), ct).ConfigureAwait(false);
         if (mapped.Count > 0)
         {
-            var version = SqlServerVersion.Parse(conn.ServerVersion);
             if (await ReadDatabaseUserAsync(conn, mapped[0].User, version, ct).ConfigureAwait(false) is { } user)
             {
                 database = new LoginDatabaseMeta(mapped[0].Database, user, user.OwnedSchemas ?? [], user.Permissions ?? []);
@@ -345,7 +344,7 @@ internal static class CatalogReader
             SELECT p.name FROM sys.server_role_members m JOIN sys.server_principals r ON r.principal_id = m.role_principal_id
             JOIN sys.server_principals p ON p.principal_id = m.member_principal_id WHERE r.name = @Name ORDER BY p.name;
             """, name, ct).ConfigureAwait(false);
-        var permissions = await ReadServerPermissionsAsync(conn, name, ct).ConfigureAwait(false);
+        var permissions = version.HasServerPermissions ? await ReadServerPermissionsAsync(conn, name, ct).ConfigureAwait(false) : [];
         return new ServerRoleMeta(rows[0].Name, version.Major < 11 || rows[0].Fixed, members, permissions);
     }
 

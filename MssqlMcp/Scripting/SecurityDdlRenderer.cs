@@ -226,7 +226,8 @@ internal static class SecurityDdlRenderer
 
         var script = Sections([
             ("create", create),
-            ("owned schemas", OwnedSchemas(r.OwnedSchemas, r.Name)),
+            // A fixed role owns its built-in schema of the same name (db_datareader owns [db_datareader]): not scripted.
+            ("owned schemas", OwnedSchemas(r.IsFixed ? r.OwnedSchemas?.Where(s => !string.Equals(s, r.Name, StringComparison.OrdinalIgnoreCase)).ToList() : r.OwnedSchemas, r.Name)),
             ("members", [.. r.Members.Select(m => DbMember(r.Name, m, v))]),
             ("permissions", Permissions(r.Permissions, r.Name, list)),
         ]);

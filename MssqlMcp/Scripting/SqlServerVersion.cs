@@ -28,6 +28,9 @@ internal sealed record SqlServerVersion(int Major, int Minor, int Build, int Eng
 
     public bool SupportsAlterRoleAddMember => IsAzure || Major >= 11;
 
+    /// <summary>sys.server_permissions exists on SQL Server and Managed Instance, not on Azure SQL Database.</summary>
+    public bool HasServerPermissions => EngineEdition != EngineEditionAzureSqlDatabase;
+
     public bool SupportsTemporal => IsAzure || Major >= 13;
 
     public bool SupportsMemoryOptimized => IsAzure || Major >= 12;

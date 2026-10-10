@@ -40,6 +40,20 @@ export class CategoryFilters {
     return true;
   }
 
+  /** Drops the filters of connections that no longer exist; true when any was dropped. */
+  retain(connections: readonly string[]): boolean {
+    const keep = new Set(connections.map(c => c.toLowerCase()));
+    let dropped = false;
+    for (const key of [...this.terms.keys()]) {
+      if (!keep.has(key)) {
+        this.terms.delete(key);
+        dropped = true;
+      }
+    }
+
+    return dropped;
+  }
+
   /** Clears every filter; true when there was one. */
   clearAll(): boolean {
     const had = this.terms.size > 0;

@@ -686,7 +686,7 @@
         "command": "msSqlMcp.filter",
         "key": "ctrl+f",
         "mac": "cmd+f",
-        "when": "focusedView == msSqlMcp.explorer"
+        "when": "focusedView == msSqlMcp.explorer && !inputFocus"
       },
       {
         "command": "msSqlMcp.formatSql",
@@ -709,13 +709,13 @@
       {
         "command": "msSqlMcp.renameObject",
         "key": "f2",
-        "when": "focusedView == msSqlMcp.explorer"
+        "when": "focusedView == msSqlMcp.explorer && !inputFocus"
       },
       {
         "command": "msSqlMcp.copyName",
         "key": "ctrl+c",
         "mac": "cmd+c",
-        "when": "focusedView == msSqlMcp.explorer"
+        "when": "focusedView == msSqlMcp.explorer && !inputFocus"
       }
     ]
   },

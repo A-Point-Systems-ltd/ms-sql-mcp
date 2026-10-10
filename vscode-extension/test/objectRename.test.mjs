@@ -53,5 +53,10 @@ test('package.json: Copy Name and Rename on object items, F2 in the tree', () =>
   assert.ok(items.includes('msSqlMcp.copyName') && items.includes('msSqlMcp.renameObject'));
   const f2 = c.keybindings.find(k => k.command === 'msSqlMcp.renameObject');
   assert.equal(f2.key, 'f2');
-  assert.equal(f2.when, 'focusedView == msSqlMcp.explorer');
+  assert.equal(f2.when, 'focusedView == msSqlMcp.explorer && !inputFocus');
+});
+
+test('the warning says when the dependency check could not run', () => {
+  assert.match(renameWarning(ref(), 'X', [], true), /could not run/);
+  assert.doesNotMatch(renameWarning(ref(), 'X', []), /could not run/);
 });
