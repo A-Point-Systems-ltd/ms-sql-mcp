@@ -43,6 +43,11 @@ public sealed class LanguageServiceDatabase : IAsyncLifetime
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE PROCEDURE dbo.p @x int AS SELECT @x;');");
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE PROCEDURE dbo.p2 @x int, @y nvarchar(10) OUTPUT AS SELECT @x;');");
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE FUNCTION dbo.f (@a int) RETURNS int AS BEGIN RETURN @a; END');");
+        // Enhanced completions: a foreign key to join on and a table-valued function with a parameter default.
+        await ScratchDatabases.ExecAsync(ConnectionString, "CREATE TABLE dbo.Buildings (BID int NOT NULL PRIMARY KEY, fullAddress nvarchar(200) NULL);");
+        await ScratchDatabases.ExecAsync(ConnectionString, "CREATE TABLE dbo.Units (UID int NOT NULL PRIMARY KEY, BID int NOT NULL CONSTRAINT FK_Units_Buildings REFERENCES dbo.Buildings (BID), Name nvarchar(50) NULL);");
+        await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE FUNCTION dbo.fnUnits (@bid int, @top int = 10) RETURNS TABLE AS RETURN SELECT TOP (@top) UID, Name FROM dbo.Units WHERE BID = @bid');");
+        await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE SYNONYM dbo.Blds FOR dbo.Buildings');");
     }
 
     public async Task DisposeAsync()

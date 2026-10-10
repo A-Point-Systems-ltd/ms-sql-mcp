@@ -25,6 +25,12 @@ public sealed class LanguageServiceCache : IDisposable
     internal static readonly TimeSpan DefaultCompletionTimeout = TimeSpan.FromMilliseconds(2000);
     internal static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
 
+    /// <summary>A catalog snapshot (enhanced completions) older than this is read again in the background.</summary>
+    internal static readonly TimeSpan CatalogTtl = TimeSpan.FromMinutes(10);
+
+    /// <summary>How long <c>scope</c> waits for a catalog snapshot that is still loading.</summary>
+    internal static readonly TimeSpan ScopeTimeout = TimeSpan.FromSeconds(15);
+
     // A failed build is retried after this long, so a broken connection is not reopened on every keystroke.
     private static readonly TimeSpan FailedRetryDelay = TimeSpan.FromSeconds(30);
 
@@ -34,6 +40,7 @@ public sealed class LanguageServiceCache : IDisposable
     private readonly ITimer _idleTimer;
     private readonly Lock _gate = new();
     private readonly ConcurrentDictionary<Key, Entry> _entries = new();
+    private readonly ConcurrentDictionary<Key, CatalogEntry> _catalogs = new();
     private int _skippedOperations;
 
     public LanguageServiceCache(ConnectionRegistry registry, ILogger<LanguageServiceCache> logger, TimeProvider? time = null)
@@ -106,7 +113,154 @@ public sealed class LanguageServiceCache : IDisposable
     }
 
     /// <summary>Completion at a 1-based line and column.</summary>
-    public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken)
+    public Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken) =>
+        CompleteAsync(profile, text, line, column, enhanced: false, cancellationToken);
+
+    /// <summary>
+    /// Completion at a 1-based line and column. <paramref name="enhanced"/> adds JOIN / ON suggestions, generated table
+    /// aliases and the column-picker entry (the editor's Enhanced Completions switch).
+    /// </summary>
+    public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, bool enhanced, CancellationToken cancellationToken)
+    {
+        if (!enhanced)
+        {
+            return await CompleteBaseAsync(profile, text, line, column, cancellationToken).ConfigureAwait(false);
+        }
+
+        var completion = CompleteBaseAsync(profile, text, line, column, cancellationToken);
+        SqlScopeInfo? scope = null;
+        CatalogSnapshot? catalog = null;
+        try
+        {
+            scope = SqlScope.Analyze(text, line, column);
+            if (scope.Context is CaretContext.JoinTable or CaretContext.OnCondition)
+            {
+                catalog = await TryCatalogAsync(profile, CompletionTimeout, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug("language_service enhanced completion skipped: {Error}", ex.GetType().Name + ": " + ex.Message);
+        }
+
+        var list = await completion.ConfigureAwait(false);
+        if (scope is null)
+        {
+            return list;
+        }
+
+        var extras = EnhancedCompletion.Create(scope, catalog);
+        return list with { Items = [.. extras, .. EnhancedCompletion.WithAliases(list.Items, scope)] };
+    }
+
+    /// <summary>
+    /// The table sources of the statement at the caret with their columns (column picker, * expansion). Waits up to
+    /// <see cref="ScopeTimeout"/> for the catalog; <c>loading</c> with no columns when it is still not ready.
+    /// </summary>
+    public async Task<ScopeResult> ScopeAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken)
+    {
+        var scope = SqlScope.Analyze(text, line, column);
+        var catalog = await TryCatalogAsync(profile, ScopeTimeout, cancellationToken).ConfigureAwait(false);
+        var tables = scope.Tables.Select(t =>
+        {
+            var o = t.IsVariable ? null : catalog?.Find(t.Schema, t.Name);
+            return new ScopeTableInfo(t.Alias, o?.Schema ?? t.Schema, o?.Name ?? t.Name, o?.Kind, o?.Columns ?? []);
+        }).ToList();
+        return new ScopeResult(tables, catalog is null ? CacheStates.Loading : CacheStates.Warm);
+    }
+
+    /// <summary>The object <paramref name="name"/> resolves to on the profile's database (Go to Object Definition, Select Top Rows).</summary>
+    public async Task<ObjectInfo> ObjectInfoAsync(ConnectionProfile profile, string name, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(profile.ConnectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ObjectInfoReader.ReadAsync(connection, name, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The profile's catalog snapshot when it is ready within <paramref name="wait"/>, else null (it keeps loading).
+    /// While an expired snapshot is read again, the previous one is served.
+    /// </summary>
+    internal async Task<CatalogSnapshot?> TryCatalogAsync(ConnectionProfile profile, TimeSpan wait, CancellationToken cancellationToken)
+    {
+        var entry = CatalogEntryFor(profile);
+        if (entry is null)
+        {
+            return null;
+        }
+
+        if (entry.Load.IsCompletedSuccessfully)
+        {
+            return entry.Load.Result;
+        }
+
+        if (entry.Previous is { IsCompletedSuccessfully: true } previous)
+        {
+            return previous.Result;
+        }
+
+        try
+        {
+            return await entry.Load.WaitAsync(wait, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Timed out (still loading) or failed (logged by the load).
+            return null;
+        }
+    }
+
+    private CatalogEntry? CatalogEntryFor(ConnectionProfile profile)
+    {
+        var key = KeyOf(profile);
+        lock (_gate)
+        {
+            if (!_registry.IsOpen(profile.Name) || _registry.Find(profile.Name) != profile)
+            {
+                return null;
+            }
+
+            var now = _time.GetUtcNow();
+            if (_catalogs.TryGetValue(key, out var existing))
+            {
+                var age = now - existing.Created;
+                var expired = existing.Load.IsCompletedSuccessfully && age > CatalogTtl;
+                var retry = existing.Load.IsFaulted && age > FailedRetryDelay;
+                if (!expired && !retry)
+                {
+                    existing.LastUsed = now;
+                    return existing;
+                }
+            }
+
+            var load = Task.Run(() => LoadCatalogAsync(profile));
+            _ = load.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            var entry = new CatalogEntry(load, existing?.Load is { IsCompletedSuccessfully: true } old ? old : null, now);
+            _catalogs[key] = entry;
+            return entry;
+        }
+    }
+
+    private async Task<CatalogSnapshot> LoadCatalogAsync(ConnectionProfile profile)
+    {
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            await using var connection = new SqlConnection(profile.ConnectionString);
+            await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+            var snapshot = await CatalogSnapshot.LoadAsync(connection, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogDebug("language_service catalog for '{Connection}': {Objects} objects, {Keys} foreign keys in {Elapsed} ms",
+                profile.Name, snapshot.ObjectCount, snapshot.ForeignKeyCount, watch.ElapsedMilliseconds);
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("language_service could not read the catalog for '{Connection}': {Error}", profile.Name, ex.GetType().Name + ": " + ex.Message);
+            throw;
+        }
+    }
+
+    private async Task<CompletionList> CompleteBaseAsync(ConnectionProfile profile, string text, int line, int column, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var watch = Stopwatch.StartNew();
@@ -196,6 +350,7 @@ public sealed class LanguageServiceCache : IDisposable
     public string Refresh(ConnectionProfile profile)
     {
         Remove(KeyOf(profile));
+        _ = _catalogs.TryRemove(KeyOf(profile), out _);
         return StateOf(GetOrStart(profile));
     }
 
@@ -203,6 +358,14 @@ public sealed class LanguageServiceCache : IDisposable
     internal void EvictIdle()
     {
         var now = _time.GetUtcNow();
+        foreach (var pair in _catalogs)
+        {
+            if (now - pair.Value.LastUsed > IdleTimeout)
+            {
+                _ = _catalogs.TryRemove(pair);
+            }
+        }
+
         foreach (var pair in _entries)
         {
             if (now - pair.Value.LastUsed <= IdleTimeout)
@@ -232,6 +395,8 @@ public sealed class LanguageServiceCache : IDisposable
         {
             Remove(key);
         }
+
+        _catalogs.Clear();
     }
 
     private static List<CompletionItemInfo> Complete(BindingContext ctx, string text, int line, int column)
@@ -450,6 +615,11 @@ public sealed class LanguageServiceCache : IDisposable
                     removed.Add(entry);
                 }
             }
+
+            foreach (var key in _catalogs.Keys.Where(k => string.Equals(k.Connection, e.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                _ = _catalogs.TryRemove(key, out _);
+            }
         }
 
         foreach (var entry in removed)
@@ -537,6 +707,24 @@ public sealed class LanguageServiceCache : IDisposable
         {
             get => _abandoned;
             set => _abandoned = value;
+        }
+    }
+
+    /// <summary>A catalog snapshot load; <see cref="Previous"/> is the expired snapshot served while it runs.</summary>
+    private sealed class CatalogEntry(Task<CatalogSnapshot> load, Task<CatalogSnapshot>? previous, DateTimeOffset created)
+    {
+        private long _lastUsedTicks = created.UtcTicks;
+
+        public Task<CatalogSnapshot> Load { get; } = load;
+
+        public Task<CatalogSnapshot>? Previous { get; } = previous;
+
+        public DateTimeOffset Created { get; } = created;
+
+        public DateTimeOffset LastUsed
+        {
+            get => new(Interlocked.Read(ref _lastUsedTicks), TimeSpan.Zero);
+            set => Interlocked.Exchange(ref _lastUsedTicks, value.UtcTicks);
         }
     }
 
