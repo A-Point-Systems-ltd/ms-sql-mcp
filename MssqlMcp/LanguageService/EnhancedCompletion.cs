@@ -86,7 +86,7 @@ public static class EnhancedCompletion
                 {
                     if (NameMatchAllowed(catalog, other, other.SingleKey!, obj, column))
                     {
-                        Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(other.SingleKey!.Name, column.Name)], "same column name");
+                        Add(SchemaRank(other, obj), other, AliasGenerator.Create(other.Name, taken), table, [(other.SingleKey!.Name, column.Name)], "same column name");
                     }
                 }
             }
@@ -98,7 +98,7 @@ public static class EnhancedCompletion
                     var match = other.Column(objKey.Name)!;
                     if (NameMatchAllowed(catalog, obj, objKey, other, match))
                     {
-                        Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(match.Name, objKey.Name)], "same column name");
+                        Add(SchemaRank(other, obj), other, AliasGenerator.Create(other.Name, taken), table, [(match.Name, objKey.Name)], "same column name");
                     }
                 }
             }
@@ -106,6 +106,11 @@ public static class EnhancedCompletion
 
         return results.OrderBy(r => r.Rank).ThenBy(r => r.Label, StringComparer.OrdinalIgnoreCase)
             .Take(MaxSuggestions).Select((r, n) => r.Item with { SortText = $"0{n:D3}" });
+
+        // Foreign keys rank 0; name matches in the same schema as the table in scope come before other schemas (one
+        // schema per tenant or an archive schema must not push the right partner out of the list).
+        static int SchemaRank(CatalogObject other, CatalogObject inScope) =>
+            string.Equals(other.Schema, inScope.Schema, StringComparison.OrdinalIgnoreCase) ? 1 : 2;
 
         void Add(int rank, CatalogObject other, string alias, ScopeTable existing, IEnumerable<(string New, string Existing)> pairs, string detail)
         {
@@ -173,13 +178,14 @@ public static class EnhancedCompletion
     private static readonly HashSet<string> GenericNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "id", "rowid", "row_id", "guid", "rowguid", "lineno", "line_no", "line", "seq", "sequence", "ordinal",
+        "code", "name", "description", "title", "key", "value", "no", "num", "number",
     };
 
     /// <summary>
     /// Whether two same-named columns (no foreign key between their tables) are suggested as a join. One side must be
     /// a table's single-column key (the parent); the other side must be the reference to it: a non-key column
     /// (Units.BID → Buildings.BID) or a leading part of a composite key (OrderLines.OrderId → Orders.OrderId). Never:
-    /// generic names (Id, LineNo), an IDENTITY column on the referencing side (a table's own surrogate number), the
+    /// generic names (Id, LineNo, Code, Name, ...), an IDENTITY column on the referencing side (a table's own surrogate number), the
     /// last part of a composite key (the row's number within its parent), key = key or non-key = non-key. Those pair
     /// unrelated rows; foreign keys still suggest any of them.
     /// </summary>

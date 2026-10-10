@@ -201,3 +201,11 @@ test('a * at the start of a line is a wildcard only after a select list start', 
   assert.deepEqual(wildcardAt('    t.*', 6, 'select a,\n'), { start: 4, end: 7, qualifier: 't' });
   assert.equal(wildcardAt('    *', 4, ''), undefined);
 });
+
+test('comments before a line-start * do not hide or fake a select list start', () => {
+  assert.deepEqual(wildcardAt('  *', 2, 'select -- all columns\n'), { start: 2, end: 3 });
+  assert.deepEqual(wildcardAt('  *', 2, 'select\n  -- all\n'), { start: 2, end: 3 });
+  assert.deepEqual(wildcardAt('  *', 2, 'select /* x */\n'), { start: 2, end: 3 });
+  assert.equal(wildcardAt('  * b', 2, 'select a -- note,\n'), undefined);
+  assert.deepEqual(wildcardAt('  *', 2, "select '--', \n"), { start: 2, end: 3 });
+});

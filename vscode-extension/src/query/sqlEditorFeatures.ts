@@ -309,13 +309,18 @@ export function wildcardAt(lineText: string, character: number, textBefore = '')
     if (character < start || character > end) continue;
     // A * at the start of its line continues the previous lines (`select Price` / `* Qty` is a multiplication).
     const line = lineText.slice(0, start).trimEnd();
-    const prefix = line === '' ? textBefore.trimEnd() : line;
+    const prefix = line === '' ? withoutComments(textBefore).trimEnd() : line;
     const listStart = /(?:\bselect|\bdistinct|,|\btop\s*\(\s*\d+\s*\)(?:\s*percent)?(?:\s*with\s+ties)?|\btop\s+\d+)$/i.test(prefix);
     if (!listStart) return undefined;
     const qualifier = m[1] ? m[1].slice(0, -1).replace(/^\[(.*)\]$/, '$1') : undefined;
     return { start, end, ...(qualifier ? { qualifier } : {}) };
   }
   return undefined;
+}
+
+/** The text without `--` and block comments (strings, quoted names kept), for the select-list test. */
+function withoutComments(text: string): string {
+  return text.replace(/'(?:[^']|'')*'?|\[[^\]]*\]?|"[^"]*"?|--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g, m => (m.startsWith('--') || m.startsWith('/*') ? ' ' : m));
 }
 
 /** The column list that replaces `*` / `qualifier.*`; undefined when no table (or no columns) match. */
