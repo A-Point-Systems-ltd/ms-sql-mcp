@@ -4,6 +4,8 @@ import { refreshDataViewColors, showDataView } from '../dataPanel';
 import type { CellViewer } from '../grid/cellViewer';
 import type { ObjectRef } from '../explorer/catalog';
 import { openEditableDdl } from '../explorer/editableDdl';
+import { copyNameText, dependentsSql, renameSql, renameUnsupported, renameWarning, validateNewName } from '../explorer/objectRename';
+import { parseRunScriptResult } from '../query/runScript';
 import { isEditable } from '../explorer/objectEdit';
 import type { ConnectionStore } from '../connections/store';
 import { findProfile } from '../query/editorState';
@@ -129,6 +131,71 @@ export function registerExplorerCommands(
     box.onDidAccept(() => { apply(); box.hide(); });
     box.onDidHide(() => { if (timer) apply(); box.dispose(); });
     box.show();
+  });
+
+  // Copy Name / Rename act on the clicked item, or on the selected one (F2 in the tree passes no argument).
+  const targetRef = (arg: unknown): ObjectRef | undefined => refOf(arg) ?? refOf(treeView.selection[0]);
+
+  reg('copyName', async arg => {
+    const ref = targetRef(arg);
+    if (!ref) return;
+    const text = copyNameText(ref);
+    await vscode.env.clipboard.writeText(text);
+    vscode.window.setStatusBarMessage(`APoint-ms-sql: copied ${text}`, 2500);
+  });
+
+  reg('renameObject', async arg => {
+    const ref = targetRef(arg);
+    if (!ref) {
+      void vscode.window.showInformationMessage('APoint-ms-sql: select an object in the APoint-ms-sql tree.');
+      return;
+    }
+    const unsupported = renameUnsupported(ref);
+    if (unsupported) {
+      void vscode.window.showInformationMessage(`APoint-ms-sql: ${unsupported}`);
+      return;
+    }
+    const profile = findProfile(store.list(), ref.connection);
+    if (!profile?.open) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${ref.connection}' first.`);
+      return;
+    }
+    if (profile.readOnly) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: '${ref.connection}' is read-only; objects cannot be renamed through it.`);
+      return;
+    }
+    // A tree item cannot be edited in place (VS Code has no API for it): an input box prefilled with the name.
+    const newName = await vscode.window.showInputBox({
+      title: `Rename ${copyNameText(ref)}`,
+      prompt: ref.schema ? `New name (the schema ${ref.schema} stays)` : 'New name',
+      value: ref.name,
+      valueSelection: [0, ref.name.length],
+      validateInput: value => validateNewName(ref, value),
+    });
+    if (newName === undefined || validateNewName(ref, newName)) return;
+
+    const dependents: string[] = [];
+    const check = dependentsSql(ref);
+    if (check) {
+      try {
+        const result = parseRunScriptResult(await runner.callResult(ref.connection, 'run_script', { script: check, maxRows: 20 }));
+        for (const row of result.resultSets[0]?.rows ?? []) if (typeof row[0] === 'string') dependents.push(row[0]);
+      } catch (err) {
+        log.warn('renameObject', `Dependency check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const answer = await vscode.window.showWarningMessage(renameWarning(ref, newName, dependents), { modal: true }, 'Rename');
+    if (answer !== 'Rename') return;
+
+    const result = parseRunScriptResult(await runner.callResult(ref.connection, 'run_script', { script: renameSql(ref, newName), maxRows: 1 }));
+    const error = result.messages.find(m => m.kind === 'error');
+    if (result.hadErrors || error) {
+      void vscode.window.showErrorMessage(`APoint-ms-sql: rename failed: ${error?.text ?? 'see the Output channel.'}`);
+      return;
+    }
+    log.info('renameObject', `Renamed ${ref.scriptType} ${copyNameText(ref)} to ${newName} on '${ref.connection}'.`);
+    vscode.window.setStatusBarMessage(`APoint-ms-sql: renamed to ${newName}`, 3000);
+    tree.refresh({ kind: 'connection', profile });
   });
 
   reg('clearFilter', () => {

@@ -11,6 +11,7 @@
 - Object explorer: database roles, users, server roles and logins script with titled sections and their permissions, owned schemas and memberships (logins also with their user in the connection's database).
 - Data View: double-clicking a cell that cannot be edited shows why (read-only connection, view, no primary key, identity / computed column, value too long) instead of opening the value in a new tab; the hover button still opens the viewer. Results grids are unchanged.
 - Data View: `sql_variant` columns can be edited; values are saved as text (`N'...'`), so the stored base type becomes nvarchar.
+- Object explorer: **Copy Name** (also Ctrl+C in the tree) and **Rename…** (also F2) on objects. Rename opens an input box with the name selected (VS Code trees cannot edit labels in place), lists the views / procedures / functions that reference the object and will break, asks for confirmation, then runs `sp_rename` (tables, views, procedures, functions, triggers, foreign keys, indexes, types) or `ALTER ROLE / USER / LOGIN / SERVER ROLE ... WITH NAME`. Refused on read-only connections; database triggers are not supported.
 
 ## 1.1.1
 

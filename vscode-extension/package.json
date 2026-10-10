@@ -248,6 +248,16 @@
         "command": "msSqlMcp.newQueryWithText",
         "title": "New Query With Text",
         "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.copyName",
+        "title": "Copy Name",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.renameObject",
+        "title": "Rename… (F2)",
+        "category": "APoint-ms-sql"
       }
     ],
     "menus": {
@@ -363,6 +373,16 @@
           "command": "msSqlMcp.removeConnection",
           "when": "viewItem =~ /^msSqlMcp\\.conn/",
           "group": "2@2"
+        },
+        {
+          "command": "msSqlMcp.copyName",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "9_cutcopypaste@1"
+        },
+        {
+          "command": "msSqlMcp.renameObject",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
+          "group": "9_cutcopypaste@2"
         }
       ],
       "commandPalette": [
@@ -441,6 +461,14 @@
         {
           "command": "msSqlMcp.enableEnhancedCompletions",
           "when": "!msSqlMcp.enhancedCompletions"
+        },
+        {
+          "command": "msSqlMcp.copyName",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.renameObject",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -593,11 +621,11 @@
           "description": "Format SQL (Ctrl+F2): the case of keywords, system data types and built-in functions. Identifiers, aliases and column names are never changed."
         },
         "msSqlMcp.format.formatFiles": {
-        "type": "boolean",
-        "default": false,
-        "description": "Format Document / Format Selection (and format-on-save) also for .sql files and untitled SQL editors. Off: only the extension's query windows and object scripts; Ctrl+F2 works in every SQL editor either way."
-      },
-      "msSqlMcp.format.maxItemsPerRow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Format Document / Format Selection (and format-on-save) also for .sql files and untitled SQL editors. Off: only the extension's query windows and object scripts; Ctrl+F2 works in every SQL editor either way."
+        },
+        "msSqlMcp.format.maxItemsPerRow": {
           "type": "number",
           "default": 4,
           "minimum": 1,
@@ -657,6 +685,17 @@
         "key": "ctrl+3",
         "mac": "cmd+3",
         "when": "editorTextFocus && editorLangId == sql && msSqlMcp.editorConnected"
+      },
+      {
+        "command": "msSqlMcp.renameObject",
+        "key": "f2",
+        "when": "focusedView == msSqlMcp.explorer"
+      },
+      {
+        "command": "msSqlMcp.copyName",
+        "key": "ctrl+c",
+        "mac": "cmd+c",
+        "when": "focusedView == msSqlMcp.explorer"
       }
     ]
   },
