@@ -90,6 +90,30 @@ public sealed class EnhancedCompletionScratchDbTests(LanguageServiceDatabase db)
     }
 
     [SkippableFact]
+    public async Task Object_info_never_resolves_objects_of_another_database()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+        var current = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(db.ConnectionString).InitialCatalog;
+        Assert.False((await cache.ObjectInfoAsync(main, "msdb.dbo.sysjobs", CancellationToken.None)).Found);
+        Assert.False((await cache.ObjectInfoAsync(main, "dbo.ExtJobs", CancellationToken.None)).Found);
+        Assert.False((await cache.ObjectInfoAsync(main, "srv.msdb.dbo.sysjobs", CancellationToken.None)).Found);
+        Assert.True((await cache.ObjectInfoAsync(main, $"[{current}].dbo.Buildings", CancellationToken.None)).Found);
+        Assert.Equal("Buildings", (await cache.ObjectInfoAsync(main, "dbo.Blds", CancellationToken.None)).Name);
+    }
+
+    [SkippableFact]
+    public async Task Scope_columns_carry_bracketed_names_when_needed()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+        var scope = await cache.ScopeAsync(main, "SELECT  FROM sales.Orders", 1, 8, CancellationToken.None);
+        var table = Assert.Single(scope.Tables);
+        Assert.Equal("Orders", table.QuotedQualifier);
+        Assert.Equal(["id", "total"], table.Columns.Select(c => c.QuotedName));
+    }
+
+    [SkippableFact]
     public async Task The_tool_serves_scope_and_object_info_and_validates_the_name()
     {
         var (cache, registry, main) = Create();

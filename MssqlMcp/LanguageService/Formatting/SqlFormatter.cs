@@ -49,7 +49,7 @@ public static partial class SqlFormatter
                 : SqlFormatResult.Fail($"Not formatted: syntax error at line {e.Line}, column {e.Column}: {e.Message}", e.Line, e.Column);
         }
 
-        var doc = new SqlTokenDoc(text, parsed.ScriptTokenStream);
+        var doc = new SqlTokenDoc(text, parsed.ScriptTokenStream, options.NewLine);
         if (doc.Count == 0)
         {
             return new SqlFormatResult(true, text, []);
@@ -88,7 +88,7 @@ public static partial class SqlFormatter
         }
 
         _ = Parse(selected, out var errors);
-        if (errors.Count > 0)
+        if (errors.Count > 0 || !IsCodeInContext(text, selected, lines, startLine, endLine))
         {
             return null;
         }
@@ -111,7 +111,8 @@ public static partial class SqlFormatter
             }
         }
 
-        var result = Format(selected, options with { BaseIndent = baseIndent });
+        var newLine = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var result = Format(selected, options with { BaseIndent = baseIndent, NewLine = newLine });
         if (!result.Success)
         {
             return null;
@@ -119,6 +120,37 @@ public static partial class SqlFormatter
 
         var shifted = result.Edits.Select(e => e with { StartLine = e.StartLine + startLine - 1, EndLine = e.EndLine + startLine - 1 }).ToList();
         return result with { Text = null, Edits = shifted };
+    }
+
+    /// <summary>
+    /// True when the selected lines are tokenized the same in the whole document as on their own: no string, comment or
+    /// quoted name crosses into or out of them, so formatting them alone cannot touch the inside of a literal.
+    /// </summary>
+    private static bool IsCodeInContext(string text, string selected, string[] lines, int startLine, int endLine)
+    {
+        var spanStart = 0;
+        for (var i = 0; i < startLine - 1; i++)
+        {
+            spanStart += lines[i].Length + 1;
+        }
+
+        var spanEnd = spanStart + selected.Length;
+        var whole = Tokens(text).Where(t => t.Offset + t.Text.Length > spanStart && t.Offset < spanEnd).ToList();
+        if (whole.Any(t => t.Offset < spanStart || t.Offset + t.Text.Length > spanEnd))
+        {
+            return false;
+        }
+
+        var alone = Tokens(selected);
+        return whole.Count == alone.Count
+            && whole.Zip(alone).All(p => p.First.TokenType == p.Second.TokenType && p.First.Text == p.Second.Text && p.First.Offset - spanStart == p.Second.Offset);
+
+        static List<TSqlParserToken> Tokens(string s)
+        {
+            var parser = new TSql170Parser(initialQuotedIdentifiers: true);
+            using var reader = new StringReader(s);
+            return [.. parser.GetTokenStream(reader, out _).Where(t => t.TokenType is not (TSqlTokenType.WhiteSpace or TSqlTokenType.EndOfFile) && !string.IsNullOrEmpty(t.Text))];
+        }
     }
 
     private static (string[] Gaps, string[] Tokens) Emit(SqlTokenDoc doc, SqlLayout layout, SqlFormatOptions options)

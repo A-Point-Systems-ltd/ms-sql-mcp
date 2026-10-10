@@ -52,8 +52,14 @@ public sealed record SignatureHelpInfo(IReadOnlyList<SignatureInfo> Signatures, 
 /// <summary>Result of <c>warm</c> and <c>refresh</c>.</summary>
 public sealed record CacheStatus(string CacheState);
 
-/// <summary>A table source of the statement at the caret, with its columns when the catalog knows it (<c>scope</c>).</summary>
-public sealed record ScopeTableInfo(string? Alias, string? Schema, string Name, string? Kind, IReadOnlyList<CatalogColumn> Columns);
+/// <summary>A column of a scope table; <paramref name="QuotedName"/> is bracketed when it must be (reserved word, spaces).</summary>
+public sealed record ScopeColumnInfo(string Name, string QuotedName, string Type, bool Nullable, bool IsKey);
+
+/// <summary>
+/// A table source of the statement at the caret, with its columns when the catalog knows it (<c>scope</c>).
+/// <paramref name="QuotedQualifier"/> is how SQL qualifies its columns (alias, else name), bracketed when needed.
+/// </summary>
+public sealed record ScopeTableInfo(string? Alias, string? Schema, string Name, string QuotedQualifier, string? Kind, IReadOnlyList<ScopeColumnInfo> Columns);
 
 /// <summary>Result of <c>scope</c>: the statement's table sources in order; <paramref name="CacheState"/> as for completion.</summary>
 public sealed record ScopeResult(IReadOnlyList<ScopeTableInfo> Tables, string CacheState);

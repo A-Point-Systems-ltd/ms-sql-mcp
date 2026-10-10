@@ -48,6 +48,7 @@ public sealed class LanguageServiceDatabase : IAsyncLifetime
         await ScratchDatabases.ExecAsync(ConnectionString, "CREATE TABLE dbo.Units (UID int NOT NULL PRIMARY KEY, BID int NOT NULL CONSTRAINT FK_Units_Buildings REFERENCES dbo.Buildings (BID), Name nvarchar(50) NULL);");
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE FUNCTION dbo.fnUnits (@bid int, @top int = 10) RETURNS TABLE AS RETURN SELECT TOP (@top) UID, Name FROM dbo.Units WHERE BID = @bid');");
         await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE SYNONYM dbo.Blds FOR dbo.Buildings');");
+        await ScratchDatabases.ExecAsync(ConnectionString, "EXEC(N'CREATE SYNONYM dbo.ExtJobs FOR msdb.dbo.sysjobs');");
     }
 
     public async Task DisposeAsync()

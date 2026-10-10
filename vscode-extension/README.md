@@ -211,7 +211,7 @@ On by default; switch them off or on from the SQL editor tab's **...** menu (or 
 - **Table aliases**: a table or view completed after `FROM` or `JOIN` gets an alias: the lower-case initials of its name (`TableProblemsLastSub` → `tpls`, `CC_Meshulam_Buildings` → `cmb`), numbered when taken or reserved. Aliases you wrote are never changed.
 - **Column picker**: in a SELECT list, the first entry is **Pick columns…**: a filterable checklist of the statement's columns (with type, key and nullability); Enter inserts the checked ones at the caret. Also in the editor's right-click menu.
 - **`*` expansion**: on a `*` or `alias.*` of a SELECT list, the light bulb (**Ctrl+.**) offers **Expand * to its columns**.
-- **Snippets**: type the prefix and press **Tab**; the list shows each one with a **⇥ Tab** hint and a preview. `ssf` → `select top(100) * from`, `scf` count, `sw` select-where, `ii` / `is` insert, `uu` update, `df` delete, `ij` / `lj` joins, `gb`, `ob`, `ex`, `bt` transaction (rolls back until you switch to commit), `tc` TRY/CATCH, `cp` / `cf` / `ctf` new procedure / scalar function / inline function (with `--with encryption` ready to enable), `dc` cursor loop.
+- **Snippets**: type the prefix and press **Tab**; the list shows each one with a **⇥ Tab** hint and a preview. `ssf` → `select top(100) * from`, `scf` count, `sw` select-where, `ii` / `is` insert, `uu` update, `df` delete, `ij` / `lj` joins, `gb`, `ob`, `ex`, `bt` transaction (rolls back until you switch to commit), `tc` TRY/CATCH, `cp` / `cf` / `ctf` new procedure / scalar function / inline function (with `--with encryption` ready to enable; `CREATE OR ALTER` needs SQL Server 2016 SP1 or later), `dc` cursor loop.
 
 The catalog behind JOIN / ON, the picker and `*` (tables, views, table-valued functions, their columns and foreign keys) is read once per connection with two catalog queries and refreshed every 10 minutes or with **Refresh IntelliSense Cache**.
 
@@ -221,11 +221,13 @@ The catalog behind JOIN / ON, the picker and `*` (tables, views, table-valued fu
 |-----|---------|-------|
 | **Ctrl+F2** | Format SQL | The selection (widened to the statements it touches), or the whole document. Works without a connection. Replaces VS Code's *Change All Occurrences* in SQL editors. |
 | **Ctrl+3** | Select Top Rows | The selected or under-cursor table or view opens in Data View (`TOP` = `msSqlMcp.dataViewRows`, read-only). A table-valued function opens a new query with its parameters declared, not run. Replaces *Focus Third Editor Group* in SQL editors. |
-| **Ctrl+F12** | Go to Object Definition | The object's script in a new tab: views, procedures and functions editable, tables read-only. Synonyms are followed. Replaces *Go to Implementations* in SQL editors. |
+| **Ctrl+F12** | Go to Object Definition | The object's script in a new tab: views, procedures and functions editable, tables read-only. Synonyms are followed; names of another database (three- or four-part names, synonyms to them) are reported as not found. Replaces *Go to Implementations* in SQL editors. |
+
+The three keys replace VS Code's defaults only in SQL editors (Ctrl+F2 only when the editor is writable; Ctrl+3 and Ctrl+F12 only when it is bound to a connection). To keep a VS Code default, open **Keyboard Shortcuts** (Ctrl+K Ctrl+S), search for the APoint-ms-sql command and remove or change its key.
 
 ### Format SQL
 
-Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ctrl+F2**. The formatter parses with Microsoft ScriptDom and changes only whitespace and the case of keywords, system data types and built-in functions (`msSqlMcp.format.keywordCase`, default `lower`). It never changes identifiers, aliases, column names, strings or comments, never adds or removes `AS`, `;`, brackets or `GO`, and checks this on every run: if the result would differ in anything else, nothing changes. Text that does not parse is refused with the line and column of the error (when only a selection parses, the selection alone is formatted).
+Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ctrl+F2**. Format Document / Selection (and format-on-save) apply to the extension's query windows and object scripts; set `msSqlMcp.format.formatFiles` to `true` to also format `.sql` files and untitled editors with them. **Ctrl+F2** works in every SQL editor. The formatter parses with Microsoft ScriptDom and changes only whitespace and the case of keywords, system data types and built-in functions (`msSqlMcp.format.keywordCase`, default `lower`). It never changes identifiers, aliases, column names, strings or comments, never adds or removes `AS`, `;`, brackets or `GO`, and checks this on every run: if the result would differ in anything else, nothing changes. Text that does not parse is refused with the line and column of the error (when only a selection parses, the selection alone is formatted).
 
 - `declare`: the first variable on the `declare` line (or under it, if you put it there), later ones under it with a leading comma; variables of one type without a value share a line.
 - SELECT / INSERT / VALUES / SET / GROUP BY / ORDER BY lists: up to 4 items on one line (`msSqlMcp.format.maxItemsPerRow`); longer lists start on the next line, 4 per row, keeping rows you broke yourself; INSERT…SELECT / VALUES rows follow the column rows.
@@ -245,6 +247,7 @@ Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ct
 | `msSqlMcp.intellisense.enabled` | `true` | SQL IntelliSense in editors bound to an open connection (see [IntelliSense](#intellisense)). |
 | `msSqlMcp.completion.enhanced` | `true` | JOIN / ON suggestions, aliases, column picker, `*` expansion and snippets (see [SQL editor tools](#sql-editor-tools)); also switched from the editor tab's menu. |
 | `msSqlMcp.format.keywordCase` | `lower` | Format SQL: `lower`, `upper` or `preserve` for keywords, system types and built-in functions. |
+| `msSqlMcp.format.formatFiles` | `false` | Format Document / Selection and format-on-save also for `.sql` files and untitled editors (Ctrl+F2 works everywhere). |
 | `msSqlMcp.format.maxItemsPerRow` | `4` | Format SQL: most items per row of column and value lists (1-50). |
 | `msSqlMcp.serverPath` | bundled | Path to a different `MssqlMcp.exe`. |
 | `msSqlMcp.logLevel` | `error` (installed) | Output channel verbosity: `off`, `error`, `warn`, `info`, `debug`, `trace`. |
@@ -255,6 +258,7 @@ Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ct
 - **The data view and query results stay on your machine.** Rows are shown in the editor and in the Results panel and are never sent anywhere automatically. They leave the grid only when you copy them (a cell, a row, a selection, or Ctrl+A) or export them to a CSV file, which asks for confirmation every time. The Output channel logs only row counts, never values.
 - **Cell viewer tabs are normal editor tabs**; AI assistants in your editor may read open tabs as context. Close viewer tabs holding client personal data before using AI chat.
 - **Agents see what they query.** Data returned by `read_data` goes to the AI model the agent uses. Use read-only connections and least-privilege logins for databases with personal data.
+- **Errors of IntelliSense and Format SQL** are logged without their message (a syntax error quotes the script); the message is only in `trace` logs.
 - **Trace logging.** At `msSqlMcp.logLevel` = `trace`, the Output channel records tool arguments and results, which may include SQL text and object definitions (for `read_data` and `run_script` only row and message counts are logged; for IntelliSense and Format SQL only the document length and item counts). Use `trace` only for troubleshooting and clear the channel afterwards.
 - Passwords are never written to settings, logs, the Output channel, tree labels or DDL documents.
 

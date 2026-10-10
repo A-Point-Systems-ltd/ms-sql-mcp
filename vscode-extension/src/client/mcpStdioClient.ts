@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { CallToolOptions, McpClient } from './mcpClient';
-import { McpToolError, traceableArguments, traceablePayload, unwrapToolResult } from './parse';
+import { DOCUMENT_TOOLS, McpToolError, traceableArguments, traceablePayload, unwrapToolResult } from './parse';
 import type { Logger } from '../logger';
 
 /**
@@ -103,6 +103,11 @@ export class McpStdioClient implements McpClient {
         const message = `← ${name} cancelled (${Date.now() - startedAt} ms)`;
         if (name === 'language_service') this.log.debug('tool', message);
         else this.log.info('tool', message);
+      } else if (DOCUMENT_TOOLS.has(name)) {
+        // The message can quote the document (client data): the error line has none; trace (documented as possibly
+        // holding SQL text) gets it for troubleshooting.
+        this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`);
+        this.log.trace('tool', `${name} failure`, err instanceof Error ? err.message : String(err));
       } else {
         this.log.error('tool', `← ${name} FAILED (${Date.now() - startedAt} ms)`, err);
       }

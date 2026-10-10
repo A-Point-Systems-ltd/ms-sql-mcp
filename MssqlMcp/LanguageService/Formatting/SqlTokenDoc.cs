@@ -21,7 +21,7 @@ internal sealed class SqlTokenDoc
     private readonly int[] _codeIndexAtOrAfter;
     private readonly int[] _lineStarts;
 
-    public SqlTokenDoc(string text, IList<TSqlParserToken> stream)
+    public SqlTokenDoc(string text, IList<TSqlParserToken> stream, string? newLine = null)
     {
         Text = text;
         var tokens = new List<SqlTok>();
@@ -60,7 +60,7 @@ internal sealed class SqlTokenDoc
         }
 
         _lineStarts = [.. starts];
-        NewLine = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        NewLine = newLine ?? (text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n");
     }
 
     public string Text { get; }

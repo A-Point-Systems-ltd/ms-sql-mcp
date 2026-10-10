@@ -75,24 +75,24 @@ public static class EnhancedCompletion
             }
         }
 
-        // Name matches: a joinable table whose single-column primary key is a column of a table in scope, or the reverse.
+        // Name matches, key to non-key only (a key on both sides, such as Id = Id, joins unrelated rows): a table whose
+        // single-column key names a non-key column of a table in scope, or a table with a non-key column named like the
+        // in-scope table's key. Indexed lookups, so the catalog's size does not matter.
         foreach (var (table, obj) in inScope)
         {
-            var key = obj.SingleKey;
-            foreach (var other in catalog.Objects)
+            foreach (var column in obj.Columns.Where(c => !c.IsKey))
             {
-                if (!other.IsTable || scopeObjects.Contains(other))
+                foreach (var other in catalog.TablesKeyedBy(column.Name).Where(o => !scopeObjects.Contains(o)))
                 {
-                    continue;
+                    Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(other.SingleKey!.Name, column.Name)], "same column name");
                 }
+            }
 
-                if (other.SingleKey is { } otherKey && obj.Column(otherKey.Name) is { } column)
+            if (obj.SingleKey is { } key)
+            {
+                foreach (var other in catalog.TablesWithNonKeyColumn(key.Name).Where(o => !scopeObjects.Contains(o)))
                 {
-                    Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(otherKey.Name, column.Name)], "same column name");
-                }
-                else if (key is not null && other.Column(key.Name) is { } match)
-                {
-                    Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(match.Name, key.Name)], "same column name");
+                    Add(1, other, AliasGenerator.Create(other.Name, taken), table, [(other.Column(key.Name)!.Name, key.Name)], "same column name");
                 }
             }
         }
@@ -143,7 +143,8 @@ public static class EnhancedCompletion
 
             foreach (var column in joinedObject.Columns)
             {
-                if (otherObject.Column(column.Name) is { } match && (column.IsKey || match.IsKey))
+                // Key to non-key only: Id = Id between two tables joins unrelated rows.
+                if (otherObject.Column(column.Name) is { } match && (column.IsKey ^ match.IsKey))
                 {
                     Add(1, [(column.Name, match.Name)], other, "same column name");
                 }

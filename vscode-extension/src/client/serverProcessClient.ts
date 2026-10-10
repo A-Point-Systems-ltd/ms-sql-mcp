@@ -58,6 +58,8 @@ export class ServerProcessClient implements vscode.Disposable {
   /** Processes already disposed by this client (each one is disposed once only). */
   private readonly killed = new WeakSet<McpStdioClient>();
   private starting?: Promise<McpStdioClient>;
+  /** Per process: open profiles left out of it for a missing password (lower-case names), known at start. */
+  private readonly skippedNames = new WeakMap<McpStdioClient, ReadonlySet<string>>();
   private generation = 0;
   private timer?: NodeJS.Timeout;
   private disposed = false;
@@ -94,15 +96,9 @@ export class ServerProcessClient implements vscode.Disposable {
    */
   async callResult(connection: string, tool: string, args: Record<string, unknown>, opts?: CallToolOptions): Promise<unknown> {
     if (opts?.signal?.aborted) throw cancelledError();
-    if (this.options.allowNoConnections) {
-      // The process may run without this connection: say why here instead of a server "unknown connection" error.
-      const profiles = this.store.list();
-      if (!profiles.some(p => p.open)) throw new Error(NO_OPEN_CONNECTIONS);
-      const skipped = missingPasswords(profiles, await this.store.passwords());
-      const name = skipped.find(n => n.toLowerCase() === connection.toLowerCase());
-      if (name) throw new Error(missingPasswordMessage(name));
-    }
-    return this.invoke(tool, { ...args, connection }, `connection='${connection}'`, opts);
+    // The runner may run without this connection: say why here instead of a server "unknown connection" error.
+    if (this.options.allowNoConnections && !this.store.list().some(p => p.open)) throw new Error(NO_OPEN_CONNECTIONS);
+    return this.invoke(tool, { ...args, connection }, `connection='${connection}'`, opts, connection);
   }
 
   /**
@@ -114,13 +110,16 @@ export class ServerProcessClient implements vscode.Disposable {
     return this.invoke(tool, args, 'unbound', opts);
   }
 
-  private async invoke(tool: string, args: Record<string, unknown>, what: string, opts?: CallToolOptions): Promise<unknown> {
+  private async invoke(tool: string, args: Record<string, unknown>, what: string, opts?: CallToolOptions, connection?: string): Promise<unknown> {
     // A pending debounced reset means the running process has a stale profile set: apply it first.
     if (this.timer) this.reset();
     // Starting the process can take seconds: a Cancel during that time rejects at once (the start goes on).
     // The process must still be the current one when the call is counted, or a reset in between would dispose it.
     const client = await acquireCurrent(() => this.ensure(), c => c === this.client, opts?.signal);
     // Counted synchronously after the check: no reset can run in between.
+    if (connection !== undefined && this.skippedNames.get(client)?.has(connection.toLowerCase())) {
+      throw new Error(missingPasswordMessage(connection));
+    }
     const end = this.counterOf(client).begin();
     this.log.debug(this.options.label, `${tool} ${what}`);
     try {
@@ -239,6 +238,7 @@ export class ServerProcessClient implements vscode.Disposable {
       client.dispose();
       throw new SupersededError(`${this.title} restarted while starting.`);
     }
+    this.skippedNames.set(client, new Set(skipped.map(n => n.toLowerCase())));
     this.client = client;
     return client;
   }

@@ -11,7 +11,8 @@ public enum KeywordCase
 /// <summary>
 /// Formatter options. <paramref name="IndentSize"/> and <paramref name="UseTabs"/> come from the editor;
 /// <paramref name="MaxItemsPerRow"/> caps column / value / SET lists per row; <paramref name="MaxBlankLines"/> caps
-/// kept blank lines; <paramref name="BaseIndent"/> (columns) is the indent of top-level statements (range fallback).
+/// kept blank lines; <paramref name="BaseIndent"/> (columns) is the indent of top-level statements (range fallback);
+/// <paramref name="NewLine"/> overrides the line break detected from the text.
 /// </summary>
 public sealed record SqlFormatOptions(
     int IndentSize = 4,
@@ -19,7 +20,8 @@ public sealed record SqlFormatOptions(
     KeywordCase KeywordCase = KeywordCase.Lower,
     int MaxItemsPerRow = 4,
     int MaxBlankLines = 2,
-    int BaseIndent = 0)
+    int BaseIndent = 0,
+    string? NewLine = null)
 {
     /// <summary>Options with out-of-range values clamped (indent 1..16, items 1..50, blank lines 0..5).</summary>
     public SqlFormatOptions Normalized() => this with

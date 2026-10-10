@@ -592,7 +592,12 @@
           "default": "lower",
           "description": "Format SQL (Ctrl+F2): the case of keywords, system data types and built-in functions. Identifiers, aliases and column names are never changed."
         },
-        "msSqlMcp.format.maxItemsPerRow": {
+        "msSqlMcp.format.formatFiles": {
+        "type": "boolean",
+        "default": false,
+        "description": "Format Document / Format Selection (and format-on-save) also for .sql files and untitled SQL editors. Off: only the extension's query windows and object scripts; Ctrl+F2 works in every SQL editor either way."
+      },
+      "msSqlMcp.format.maxItemsPerRow": {
           "type": "number",
           "default": 4,
           "minimum": 1,

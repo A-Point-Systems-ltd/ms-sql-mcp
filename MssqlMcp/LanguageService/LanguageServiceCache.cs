@@ -57,6 +57,9 @@ public sealed class LanguageServiceCache : IDisposable
 
     internal int EntryCount => _entries.Count;
 
+    /// <summary>Tests replace the catalog read (default: the two catalog queries on the profile's database).</summary>
+    internal Func<ConnectionProfile, Task<CatalogSnapshot>>? CatalogLoader { get; set; }
+
     /// <summary>Queued operations skipped because their request had already returned (timeout or cancellation).</summary>
     internal int SkippedOperations => Volatile.Read(ref _skippedOperations);
 
@@ -164,7 +167,8 @@ public sealed class LanguageServiceCache : IDisposable
         var tables = scope.Tables.Select(t =>
         {
             var o = t.IsVariable ? null : catalog?.Find(t.Schema, t.Name);
-            return new ScopeTableInfo(t.Alias, o?.Schema ?? t.Schema, o?.Name ?? t.Name, o?.Kind, o?.Columns ?? []);
+            var columns = (o?.Columns ?? []).Select(c => new ScopeColumnInfo(c.Name, EnhancedCompletion.QuoteName(c.Name), c.Type, c.Nullable, c.IsKey)).ToList();
+            return new ScopeTableInfo(t.Alias, o?.Schema ?? t.Schema, o?.Name ?? t.Name, EnhancedCompletion.QuoteName(t.Qualifier), o?.Kind, columns);
         }).ToList();
         return new ScopeResult(tables, catalog is null ? CacheStates.Loading : CacheStates.Warm);
     }
@@ -233,9 +237,11 @@ public sealed class LanguageServiceCache : IDisposable
                 }
             }
 
-            var load = Task.Run(() => LoadCatalogAsync(profile));
+            var load = Task.Run(() => CatalogLoader is { } loader ? loader(profile) : LoadCatalogAsync(profile));
             _ = load.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
-            var entry = new CatalogEntry(load, existing?.Load is { IsCompletedSuccessfully: true } old ? old : null, now);
+            // The last good snapshot keeps being served while this load runs, also across failed reloads.
+            var previous = existing?.Load is { IsCompletedSuccessfully: true } good ? good : existing?.Previous;
+            var entry = new CatalogEntry(load, previous, now);
             _catalogs[key] = entry;
             return entry;
         }

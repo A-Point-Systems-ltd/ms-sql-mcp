@@ -29,6 +29,8 @@ public sealed class CatalogSnapshot
     private readonly Dictionary<string, CatalogObject> _byQualifiedName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<CatalogObject>> _byName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CatalogObject, List<CatalogForeignKey>> _foreignKeys = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<string, List<CatalogObject>> _tablesBySingleKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<CatalogObject>> _tablesByNonKeyColumn = new(StringComparer.OrdinalIgnoreCase);
 
     public CatalogSnapshot(IEnumerable<CatalogObject> objects, IEnumerable<(string Name, string ParentSchema, string Parent, string ReferencedSchema, string Referenced, string ParentColumn, string ReferencedColumn)> foreignKeyColumns, string defaultSchema = "dbo")
     {
@@ -42,6 +44,20 @@ public sealed class CatalogSnapshot
             }
 
             list.Add(o);
+            if (!o.IsTable)
+            {
+                continue;
+            }
+
+            if (o.SingleKey is { } key)
+            {
+                Index(_tablesBySingleKey, key.Name, o);
+            }
+
+            foreach (var column in o.Columns.Where(c => !c.IsKey))
+            {
+                Index(_tablesByNonKeyColumn, column.Name, o);
+            }
         }
 
         var keys = new List<CatalogForeignKey>();
@@ -69,6 +85,16 @@ public sealed class CatalogSnapshot
 
         ObjectCount = _byQualifiedName.Count;
         ForeignKeyCount = keys.Count;
+
+        static void Index(Dictionary<string, List<CatalogObject>> index, string column, CatalogObject o)
+        {
+            if (!index.TryGetValue(column, out var list))
+            {
+                index[column] = list = [];
+            }
+
+            list.Add(o);
+        }
 
         void Add(CatalogObject o, CatalogForeignKey key)
         {
@@ -104,6 +130,12 @@ public sealed class CatalogSnapshot
 
         return _byName.TryGetValue(name, out var list) && list.Count == 1 ? list[0] : null;
     }
+
+    /// <summary>Tables whose single-column primary key is named <paramref name="column"/>.</summary>
+    public IReadOnlyList<CatalogObject> TablesKeyedBy(string column) => _tablesBySingleKey.TryGetValue(column, out var list) ? list : [];
+
+    /// <summary>Tables with a column named <paramref name="column"/> that is not part of their primary key.</summary>
+    public IReadOnlyList<CatalogObject> TablesWithNonKeyColumn(string column) => _tablesByNonKeyColumn.TryGetValue(column, out var list) ? list : [];
 
     /// <summary>Foreign keys where the object is the referencing or the referenced table.</summary>
     public IReadOnlyList<CatalogForeignKey> ForeignKeysOf(CatalogObject o) => _foreignKeys.TryGetValue(o, out var list) ? list : [];

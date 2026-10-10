@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ENHANCED_CONTEXT_KEY, ENHANCED_SETTING, FORMAT_TOOL, SQL_SNIPPETS, enhancedEnabled, expandWildcard, formatRequest,
-  formatSettings, objectNameAt, objectRefOf, parseFormatEdits, parseObjectInfo, parseScope, pickerItems, quoteName,
+  formatSettings, formatterSchemes, objectNameAt, objectRefOf, parseFormatEdits, parseObjectInfo, parseScope, pickerItems, quoteName,
   snippetHint, snippetPreview, tvfQuery, wildcardAt,
 } from '../out/query/sqlEditorFeatures.js';
 import { completionKindName } from '../out/query/intellisense.js';
-import { traceableArguments } from '../out/client/parse.js';
+import { DOCUMENT_TOOLS, traceableArguments } from '../out/client/parse.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
@@ -163,4 +163,31 @@ test('package.json: the switch sits in the editor tab menus and the shortcuts ar
   assert.ok(contextIds.includes('msSqlMcp.formatSql'));
   const declared = new Set(c.commands.map(x => x.command));
   for (const id of ['msSqlMcp.formatSql', 'msSqlMcp.pickColumns', 'msSqlMcp.expandWildcard', 'msSqlMcp.newQueryWithText']) assert.ok(declared.has(id), id);
+});
+
+test('reserved words are bracketed and the quoted names from the server win', () => {
+  assert.equal(quoteName('Key'), '[Key]');
+  assert.equal(quoteName('order'), '[order]');
+  assert.equal(quoteName('Orders'), 'Orders');
+  const local = parseScope({ data: { tables: [{ name: 'T', columns: [{ name: 'Id', type: 'int' }, { name: 'Order', type: 'int' }] }] } }).tables;
+  assert.equal(expandWildcard(local), 'Id, [Order]');
+  const fromServer = parseScope({ data: { tables: [{ alias: 'select', name: 'T', quotedQualifier: '[select]', columns: [{ name: 'Status', quotedName: '[Status]', type: 'int' }] }] } }).tables;
+  assert.deepEqual(pickerItems(fromServer).map(i => i.insert), ['[select].[Status]']);
+  assert.equal(expandWildcard(fromServer), '[select].[Status]');
+});
+
+test('format-on-save serves only query windows unless .sql files are opted in', () => {
+  assert.deepEqual(formatterSchemes(undefined), ['mssql-sql']);
+  assert.deepEqual(formatterSchemes(false), ['mssql-sql']);
+  assert.deepEqual(formatterSchemes(true), ['mssql-sql', 'file', 'untitled']);
+  assert.equal(pkg.contributes.configuration.properties['msSqlMcp.format.formatFiles'].default, false);
+});
+
+test('the document tools are the ones whose text and errors are kept out of logs', () => {
+  assert.deepEqual([...DOCUMENT_TOOLS].sort(), ['format_sql', 'language_service']);
+  assert.equal(traceableArguments('language_service', { text: 'abc' }).text, undefined);
+});
+
+test('creating procedures says which SQL Server versions CREATE OR ALTER needs', () => {
+  for (const p of ['cp', 'cf', 'ctf']) assert.match(SQL_SNIPPETS.find(s => s.prefix === p).description, /2016 SP1/);
 });

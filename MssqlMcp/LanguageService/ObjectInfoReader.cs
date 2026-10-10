@@ -12,10 +12,18 @@ namespace Mssql.McpServer.LanguageService;
 /// </summary>
 internal static class ObjectInfoReader
 {
+    // OBJECT_ID of a three- or four-part name returns an id of another database or server, which may match an unrelated
+    // object here: such names (and synonyms pointing to them) resolve to nothing.
     private const string Query = """
-        DECLARE @id int = OBJECT_ID(@name);
+        DECLARE @id int = CASE WHEN PARSENAME(@name, 4) IS NULL AND ISNULL(PARSENAME(@name, 3), DB_NAME()) = DB_NAME()
+            THEN OBJECT_ID(@name) END;
+        DECLARE @base nvarchar(1035);
         IF @id IS NOT NULL AND EXISTS (SELECT 1 FROM sys.synonyms WHERE object_id = @id)
-            SELECT @id = OBJECT_ID(base_object_name) FROM sys.synonyms WHERE object_id = @id;
+        BEGIN
+            SELECT @base = base_object_name FROM sys.synonyms WHERE object_id = @id;
+            SET @id = CASE WHEN PARSENAME(@base, 4) IS NULL AND ISNULL(PARSENAME(@base, 3), QUOTENAME(DB_NAME())) IN (DB_NAME(), QUOTENAME(DB_NAME()))
+                THEN OBJECT_ID(@base) END;
+        END;
         SELECT s.name, o.name, RTRIM(o.type)
         FROM sys.objects o INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
         WHERE o.object_id = @id;

@@ -35,7 +35,7 @@ public sealed record SqlScopeInfo(CaretContext Context, IReadOnlyList<ScopeTable
 /// parser). Finds the caret context and the table sources (FROM / JOIN / APPLY / UPDATE targets with their aliases) of
 /// the innermost statement or subquery that holds the caret. Approximate by design: it never needs the SQL to be valid.
 /// </summary>
-public static class SqlScope
+public static partial class SqlScope
 {
     private static readonly HashSet<string> StatementStarts = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -64,6 +64,10 @@ public static class SqlScope
     public static SqlScopeInfo Analyze(string text, int line, int column)
     {
         var caret = OffsetOf(text, line, column);
+        // Only the GO batch around the caret (capped) is read, so the cost does not grow with the document.
+        var (start, end) = Window(text, caret);
+        text = text[start..end];
+        caret -= start;
         var parser = new TSql170Parser(initialQuotedIdentifiers: true);
         using var reader = new StringReader(text);
         var stream = parser.GetTokenStream(reader, out _);
@@ -92,6 +96,50 @@ public static class SqlScope
         var info = Analyze(tokens, caret);
         return inCommentOrString ? info with { Context = CaretContext.Other } : info;
     }
+
+    /// <summary>Most characters read on each side of the caret.</summary>
+    internal const int MaxWindow = 64 * 1024;
+
+    /// <summary>
+    /// The GO batch that holds the caret, at most <see cref="MaxWindow"/> characters on each side, cut at line starts.
+    /// A GO inside a string or comment is taken as a separator too: the scope is approximate by design.
+    /// </summary>
+    internal static (int Start, int End) Window(string text, int caret)
+    {
+        var start = 0;
+        var end = text.Length;
+        foreach (System.Text.RegularExpressions.Match m in GoLine().Matches(text))
+        {
+            if (m.Index + m.Length <= caret)
+            {
+                start = m.Index + m.Length;
+                start += start < text.Length && text[start] == '\r' ? 1 : 0;
+                start += start < text.Length && text[start] == '\n' ? 1 : 0;
+            }
+            else if (m.Index >= caret)
+            {
+                end = m.Index;
+                break;
+            }
+        }
+
+        if (caret - start > MaxWindow)
+        {
+            var cut = text.IndexOf('\n', caret - MaxWindow);
+            start = cut >= 0 && cut < caret ? cut + 1 : caret - MaxWindow;
+        }
+
+        if (end - caret > MaxWindow)
+        {
+            var cut = text.LastIndexOf('\n', caret + MaxWindow);
+            end = cut > caret ? cut : caret + MaxWindow;
+        }
+
+        return (start, end);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[ \t]*go[ \t]*(?:\d+[ \t]*)?(?:--[^\n]*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline)]
+    private static partial System.Text.RegularExpressions.Regex GoLine();
 
     internal static int OffsetOf(string text, int line, int column)
     {
@@ -143,7 +191,8 @@ public static class SqlScope
             }
             else if (prev.TokenType == TSqlTokenType.From)
             {
-                context = CaretContext.FromTable;
+                // DELETE FROM t and BULK INSERT t FROM 'file' take no alias.
+                context = NoAliasFrom(tokens, typed - 1) ? CaretContext.Other : CaretContext.FromTable;
             }
             else if (prev.TokenType == TSqlTokenType.On)
             {
@@ -171,6 +220,24 @@ public static class SqlScope
     }
 
     private static int End(TSqlParserToken t) => t.Offset + t.Text.Length;
+
+    /// <summary>True for the FROM of DELETE FROM and of BULK INSERT name FROM.</summary>
+    private static bool NoAliasFrom(List<TSqlParserToken> tokens, int from)
+    {
+        var before = from - 1;
+        if (before >= 0 && tokens[before].TokenType == TSqlTokenType.Delete)
+        {
+            return true;
+        }
+
+        var i = before;
+        while (i >= 0 && (IsNamePart(tokens[i]) || tokens[i].TokenType == TSqlTokenType.Dot))
+        {
+            i--;
+        }
+
+        return i >= 1 && i < before && tokens[i].TokenType == TSqlTokenType.Insert && Is(tokens[i - 1], "bulk");
+    }
 
     private static bool Is(TSqlParserToken t, string word) => string.Equals(t.Text, word, StringComparison.OrdinalIgnoreCase);
 

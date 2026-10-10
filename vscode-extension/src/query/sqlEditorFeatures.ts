@@ -9,6 +9,14 @@ export const ENHANCED_SETTING = 'completion.enhanced';
 /** The context key the editor tab's menu uses to show the switch's current state. */
 export const ENHANCED_CONTEXT_KEY = 'msSqlMcp.enhancedCompletions';
 
+/** `msSqlMcp.format.formatFiles`: Format Document / format-on-save also for .sql files and untitled editors. */
+export const FORMAT_FILES_SETTING = 'format.formatFiles';
+
+/** The documents the formatting providers serve: the extension's query windows, plus files when the setting is on. */
+export function formatterSchemes(formatFiles: unknown): string[] {
+  return formatFiles === true ? ['mssql-sql', 'file', 'untitled'] : ['mssql-sql'];
+}
+
 /** The runner tool that formats SQL (bound to no connection). */
 export const FORMAT_TOOL = 'format_sql';
 
@@ -45,17 +53,17 @@ export const SQL_SNIPPETS: readonly SqlSnippet[] = Object.freeze([
   {
     prefix: 'cp',
     body: 'create or alter proc ${1:dbo}.${2:procName}(\n    ${3:@param int}\n    )\n--with encryption\nas\nbegin\n    set nocount on;\n\n    $0\nend\ngo',
-    description: 'New stored procedure',
+    description: 'New stored procedure (CREATE OR ALTER: SQL Server 2016 SP1 or later)',
   },
   {
     prefix: 'cf',
     body: 'create or alter function ${1:dbo}.${2:fnName}(\n    ${3:@param int}\n    )\nreturns ${4:int}\n--with encryption\nas\nbegin\n    return $0\nend\ngo',
-    description: 'New scalar function',
+    description: 'New scalar function (CREATE OR ALTER: SQL Server 2016 SP1 or later)',
   },
   {
     prefix: 'ctf',
     body: 'create or alter function ${1:dbo}.${2:fnName}(\n    ${3:@param int}\n    )\nreturns table\n--with encryption\nas\nreturn (\n    select $0\n)\ngo',
-    description: 'New inline table-valued function',
+    description: 'New inline table-valued function (CREATE OR ALTER: SQL Server 2016 SP1 or later)',
   },
   {
     prefix: 'dc',
@@ -199,9 +207,24 @@ export function objectRefOf(connection: string, info: ObjectInfo): ObjectRef | u
   return { connection, scriptType: info.scriptType, ...(info.schema ? { schema: info.schema } : {}), name: info.name };
 }
 
-/** A name in brackets unless it is a plain identifier. */
+/** T-SQL reserved keywords (and ODBC / future ones SQL Server rejects as bare names). */
+const RESERVED = new Set(`add all alter and any as asc authorization backup begin between break browse bulk by cascade case
+check checkpoint close clustered coalesce collate column commit compute constraint contains containstable continue convert
+create cross current current_date current_time current_timestamp current_user cursor database dbcc deallocate declare
+default delete deny desc disk distinct distributed double drop dump else end errlvl escape except exec execute exists exit
+external fetch file fillfactor for foreign freetext freetexttable from full function goto grant group having holdlock
+identity identity_insert identitycol if in index inner insert intersect into is join key kill left like lineno load merge
+national nocheck nonclustered not null nullif of off offsets on open opendatasource openquery openrowset openxml option or
+order outer over percent pivot plan precision primary print proc procedure public raiserror read readtext reconfigure
+references replication restore restrict return revert revoke right rollback rowcount rowguidcol rule save schema
+securityaudit select semantickeyphrasetable semanticsimilaritydetailstable semanticsimilaritytable session_user set
+setuser shutdown some statistics system_user table tablesample textsize then to top tran transaction trigger truncate
+try_convert tsequal union unique unpivot update updatetext use user values varying view waitfor when where while with
+within writetext`.split(/\s+/));
+
+/** A name in brackets unless it is a plain identifier that is not a reserved word. */
 export function quoteName(name: string): string {
-  return /^[A-Za-z_][\w@#$]*$/.test(name) ? name : `[${name.replace(/]/g, ']]')}]`;
+  return /^[A-Za-z_][\w@#$]*$/.test(name) && !RESERVED.has(name.toLowerCase()) ? name : `[${name.replace(/]/g, ']]')}]`;
 }
 
 /**
@@ -220,8 +243,9 @@ export function tvfQuery(schema: string | undefined, name: string, parameters: r
 
 // ----- column picker and * expansion -----
 
-export interface ScopeColumn { name: string; type: string; nullable: boolean; isKey: boolean }
-export interface ScopeTable { alias?: string; schema?: string; name: string; kind?: string; columns: ScopeColumn[] }
+/** `quotedName` / `quotedQualifier` come from the server (bracketed when needed); quoteName is the fallback. */
+export interface ScopeColumn { name: string; quotedName?: string; type: string; nullable: boolean; isKey: boolean }
+export interface ScopeTable { alias?: string; schema?: string; name: string; quotedQualifier?: string; kind?: string; columns: ScopeColumn[] }
 
 /** language_service scope payload → tables; undefined when malformed. */
 export function parseScope(payload: unknown): { tables: ScopeTable[]; loading: boolean } | undefined {
@@ -234,11 +258,15 @@ export function parseScope(payload: unknown): { tables: ScopeTable[]; loading: b
     const cols = pick(t, 'columns');
     const columns = (Array.isArray(cols) ? cols : []).flatMap((c): ScopeColumn[] => {
       const cn = optString(pick(c, 'name'));
-      return cn ? [{ name: cn, type: optString(pick(c, 'type')) ?? '', nullable: pick(c, 'nullable') === true, isKey: pick(c, 'isKey') === true }] : [];
+      return cn ? [{
+        name: cn, quotedName: optString(pick(c, 'quotedName')) ?? quoteName(cn), type: optString(pick(c, 'type')) ?? '',
+        nullable: pick(c, 'nullable') === true, isKey: pick(c, 'isKey') === true,
+      }] : [];
     });
     const alias = optString(pick(t, 'alias'));
     const schema = optString(pick(t, 'schema'));
-    return [{ ...(alias ? { alias } : {}), ...(schema ? { schema } : {}), name, kind: optString(pick(t, 'kind')), columns }];
+    const quotedQualifier = optString(pick(t, 'quotedQualifier')) ?? quoteName(alias ?? name);
+    return [{ ...(alias ? { alias } : {}), ...(schema ? { schema } : {}), name, quotedQualifier, kind: optString(pick(t, 'kind')), columns }];
   });
   return { tables, loading: pick(data, 'cacheState') === 'loading' };
 }
@@ -247,6 +275,9 @@ export function parseScope(payload: unknown): { tables: ScopeTable[]; loading: b
 export function qualifierOf(table: ScopeTable): string {
   return table.alias ?? table.name;
 }
+
+const quotedNameOf = (c: ScopeColumn): string => c.quotedName ?? quoteName(c.name);
+const quotedQualifierOf = (t: ScopeTable): string => t.quotedQualifier ?? quoteName(qualifierOf(t));
 
 export interface PickerItem {
   label: string;
@@ -259,7 +290,7 @@ export interface PickerItem {
 export function pickerItems(tables: readonly ScopeTable[]): PickerItem[] {
   const qualify = tables.length > 1 || tables.some(t => t.alias);
   return tables.flatMap(t => t.columns.map(c => {
-    const insert = qualify ? `${quoteName(qualifierOf(t))}.${quoteName(c.name)}` : quoteName(c.name);
+    const insert = qualify ? `${quotedQualifierOf(t)}.${quotedNameOf(c)}` : quotedNameOf(c);
     const traits = [c.type, c.isKey ? 'key' : '', c.nullable ? 'null' : 'not null'].filter(Boolean).join(' · ');
     return { label: insert, description: traits, insert };
   }));
@@ -288,5 +319,5 @@ export function expandWildcard(tables: readonly ScopeTable[], qualifier?: string
     : tables;
   if (!chosen.length || chosen.some(t => !t.columns.length)) return undefined;
   const qualify = !!qualifier || chosen.length > 1 || chosen.some(t => t.alias);
-  return chosen.flatMap(t => t.columns.map(c => (qualify ? `${quoteName(qualifier ?? qualifierOf(t))}.${quoteName(c.name)}` : quoteName(c.name)))).join(', ');
+  return chosen.flatMap(t => t.columns.map(c => (qualify ? `${qualifier ? quoteName(qualifier) : quotedQualifierOf(t)}.${quotedNameOf(c)}` : quotedNameOf(c)))).join(', ');
 }

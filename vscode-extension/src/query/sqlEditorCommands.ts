@@ -9,7 +9,7 @@ import { findProfile } from './editorState';
 import { LANGUAGE_SERVICE_TIMEOUT_MS, LANGUAGE_SERVICE_TOOL } from './intellisense';
 import { QueryDocuments, isNeverBound } from './queryDocuments';
 import {
-  ENHANCED_CONTEXT_KEY, ENHANCED_SETTING, FORMAT_TOOL, LsEdit, SQL_SNIPPETS, enhancedEnabled, expandWildcard,
+  ENHANCED_CONTEXT_KEY, ENHANCED_SETTING, FORMAT_FILES_SETTING, FORMAT_TOOL, LsEdit, formatterSchemes, SQL_SNIPPETS, enhancedEnabled, expandWildcard,
   formatRequest, formatSettings, objectNameAt, objectRefOf, parseFormatEdits, parseObjectInfo, parseScope,
   pickerItems, snippetHint, snippetPreview, tvfQuery, wildcardAt,
 } from './sqlEditorFeatures';
@@ -113,20 +113,37 @@ export function registerSqlEditorFeatures(context: vscode.ExtensionContext, deps
     return edits.map(e => vscode.TextEdit.replace(toRange(e), e.newText));
   };
 
-  /** Provider requests (Format Document / Selection from the menu or on save): a failure is a warning, not an error dialog. */
+  /**
+   * Provider requests (Format Document / Selection, format-on-save): a failure (often a script still being written)
+   * only shows in the status bar, never as a dialog on every save. Ctrl+F2 shows the reason.
+   */
   const quietly = async (document: vscode.TextDocument, options: vscode.FormattingOptions, range?: vscode.Range) => {
     try {
       return await formatEdits(document, options, range);
     } catch (err) {
       if (!(err instanceof McpToolError && err.cancelled)) {
-        void vscode.window.showWarningMessage(`APoint-ms-sql: ${err instanceof Error ? err.message : String(err)}`);
+        vscode.window.setStatusBarMessage('APoint-ms-sql: not formatted (the SQL does not parse); Ctrl+F2 shows why', 5000);
       }
       return [];
     }
   };
+  // Query windows always; .sql files and untitled editors only when msSqlMcp.format.formatFiles is on, so
+  // format-on-save never rewrites files in other repositories unasked.
+  let providers: vscode.Disposable | undefined;
+  const registerProviders = () => {
+    providers?.dispose();
+    const scoped = formatterSchemes(config().get(FORMAT_FILES_SETTING)).map(scheme => ({ language: 'sql', scheme }));
+    providers = vscode.Disposable.from(
+      vscode.languages.registerDocumentFormattingEditProvider(scoped, { provideDocumentFormattingEdits: (d, o) => quietly(d, o) }),
+      vscode.languages.registerDocumentRangeFormattingEditProvider(scoped, { provideDocumentRangeFormattingEdits: (d, r, o) => quietly(d, o, r) }),
+    );
+  };
+  registerProviders();
   context.subscriptions.push(
-    vscode.languages.registerDocumentFormattingEditProvider(selector, { provideDocumentFormattingEdits: (d, o) => quietly(d, o) }),
-    vscode.languages.registerDocumentRangeFormattingEditProvider(selector, { provideDocumentRangeFormattingEdits: (d, r, o) => quietly(d, o, r) }),
+    { dispose: () => providers?.dispose() },
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration(`msSqlMcp.${FORMAT_FILES_SETTING}`)) registerProviders();
+    }),
   );
 
   // Ctrl+F2: the selection, or the whole document when nothing is selected.
