@@ -12,6 +12,7 @@ import {
   parseSignatureHelpResult, refreshedMessage, replaceEnd, replaceStart, requestDelayMs, warmKey,
 } from './intellisense';
 import { QueryDocuments, isNeverBound } from './queryDocuments';
+import { ENHANCED_SETTING, enhancedEnabled } from './sqlEditorFeatures';
 import { contextSetter } from './queryCommands';
 
 /** Per-document key for the editor title's Refresh IntelliSense Cache button. */
@@ -109,7 +110,8 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
       if (!profile) return undefined;
       const since = lastEdit.has(document.uri.toString()) ? Date.now() - lastEdit.get(document.uri.toString())! : undefined;
       if (!(await delay(requestDelayMs(isExplicitCompletion(TRIGGERS[ctx.triggerKind] ?? 'invoke', since)), token))) return undefined;
-      const payload = await call(profile, buildPositionRequest('completion', document.getText(), position), token);
+      const enhanced = enhancedEnabled(vscode.workspace.getConfiguration('msSqlMcp').get(ENHANCED_SETTING));
+      const payload = await call(profile, { ...buildPositionRequest('completion', document.getText(), position), enhanced }, token);
       const list = parseCompletionResult(payload);
       if (!list || token.isCancellationRequested) return undefined;
       if (list.cacheState === 'loading') showLoading(profile);
@@ -122,6 +124,16 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
       const range = new vscode.Range(position.line, start, position.line, end);
       const items = list.items.map(i => {
         const item = new vscode.CompletionItem(i.label, vscode.CompletionItemKind[completionKindName(i.kind)]);
+        if (i.kind === 'picker') {
+          // Inserts nothing itself: opens the column picker, which inserts the chosen columns at the caret.
+          item.detail = i.detail;
+          item.sortText = i.sortText;
+          item.insertText = '';
+          item.filterText = lineText.slice(start, position.character);
+          item.range = new vscode.Range(position, position);
+          item.command = { title: 'Pick columns', command: 'msSqlMcp.pickColumns', arguments: [document.uri, position] };
+          return item;
+        }
         item.detail = i.detail;
         item.sortText = i.sortText;
         item.insertText = i.insertText;

@@ -109,12 +109,12 @@ export class SqlDocLifecycle implements vscode.Disposable {
   }
 
   /** Creates, binds and shows an empty `Query N - <server> - <database>` document for `profile`. */
-  async createQuery(profile: ConnectionProfile): Promise<void> {
+  async createQuery(profile: ConnectionProfile, text = ''): Promise<void> {
     const id = newQueryId();
     const uri = SqlDocFileSystem.uri('query', id, queryObjectName(this.counter.next(this.openQueryNumbers())), profileTarget(profile));
     await this.owned.add(id);
     await this.docs.set(uri, { connection: profile.name, kind: 'query' });
-    await this.sqlDocs.writeContent(uri, '');
+    await this.sqlDocs.writeContent(uri, text);
     await this.show(uri);
   }
 

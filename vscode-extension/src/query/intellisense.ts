@@ -34,7 +34,7 @@ export const INTELLISENSE_SETTING = 'intellisense.enabled';
 /** Names of `vscode.CompletionItemKind` members the server kinds map to. */
 export type CompletionKindName =
   | 'Class' | 'Interface' | 'Field' | 'Method' | 'Function' | 'Keyword' | 'Module' | 'Property' | 'Variable' | 'Folder'
-  | 'TypeParameter' | 'Snippet' | 'Text';
+  | 'TypeParameter' | 'Snippet' | 'Text' | 'Reference' | 'Event';
 
 const KIND_NAMES: Readonly<Record<string, CompletionKindName>> = Object.freeze({
   table: 'Class',
@@ -49,6 +49,9 @@ const KIND_NAMES: Readonly<Record<string, CompletionKindName>> = Object.freeze({
   database: 'Folder',
   type: 'TypeParameter',
   snippet: 'Snippet',
+  // Enhanced completions: whole JOIN clauses / ON conditions, and the column-picker entry.
+  join: 'Reference',
+  picker: 'Event',
   other: 'Text',
 });
 

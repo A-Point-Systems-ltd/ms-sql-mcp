@@ -150,7 +150,8 @@ export function traceablePayload(tool: string, payload: unknown): unknown {
  * keystroke: only its length is kept. Other arguments are returned unchanged.
  */
 export function traceableArguments(tool: string, args: Record<string, unknown>): Record<string, unknown> {
-  if (tool !== 'language_service' || !('text' in args)) return args;
+  // The document text can hold client data: trace its length only.
+  if ((tool !== 'language_service' && tool !== 'format_sql') || !('text' in args)) return args;
   const { text, ...rest } = args;
   return { action: rest.action, textLength: typeof text === 'string' ? text.length : 0, ...rest };
 }

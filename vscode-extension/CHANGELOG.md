@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Format SQL**: right-click **Format Document / Format Selection / Format SQL** or **Ctrl+F2** (selection, else the document) formats T-SQL in the team style (ScriptDom parser; only whitespace and keyword case change, verified on every run). Settings `msSqlMcp.format.keywordCase`, `msSqlMcp.format.maxItemsPerRow`. Works without a connection: the runner process now starts without one.
+- **Enhanced completions** (switch in the SQL editor tab's **...** menu and right-click menu; setting `msSqlMcp.completion.enhanced`): JOIN clauses and ON conditions from foreign keys or matching key names, generated table aliases, the **Pick columns…** checklist, `*` expansion (light bulb), and quick snippets with a **⇥ Tab** hint (`ssf` → `select top(100) * from`, and more).
+- **Ctrl+3** Select Top Rows of the table / view under the cursor (Data View) or a table-valued function (new query with its parameters, not run). **Ctrl+F12** opens the object's script in a new tab. Both scoped to SQL editors bound to a connection.
+
 ## 1.1.1
 
 - Marketplace / Open VSX icon: the A Point logo (`media/icon.png`, 512x512). No functional changes.
