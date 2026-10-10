@@ -2,7 +2,8 @@ THIRD-PARTY NOTICES - MSSQL MCP Server (MssqlMcp.exe) and the APoint-ms-sql VS C
 
 MssqlMcp.exe includes the third-party components below. The IntelliSense tool (language_service) uses
 Microsoft SqlParser, which is distributed under the SQL Server Shared Management Objects (SMO) License Terms,
-reproduced in full in section 1. This file reproduces licence texts; it is not legal advice.
+reproduced in full in section 1. The SQL formatter (format_sql), script splitting and statement classification use
+Microsoft ScriptDom (section 4, MIT). This file reproduces licence texts; it is not legal advice.
 
 ==============================================================================================================
 1. Microsoft.SqlServer.Management.SqlParser 180.9.0
@@ -111,6 +112,11 @@ It also applies even if Microsoft knew or should have known about the possibilit
 3. Code ported from microsoft/sqltoolsservice (https://github.com/microsoft/sqltoolsservice),
    commit 02de444481bccd4492cd4e35e44fb97738f3a770, into MssqlMcp/LanguageService/ (each file names its source).
    Licence: MIT (Copyright (c) Microsoft Corporation)
+
+4. Microsoft.SqlServer.TransactSql.ScriptDom 180.117.0
+   https://www.nuget.org/packages/Microsoft.SqlServer.TransactSql.ScriptDom/180.117.0
+   https://github.com/microsoft/SqlScriptDOM
+   Licence: MIT (Copyright (c) Microsoft Corporation; licence expression MIT in the NuGet package)
 ==============================================================================================================
 
 MIT License

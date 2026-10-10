@@ -266,4 +266,4 @@ Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ct
 
 MIT. See `LICENSE`.
 
-The bundled `MssqlMcp.exe` includes Microsoft SqlParser for the server's IntelliSense tool (`language_service`). SqlParser is not open source: it is distributed under the SQL Server Shared Management Objects (SMO) License Terms, reproduced in `THIRD-PARTY-NOTICES.txt`, together with the MIT notices for SMO, SmoMetadataProvider and the code ported from microsoft/sqltoolsservice.
+The bundled `MssqlMcp.exe` includes Microsoft SqlParser for the server's IntelliSense tool (`language_service`). SqlParser is not open source: it is distributed under the SQL Server Shared Management Objects (SMO) License Terms, reproduced in `THIRD-PARTY-NOTICES.txt`, together with the MIT notices for SMO, SmoMetadataProvider, ScriptDom (the SQL parser behind Format SQL) and the code ported from microsoft/sqltoolsservice.
