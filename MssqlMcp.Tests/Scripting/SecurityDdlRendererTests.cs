@@ -26,7 +26,7 @@ public sealed class SecurityDdlRendererTests
     public void Windows_login_on_2008R2_uses_sp_addsrvrolemember()
     {
         var ddl = SecurityDdlRenderer.RenderLogin(new(@"CORP\dana", 'U', false, "master", null, null, null, ["sysadmin"]), V2008, out _);
-        Assert.StartsWith(@"CREATE LOGIN [CORP\dana] FROM WINDOWS WITH DEFAULT_DATABASE = [master];", ddl);
+        Assert.StartsWith("--create\r\n" + @"CREATE LOGIN [CORP\dana] FROM WINDOWS WITH DEFAULT_DATABASE = [master];", ddl);
         Assert.Contains(@"EXEC sys.sp_addsrvrolemember @loginame = N'CORP\dana', @rolename = N'sysadmin';", ddl);
     }
 
@@ -72,7 +72,7 @@ public sealed class SecurityDdlRendererTests
     [Fact]
     public void Database_user_without_login()
     {
-        Assert.StartsWith("CREATE USER [svc] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];",
+        Assert.StartsWith("--create\r\nCREATE USER [svc] WITHOUT LOGIN WITH DEFAULT_SCHEMA = [dbo];",
             SecurityDdlRenderer.RenderDatabaseUser(new("svc", 'S', null, "dbo", true, []), V2019, out _));
     }
 
@@ -92,7 +92,7 @@ public sealed class SecurityDdlRendererTests
     public void Application_role_uses_password_placeholder()
     {
         var ddl = SecurityDdlRenderer.RenderDatabaseRole(new("approle", false, true, null, "dbo", []), V2019);
-        Assert.Equal("CREATE APPLICATION ROLE [approle] WITH PASSWORD = " + SecurityDdlRenderer.PasswordPlaceholder + ", DEFAULT_SCHEMA = [dbo];", ddl);
+        Assert.Equal("--create\r\nCREATE APPLICATION ROLE [approle] WITH PASSWORD = " + SecurityDdlRenderer.PasswordPlaceholder + ", DEFAULT_SCHEMA = [dbo];", ddl);
     }
 
     [Fact]
@@ -125,7 +125,7 @@ public sealed class SecurityDdlRendererTests
         Assert.StartsWith("-- ", db);
 
         var dbWithMember = SecurityDdlRenderer.RenderDatabaseRole(new("public", false, false, "dbo", null, ["app"]), V2008);
-        Assert.Equal("EXEC sys.sp_addrolemember @rolename = N'public', @membername = N'app';", dbWithMember);
+        Assert.Equal("--members\r\nEXEC sys.sp_addrolemember @rolename = N'public', @membername = N'app';", dbWithMember);
 
         var server = SecurityDdlRenderer.RenderServerRole(new("public", false, []), V2019, out var w);
         Assert.DoesNotContain("CREATE", server);
@@ -146,10 +146,10 @@ public sealed class SecurityDdlRendererTests
         Assert.DoesNotContain("CREATE SERVER ROLE", old);
 
         var oldFixed = SecurityDdlRenderer.RenderServerRole(new("dbcreator", true, ["app"]), V2008);
-        Assert.Equal("EXEC sys.sp_addsrvrolemember @loginame = N'app', @rolename = N'dbcreator';", oldFixed);
+        Assert.Equal("--members\r\nEXEC sys.sp_addsrvrolemember @loginame = N'app', @rolename = N'dbcreator';", oldFixed);
 
         var fixedRole = SecurityDdlRenderer.RenderServerRole(new("sysadmin", true, ["app"]), V2019);
-        Assert.Equal("ALTER SERVER ROLE [sysadmin] ADD MEMBER [app];", fixedRole);
+        Assert.Equal("--members\r\nALTER SERVER ROLE [sysadmin] ADD MEMBER [app];", fixedRole);
     }
 
     [Fact]
@@ -166,7 +166,7 @@ public sealed class SecurityDdlRendererTests
     public void Windows_group_login_and_unsupported_user_types()
     {
         var g = SecurityDdlRenderer.RenderLogin(new(@"CORP\staff", 'G', false, null, null, null, null, []), V2019, out var gw);
-        Assert.Equal(@"CREATE LOGIN [CORP\staff] FROM WINDOWS;", g);
+        Assert.Equal("--create\r\n" + @"CREATE LOGIN [CORP\staff] FROM WINDOWS;", g);
         Assert.Empty(gw);
 
         foreach (var t in new[] { 'E', 'X' })
@@ -181,7 +181,7 @@ public sealed class SecurityDdlRendererTests
     public void Sql_user_without_login_info_is_scripted_without_login_with_warning()
     {
         var ddl = SecurityDdlRenderer.RenderDatabaseUser(new("x", 'S', null, null, false, []), V2019, out var w);
-        Assert.Equal("-- WARNING: user [x] has no matching login; scripted as CREATE USER [x] WITHOUT LOGIN\r\nCREATE USER [x] WITHOUT LOGIN;", ddl);
+        Assert.Equal("--create\r\n-- WARNING: user [x] has no matching login; scripted as CREATE USER [x] WITHOUT LOGIN\r\nCREATE USER [x] WITHOUT LOGIN;", ddl);
         Assert.Equal("user [x] has no matching login; scripted as CREATE USER [x] WITHOUT LOGIN", Assert.Single(w));
 
         SecurityDdlRenderer.RenderDatabaseUser(new("svc", 'S', null, "dbo", true, []), V2019, out var w2);
@@ -193,5 +193,80 @@ public sealed class SecurityDdlRendererTests
     {
         var ddl = SecurityDdlRenderer.RenderLogin(new("a", 'S', false, null, null, null, true, []), V2019, out _);
         Assert.Contains("CHECK_POLICY = ON, CHECK_EXPIRATION = ON", ddl);
+    }
+
+    [Fact]
+    public void Database_role_has_titled_sections_with_grouped_permissions()
+    {
+        var role = new DatabaseRoleMeta("api_programmers", false, false, "dbo", null, [@"APOINTDC\DevTeam"], ["api"],
+        [
+            new('G', "SELECT", "[dbo].[AiUsageLog]"),
+            new('G', "INSERT", "[dbo].[AiUsageLog]"),
+            new('G', "SELECT", "[dbo].[AiBatchJobs]"),
+            new('G', "INSERT", "[dbo].[AiBatchJobs]"),
+            new('G', "UPDATE", "[dbo].[AiBatchJobs]"),
+            new('W', "EXECUTE", "SCHEMA::[api]"),
+            new('D', "DELETE", "[dbo].[AiBatchJobs]"),
+            new('G', "SELECT", "[dbo].[T] ([Secret])"),
+            new('G', "CONNECT", null),
+            new('G', "SEND", null, "service"),
+        ]);
+        var ddl = SecurityDdlRenderer.RenderDatabaseRole(role, V2019, out var warnings);
+        Assert.Equal(string.Join("\r\n",
+            "--create",
+            "CREATE ROLE [api_programmers] AUTHORIZATION [dbo];",
+            "",
+            "--owned schemas",
+            "ALTER AUTHORIZATION ON SCHEMA::[api] TO [api_programmers];",
+            "",
+            "--members",
+            @"ALTER ROLE [api_programmers] ADD MEMBER [APOINTDC\DevTeam];",
+            "",
+            "--permissions",
+            "-- WARNING: SEND on a service securable is not scripted.",
+            "GRANT SELECT, INSERT ON [dbo].[AiUsageLog] TO [api_programmers];",
+            "GRANT SELECT, INSERT, UPDATE ON [dbo].[AiBatchJobs] TO [api_programmers];",
+            "GRANT EXECUTE ON SCHEMA::[api] TO [api_programmers] WITH GRANT OPTION;",
+            "DENY DELETE ON [dbo].[AiBatchJobs] TO [api_programmers];",
+            "GRANT SELECT ON [dbo].[T] ([Secret]) TO [api_programmers];",
+            "GRANT CONNECT TO [api_programmers];"), ddl);
+        Assert.Single(warnings);
+    }
+
+    [Fact]
+    public void Login_includes_server_permissions_and_its_database_user()
+    {
+        var user = new DatabaseUserMeta("app", 'S', "app", "dbo", false, ["db_datareader"], false, ["appschema"], [new('G', "EXECUTE", null)]);
+        var login = new LoginMeta("app", 'S', false, "Sales", null, true, false, ["dbcreator"],
+            [new('G', "VIEW SERVER STATE", null), new('G', "IMPERSONATE", "LOGIN::[other]")],
+            new LoginDatabaseMeta("Sales", user, user.OwnedSchemas!, user.Permissions!));
+        var ddl = SecurityDdlRenderer.RenderLogin(login, V2019, out _);
+        Assert.Contains("--server roles\r\nALTER SERVER ROLE [dbcreator] ADD MEMBER [app];", ddl);
+        Assert.Contains("--server permissions\r\nGRANT VIEW SERVER STATE TO [app];\r\nGRANT IMPERSONATE ON LOGIN::[other] TO [app];", ddl);
+        Assert.Contains("--database [Sales]: user [app]\r\nUSE [Sales];\r\nCREATE USER [app] FOR LOGIN [app] WITH DEFAULT_SCHEMA = [dbo];", ddl);
+        Assert.Contains("--owned schemas\r\nALTER AUTHORIZATION ON SCHEMA::[appschema] TO [app];", ddl);
+        Assert.Contains("--database roles\r\nALTER ROLE [db_datareader] ADD MEMBER [app];", ddl);
+        Assert.Contains("--database permissions\r\nGRANT EXECUTE TO [app];", ddl);
+        Assert.DoesNotContain("PASSWORD = N'", ddl.Replace(SecurityDdlRenderer.PasswordPlaceholder, string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+
+        var owner = new LoginMeta("sa2", 'S', false, null, null, null, null, [], [], new LoginDatabaseMeta("Sales", user with { Name = "dbo" }, [], []));
+        Assert.Contains("database owner", SecurityDdlRenderer.RenderLogin(owner, V2019, out _), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0, null, null, null, null, null)]
+    [InlineData(1, "dbo", "T", null, null, "[dbo].[T]")]
+    [InlineData(1, "dbo", "T", "c", null, "[dbo].[T] ([c])")]
+    [InlineData(3, "api", null, null, null, "SCHEMA::[api]")]
+    [InlineData(4, null, "r", null, "R", "ROLE::[r]")]
+    [InlineData(4, null, "u", null, "S", "USER::[u]")]
+    [InlineData(6, "dbo", "tt", null, null, "TYPE::[dbo].[tt]")]
+    [InlineData(25, null, "cert", null, null, "CERTIFICATE::[cert]")]
+    public void Database_securables_render_their_on_clause(int cls, string? schema, string? name, string? column, string? principalType, string? expected)
+    {
+        var (on, unsupported) = CatalogReader.DatabaseSecurable(cls, "X", schema, name, column, principalType);
+        Assert.Equal(expected, on);
+        Assert.Null(unsupported);
+        Assert.Equal("service", CatalogReader.DatabaseSecurable(17, "SERVICE", null, "s", null, null).Unsupported);
     }
 }

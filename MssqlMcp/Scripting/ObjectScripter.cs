@@ -470,7 +470,7 @@ internal static class ObjectScripter
             default:
                 if (await CatalogReader.ReadDatabaseRoleAsync(conn, principal, ct).ConfigureAwait(false) is { } role)
                 {
-                    ddl = SecurityDdlRenderer.RenderDatabaseRole(role, version);
+                    ddl = SecurityDdlRenderer.RenderDatabaseRole(role, version, out warnings);
                 }
 
                 break;
