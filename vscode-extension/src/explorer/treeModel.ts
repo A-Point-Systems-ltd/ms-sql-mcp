@@ -174,6 +174,8 @@ export function nodeId(node: ExplorerNode): string | undefined {
 export interface DescribeOptions {
   /** The connection has `ddlHistory`: objects with a DDL history get the `.history` contextValue suffix (Show DDL History). */
   history?: boolean;
+  /** A listing category's name filter ('' or undefined: none). */
+  filter?: string;
 }
 
 /** Suffix of object / child contextValues whose Show DDL History menu entry is offered. */
@@ -196,11 +198,17 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
         ...(p.color && CONNECTION_COLORS[p.color] ? { iconColor: CONNECTION_COLORS[p.color].themeColor } : {}),
       };
     }
-    case 'category':
+    case 'category': {
+      // Listing groups (Tables, Views, ...) are filterable one by one; their filter and "n of m" show beside the label.
+      const term = opts.filter ?? '';
+      const parts = [term ? `filter: ${term}` : '', counts ? `${counts.shown} of ${counts.total}` : ''].filter(Boolean);
       return {
-        id, label: node.def.label, ...(counts ? { description: `${counts.shown} of ${counts.total}` } : {}),
-        contextValue: 'msSqlMcp.category', collapsible: true, icon: node.def.icon,
+        id, label: node.def.label, ...(parts.length ? { description: parts.join(' · ') } : {}),
+        ...(term ? { tooltip: `${node.def.label}: showing names containing '${term}'` } : {}),
+        contextValue: node.def.listType ? (term ? 'msSqlMcp.category.list.filtered' : 'msSqlMcp.category.list') : 'msSqlMcp.category',
+        collapsible: true, icon: node.def.icon,
       };
+    }
     case 'object': {
       const hasChildren = !!node.def.childFolders?.length;
       const label = display(node.ref);

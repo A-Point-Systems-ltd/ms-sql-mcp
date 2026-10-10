@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
 import { findProfile } from '../query/editorState';
-import { normalizeFilter } from '../tree/filter';
+import { CategoryFilters } from '../tree/categoryFilters';
 import { CATEGORIES, parseObjectList } from './catalog';
 import { qualified } from './sqlText';
 import type { ExplorerClient } from './explorerClient';
@@ -20,6 +20,9 @@ type ObjectRows = ReturnType<typeof parseObjectList>;
  * Connections -> categories -> objects -> child folders -> children. Every call goes through the
  * private read-only ExplorerClient and passes `connection`. Failures become message nodes; getChildren never throws.
  */
+/** globalState key of the per-group name filters. */
+const FILTERS_KEY = 'msSqlMcp.categoryFilters';
+
 export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNode>, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<ExplorerNode | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
@@ -34,10 +37,15 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
   private readonly loaded = new WeakMap<Promise<ObjectRows>, ObjectRows>();
   /** Connection/category node instances, kept so onDidChangeTreeData(node) targets the element the view knows. */
   private readonly nodes = new Map<string, ConnectionNode | CategoryNode>();
-  private term = '';
+  /** Name filters per (connection, group), kept in globalState across restarts. */
+  private readonly filters: CategoryFilters;
   private readonly subs: vscode.Disposable[];
 
-  constructor(private readonly store: ConnectionStore, private readonly explorer: ExplorerClient, private readonly log: Logger) {
+  constructor(
+    private readonly store: ConnectionStore, private readonly explorer: ExplorerClient, private readonly log: Logger,
+    private readonly memento?: vscode.Memento,
+  ) {
+    this.filters = new CategoryFilters(memento?.get(FILTERS_KEY));
     // No explorer.reset() here: ExplorerClient resets itself on store change (debounced), and the tree
     // refreshes again on its onDidReset once the new profile set applies.
     this.subs = [
@@ -46,14 +54,27 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     ];
   }
 
-  get filter(): string {
-    return this.term;
+  /** The name filter of one group of one connection ('' when none). */
+  filterOf(connection: string, category: string): string {
+    return this.filters.get(connection, category);
   }
 
-  setFilter(text: string): void {
-    const term = normalizeFilter(text);
-    if (term === this.term) return;
-    this.term = term;
+  /** How many groups are filtered (all connections). */
+  get filterCount(): number {
+    return this.filters.count;
+  }
+
+  /** Sets (empty: clears) one group's filter and re-renders the tree. */
+  setFilter(connection: string, category: string, text: string): void {
+    if (this.filters.set(connection, category, text)) this.filtersChanged();
+  }
+
+  clearAllFilters(): void {
+    if (this.filters.clearAll()) this.filtersChanged();
+  }
+
+  private filtersChanged(): void {
+    void this.memento?.update(FILTERS_KEY, this.filters.toState());
     this.emitter.fire(undefined);
   }
 
@@ -78,7 +99,8 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
   getTreeItem(node: ExplorerNode): vscode.TreeItem {
     const connection = node.kind === 'object' || node.kind === 'child' ? node.ref.connection : undefined;
     const history = connection !== undefined && findProfile(this.store.list(), connection)?.ddlHistory === true;
-    return toTreeItem(node, describeNode(node, this.counts(node), { history }));
+    const filter = node.kind === 'category' && node.def.listType ? this.filters.get(node.connection, node.def.id) : undefined;
+    return toTreeItem(node, describeNode(node, this.counts(node), { history, filter }));
   }
 
   async getChildren(node?: ExplorerNode): Promise<ExplorerNode[]> {
@@ -123,10 +145,11 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     const rows = await pending;
     this.loaded.set(pending, rows);
     // The category's "n of m" is only known now: re-render it once after a fresh load.
-    if (!hadList && this.term) setTimeout(() => this.emitter.fire(node), 0);
-    const { nodes, total } = objectNodes(node.connection, node.def, rows, this.term);
+    const term = this.filters.get(node.connection, node.def.id);
+    if (!hadList && term) setTimeout(() => this.emitter.fire(node), 0);
+    const { nodes, total } = objectNodes(node.connection, node.def, rows, term);
     if (nodes.length) return nodes;
-    return [{ kind: 'message', text: total ? `No matches for '${this.term}'` : EMPTY_MESSAGE, isError: false }];
+    return [{ kind: 'message', text: total ? `No matches for '${term}'` : EMPTY_MESSAGE, isError: false }];
   }
 
   private objectChildren(node: ObjectNode): Promise<ObjectChildren> {
@@ -137,11 +160,13 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
   }
 
   private counts(node: ExplorerNode): { shown: number; total: number } | undefined {
-    if (!this.term || node.kind !== 'category' || !node.def.listType) return undefined;
+    if (node.kind !== 'category' || !node.def.listType) return undefined;
+    const term = this.filters.get(node.connection, node.def.id);
+    if (!term) return undefined;
     const entry = this.lists.get(categoryKey(node.connection, node.def.id));
     const rows = entry && this.loaded.get(entry);
     if (!rows) return undefined;
-    return { shown: objectNodes(node.connection, node.def, rows, this.term).nodes.length, total: rows.length };
+    return { shown: objectNodes(node.connection, node.def, rows, term).nodes.length, total: rows.length };
   }
 
   private cached<T>(map: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {

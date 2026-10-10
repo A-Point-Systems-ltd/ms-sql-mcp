@@ -155,13 +155,13 @@
       },
       {
         "command": "msSqlMcp.filter",
-        "title": "Filter Objects by Name…",
+        "title": "Filter Group by Name…",
         "category": "APoint-ms-sql",
         "icon": "$(filter)"
       },
       {
         "command": "msSqlMcp.clearFilter",
-        "title": "Clear Filter",
+        "title": "Clear Group Filter",
         "category": "APoint-ms-sql",
         "icon": "$(filter-filled)"
       },
@@ -258,22 +258,18 @@
         "command": "msSqlMcp.renameObject",
         "title": "Rename… (F2)",
         "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.clearAllFilters",
+        "title": "Clear All Filters",
+        "category": "APoint-ms-sql",
+        "icon": "$(clear-all)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "msSqlMcp.filter",
-          "when": "view == msSqlMcp.explorer && msSqlMcp.hasConnections && !msSqlMcp.filterActive",
-          "group": "navigation@0"
-        },
-        {
-          "command": "msSqlMcp.clearFilter",
-          "when": "view == msSqlMcp.explorer && msSqlMcp.filterActive",
-          "group": "navigation@0"
-        },
-        {
-          "command": "msSqlMcp.filter",
+          "command": "msSqlMcp.clearAllFilters",
           "when": "view == msSqlMcp.explorer && msSqlMcp.filterActive",
           "group": "navigation@0"
         },
@@ -383,6 +379,26 @@
           "command": "msSqlMcp.renameObject",
           "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.obj\\./",
           "group": "9_cutcopypaste@2"
+        },
+        {
+          "command": "msSqlMcp.filter",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.category\\.list/",
+          "group": "inline@1"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.category.list.filtered",
+          "group": "inline@2"
+        },
+        {
+          "command": "msSqlMcp.filter",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.category\\.list/",
+          "group": "2_filter@1"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.category.list.filtered",
+          "group": "2_filter@2"
         }
       ],
       "commandPalette": [
@@ -401,10 +417,6 @@
         {
           "command": "msSqlMcp.showDdlNewTab",
           "when": "false"
-        },
-        {
-          "command": "msSqlMcp.clearFilter",
-          "when": "msSqlMcp.filterActive"
         },
         {
           "command": "msSqlMcp.showHistory",
@@ -469,6 +481,14 @@
         {
           "command": "msSqlMcp.renameObject",
           "when": "false"
+        },
+        {
+          "command": "msSqlMcp.clearFilter",
+          "when": "false"
+        },
+        {
+          "command": "msSqlMcp.clearAllFilters",
+          "when": "msSqlMcp.filterActive"
         }
       ],
       "editor/title": [

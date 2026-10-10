@@ -14,6 +14,7 @@ import type { SqlDocFileSystem } from '../query/sqlDocFs';
 import type { DdlDocumentProvider } from '../explorer/ddlDocuments';
 import type { ExplorerClient } from '../explorer/explorerClient';
 import type { ExplorerNode, ExplorerTreeProvider } from '../explorer/explorerTree';
+import type { CategoryNode } from '../explorer/treeModel';
 import { DDL_SCHEME, ddlUri } from '../explorer/sqlText';
 import { DEFAULT_TOP, clampTop } from '../grid/gridModel';
 import { Logger } from '../logger';
@@ -103,25 +104,40 @@ export function registerExplorerCommands(
     if (!arg && active?.scheme === DDL_SCHEME) ddl.reload(active);
   });
 
-  // The object filter: a title-bar button (or Ctrl+F in the tree) opens an input that filters as you type. The tree
-  // view shows the active term in its title, and Clear Filter appears while one is set.
+  // Name filters are per group (Tables, Views, ...) and per connection: the filter icon on a group (or the title-bar
+  // button / Ctrl+F on a selected group or object) opens an input that filters that group as you type. The group
+  // shows its term; the view title shows how many groups are filtered, and Clear All Filters appears then.
   const showFilter = () => {
-    const term = tree.filter;
-    treeView.description = term ? `filter: ${term}` : undefined;
-    void vscode.commands.executeCommand('setContext', 'msSqlMcp.filterActive', term.length > 0);
+    const count = tree.filterCount;
+    treeView.description = count ? `${count} filter${count === 1 ? '' : 's'}` : undefined;
+    void vscode.commands.executeCommand('setContext', 'msSqlMcp.filterActive', count > 0);
   };
   showFilter();
 
-  reg('filter', () => {
+  /** The group a filter command acts on: the clicked or selected group, or the group of the selected object. */
+  const filterTarget = (arg: unknown): CategoryNode | undefined => {
+    const node = (arg ?? treeView.selection[0]) as ExplorerNode | undefined;
+    if (node?.kind === 'category') return node.def.listType ? node : undefined;
+    if (node?.kind === 'object') return { kind: 'category', connection: node.ref.connection, def: node.def };
+    return undefined;
+  };
+
+  reg('filter', arg => {
+    const target = filterTarget(arg);
+    if (!target) {
+      void vscode.window.showInformationMessage('APoint-ms-sql: select a group (Tables, Views, Stored Procedures, ...) or an object in it, then filter.');
+      return;
+    }
+    const { connection, def } = target;
     const box = vscode.window.createInputBox();
-    box.title = 'Filter objects by name';
+    box.title = `Filter ${def.label} of ${connection}`;
     box.placeholder = 'Part of a name, e.g. Customer or dbo.Order (Esc keeps the filter, empty clears it)';
-    box.value = tree.filter;
+    box.value = tree.filterOf(connection, def.id);
     let timer: NodeJS.Timeout | undefined;
     const apply = () => {
       if (timer) clearTimeout(timer);
       timer = undefined;
-      tree.setFilter(box.value);
+      tree.setFilter(connection, def.id, box.value);
       showFilter();
     };
     box.onDidChangeValue(() => {
@@ -198,8 +214,16 @@ export function registerExplorerCommands(
     tree.refresh({ kind: 'connection', profile });
   });
 
-  reg('clearFilter', () => {
-    tree.setFilter('');
+  // On a group: clears that group's filter; elsewhere (no group target): clears every filter.
+  reg('clearFilter', arg => {
+    const target = filterTarget(arg);
+    if (target) tree.setFilter(target.connection, target.def.id, '');
+    else tree.clearAllFilters();
+    showFilter();
+  });
+
+  reg('clearAllFilters', () => {
+    tree.clearAllFilters();
     showFilter();
   });
 }

@@ -51,7 +51,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const sqlDocs = new SqlDocFileSystem(context.globalStorageUri.fsPath, log);
   context.subscriptions.push(sqlDocs, vscode.workspace.registerFileSystemProvider(SQL_DOC_SCHEME, sqlDocs, { isCaseSensitive: true }));
 
-  const tree = new ExplorerTreeProvider(store, explorer, log);
+  const tree = new ExplorerTreeProvider(store, explorer, log, context.globalState);
   const { docs: queryDocs } = registerQueryCommands(context, store, log, { runner, sqlDocs, viewer, refreshTree: () => tree.refresh() });
   // SQL completion, hover and signature help for documents bound to an open connection (runner's language_service).
   registerIntelliSense(context, { runner, docs: queryDocs, store, log });

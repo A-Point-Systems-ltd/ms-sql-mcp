@@ -12,6 +12,7 @@
 - Data View: double-clicking a cell that cannot be edited shows why (read-only connection, view, no primary key, identity / computed column, value too long) instead of opening the value in a new tab; the hover button still opens the viewer. Results grids are unchanged.
 - Data View: `sql_variant` columns can be edited; values are saved as text (`N'...'`), so the stored base type becomes nvarchar.
 - Object explorer: **Copy Name** (also Ctrl+C in the tree) and **Rename…** (also F2) on objects. Rename opens an input box with the name selected (VS Code trees cannot edit labels in place), lists the views / procedures / functions that reference the object and will break, asks for confirmation, then runs `sp_rename` (tables, views, procedures, functions, triggers, foreign keys, indexes, types) or `ALTER ROLE / USER / LOGIN / SERVER ROLE ... WITH NAME`. Refused on read-only connections; database triggers are not supported.
+- Object explorer filters are per group and per connection (Tables of one connection, Views of another, ...), set from the filter icon on each group, its right-click menu or Ctrl+F; each group shows its term and `n of m`; **Clear All Filters** in the view title. Filters are kept across restarts. (Before: one filter for the whole tree.)
 
 ## 1.1.1
 
