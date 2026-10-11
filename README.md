@@ -663,6 +663,24 @@ Each previous bundle is kept as `<name>_yyyyMMdd_HHmm.<ext>`, as the script does
 
 The server `<Version>` in `MssqlMcp/MssqlMcp.csproj` and `version` in `vscode-extension/package.json` (and its `package-lock.json`) must be equal. `npm run check:version` in `vscode-extension` and CI enforce this. The `.mcpb` takes its version from the csproj.
 
+### Release checklist
+
+Every release does all five steps, in order:
+
+1. **Merge the change PRs** into `main` (CI green).
+2. **Bump the version** in a `chore/release-<version>` PR (commit `chore(release): version <version>`): `MssqlMcp/MssqlMcp.csproj` `<Version>`, `vscode-extension/package.json` and `package-lock.json` (`npm version <version> --no-git-tag-version`), and a `## <version>` entry in both `CHANGELOG.md` and `vscode-extension/CHANGELOG.md`. Run `npm run check:version`, then merge the PR.
+3. **Check `main` carries the new version** before publishing (the workflow publishes whatever `main` holds):
+   ```powershell
+   git fetch origin main; git show origin/main:vscode-extension/package.json | Select-String '"version"'
+   ```
+4. **Publish to the marketplaces**: `gh workflow run publish-extension.yml --ref main -f dryRun=false`, and wait for the run to succeed (VS Code Marketplace, Open VSX, GitHub release `ext-v<version>` with the VSIX and the `.mcpb`).
+5. **Update the local release folder** from the same commit. The workflow runs on a GitHub-hosted machine and cannot write here:
+   ```powershell
+   git checkout main; git pull
+   .\publish-release.ps1
+   ```
+   This writes the new `C:\Development\MCPs\MS-SQL-Release\MssqlMcp.exe` and keeps the previous one as `MssqlMcp_yyyyMMdd_HHmm.exe`. It also refreshes `ClaudeDesktop\APoint-ms-sql.mcpb` and `extension\APoint-ms-sql.vsix` there, keeping the previous ones with the same timestamp suffix. Restart MCP clients that use that exe (Cursor, Claude Desktop, Claude Code) so they pick it up. Rollback is described at the top of `publish-release.ps1`.
+
 ### Package the VS Code extension (VSIX)
 
 The **publish-extension** GitHub workflow builds and releases both packages:
