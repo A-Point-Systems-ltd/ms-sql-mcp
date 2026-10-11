@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.2
 
 - Closed connections stay usable in the extension: **Close (hide from MCP)** now only hides a connection from agents. The object explorer expands it (description `hidden from MCP`), and Show DDL, Data View, New Query, Run, IntelliSense, Rename and DDL history work on it. (Before: a closed connection could not be browsed or queried until it was opened, which also exposed it to agents.)
 
