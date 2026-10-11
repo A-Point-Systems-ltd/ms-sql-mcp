@@ -33,7 +33,6 @@ export function isModuleType(scriptType: string | undefined): boolean {
 
 // ---- Messages (user-facing text) ----
 
-export const OPEN_FIRST_MESSAGE = 'Open the connection to set up DDL history.';
 export const NOT_SET_UP_MESSAGE = 'DDL history was not set up; you can enable it later from Edit Connection.';
 export const CREATE_BUTTON = 'Create';
 export const SET_UP_BUTTON = 'Set up…';
@@ -408,7 +407,7 @@ export function historyDocKeys(
 ): string[] {
   const enabled = (connection: string) => {
     const p = findProfile(profiles, connection);
-    return !!p && p.open && p.ddlHistory === true;
+    return p?.ddlHistory === true;
   };
   const keys: string[] = [];
   for (const [key, assoc] of objectDocs) {

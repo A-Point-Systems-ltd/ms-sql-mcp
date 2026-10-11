@@ -172,8 +172,8 @@ export function registerExplorerCommands(
       return;
     }
     const profile = findProfile(store.list(), ref.connection);
-    if (!profile?.open) {
-      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${ref.connection}' first.`);
+    if (!profile) {
+      void vscode.window.showErrorMessage(`APoint-ms-sql: connection '${ref.connection}' was not found.`);
       return;
     }
     if (profile.readOnly) {

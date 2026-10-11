@@ -131,7 +131,7 @@ export function renderConnectionForm(v: FormValues, opts: RenderOptions): string
   <div class="field" data-field="flags">
     ${check('readOnly', 'Read-only', 'Refuses write tools and connects with ApplicationIntent=ReadOnly.')}
     ${check('insights', 'AI Insights', 'Adds schema-insight tools for agents (also requires the msSqlMcp.insights setting).')}
-    ${check('open', 'Open (expose to agents)', 'Closed connections stay in the list but agents and the explorer cannot use them.')}
+    ${check('open', 'Open (expose to agents)', 'Closed connections are hidden from agents; you can still browse and query them in this extension.')}
     ${check('ddlHistory', e(DDL_HISTORY_LABEL), e(DDL_HISTORY_HELP))}
   </div>
   <div class="actions">

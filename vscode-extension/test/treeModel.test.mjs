@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CATEGORIES } from '../out/explorer/catalog.js';
 import {
-  CLOSED_MESSAGE, categoryKey, childFolderNodes, childNodes, childrenKey, connectionDescription, connectionPrefix, dataViewRequest, ddlText, describeNode,
+  CLOSED_DESCRIPTION, categoryKey, childFolderNodes, childNodes, childrenKey, connectionDescription, connectionPrefix, dataViewRequest, ddlText, describeNode,
   errorNode, nodeId, objectNodes, parseChildren, rootCategories, scriptArgs, subCategories,
 } from '../out/explorer/treeModel.js';
 
@@ -11,7 +11,7 @@ const profile = (over = {}) => ({ name: 'dev', server: 'DC\\DEV', database: 'db1
 
 test('connection item: description, contextValue, collapsible by open state', () => {
   assert.equal(connectionDescription(profile()), 'DC\\DEV\\db1 · read-only');
-  assert.equal(connectionDescription(profile({ open: false, readOnly: false })), 'DC\\DEV\\db1 · closed');
+  assert.equal(connectionDescription(profile({ open: false, readOnly: false })), 'DC\\DEV\\db1 · hidden from MCP');
   assert.equal(connectionDescription(profile({ auth: 'raw', rawConnectionString: 'x', server: '', database: '' })), 'connection string · read-only');
   const open = describeNode({ kind: 'connection', profile: profile() });
   assert.equal(open.label, 'dev');
@@ -20,9 +20,10 @@ test('connection item: description, contextValue, collapsible by open state', ()
   assert.equal(open.command, undefined);
   const closed = describeNode({ kind: 'connection', profile: profile({ open: false }) });
   assert.equal(closed.contextValue, 'msSqlMcp.conn.closed');
-  // Collapsible, so expanding it shows CLOSED_MESSAGE.
+  // Closed only hides it from the agent: it still expands to its object groups.
   assert.equal(closed.collapsible, true);
-  assert.equal(CLOSED_MESSAGE, 'Closed - right-click › Open to browse');
+  assert.equal(closed.icon, 'eye-closed');
+  assert.equal(CLOSED_DESCRIPTION, 'hidden from MCP');
 });
 
 test('root categories exclude security sub-categories; security has 4', () => {

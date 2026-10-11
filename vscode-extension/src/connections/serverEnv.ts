@@ -1,7 +1,15 @@
 import { createHash } from 'crypto';
 import { ConnectionProfile, buildConnectionString } from './profile';
 
-export interface ServerEnvOptions { forceReadOnly?: boolean; insights?: boolean }
+export interface ServerEnvOptions {
+  forceReadOnly?: boolean;
+  insights?: boolean;
+  /**
+   * Serve closed profiles too. Open/closed only decides what the agent sees; the extension's private processes
+   * (explorer, runner) serve every profile so the user can browse and query a connection the agent cannot.
+   */
+  includeClosed?: boolean;
+}
 
 /** The `msSqlMcp.*` settings that shape the agent-facing server. */
 export interface AgentServerSettings { insights: boolean; allowAdhocConnections: boolean; serverPath: string }
@@ -99,9 +107,12 @@ function lacksPassword(p: ConnectionProfile, passwords: Map<string, string>): bo
   return p.auth === 'sql' && !passwords.has(p.name);
 }
 
-/** Names of open SQL-auth profiles that {@link buildServerConnections} skips for want of a saved password. */
-export function missingPasswords(profiles: ConnectionProfile[], passwords: Map<string, string>): string[] {
-  return profiles.filter(p => p.open && lacksPassword(p, passwords)).map(p => p.name);
+/**
+ * Names of the SQL-auth profiles that {@link buildServerConnections} skips for want of a saved password: the open
+ * ones, or all of them with `includeClosed`.
+ */
+export function missingPasswords(profiles: ConnectionProfile[], passwords: Map<string, string>, includeClosed = false): string[] {
+  return profiles.filter(p => (includeClosed || p.open) && lacksPassword(p, passwords)).map(p => p.name);
 }
 
 /** User-facing message for a profile skipped because it has no saved password. */
@@ -111,13 +122,14 @@ export function missingPasswordMessage(name: string): string {
 
 /**
  * MSSQL_CONNECTIONS payload (server README "Multiple connections"). There is no default connection.
- * Open SQL-auth profiles without a stored password are skipped (see {@link missingPasswords}).
+ * Only open profiles are served unless `opts.includeClosed`; SQL-auth profiles without a stored password are skipped
+ * (see {@link missingPasswords}).
  *
  * SECURITY: the returned JSON contains full connection strings including passwords.
  * It must never be logged, traced or shown to the user; pass it only to a child-process env or a config file.
  */
 export function buildServerConnections(profiles: ConnectionProfile[], passwords: Map<string, string>, opts: ServerEnvOptions = {}): string {
-  return JSON.stringify(profiles.filter(p => p.open && !lacksPassword(p, passwords)).map(p => {
+  return JSON.stringify(profiles.filter(p => (opts.includeClosed || p.open) && !lacksPassword(p, passwords)).map(p => {
     const readOnly = opts.forceReadOnly ? true : p.readOnly;
     return {
       name: p.name,

@@ -109,10 +109,6 @@ export function registerHistoryCommands(context: vscode.ExtensionContext, deps: 
       void vscode.window.showInformationMessage(`APoint-ms-sql: DDL history is off for '${profile.name}'. Turn it on in Edit Connection.`);
       return;
     }
-    if (!profile.open) {
-      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${profile.name}' first.`);
-      return;
-    }
     const obj = objectDisplayName(ref);
     const connection = profile.name;
 

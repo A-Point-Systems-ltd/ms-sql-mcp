@@ -45,7 +45,6 @@ export function connectionOfColorUri(path: string): string | undefined {
   try { return decodeURIComponent(path.replace(/^\//, '')) || undefined; } catch { return undefined; }
 }
 
-export const CLOSED_MESSAGE = 'Closed - right-click › Open to browse';
 export const EMPTY_MESSAGE = '(none)';
 const SHOW_DDL = 'msSqlMcp.showDdl';
 
@@ -72,11 +71,14 @@ export const categoryKey = (connection: string, categoryId: string): string => `
 export const childrenKey = (connection: string, schema: string | undefined, name: string): string =>
   `${connectionPrefix(connection)}${k(schema ?? '')}.${k(name)}|children`;
 
+/** Description part of a closed connection: still browsable, but not served to the agent. */
+export const CLOSED_DESCRIPTION = 'hidden from MCP';
+
 const display = (ref: { schema?: string; name: string }): string => (ref.schema ? `${ref.schema}.${ref.name}` : ref.name);
 
 export function connectionDescription(p: ConnectionProfile): string {
   const target = p.auth === 'raw' ? 'connection string' : `${p.server}\\${p.database}`;
-  return [target, p.readOnly ? 'read-only' : undefined, p.open ? undefined : 'closed'].filter(Boolean).join(' · ');
+  return [target, p.readOnly ? 'read-only' : undefined, p.open ? undefined : CLOSED_DESCRIPTION].filter(Boolean).join(' · ');
 }
 
 export function rootCategories(connection: string): CategoryNode[] {
@@ -194,7 +196,7 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
       return {
         id, label: p.name, description: connectionDescription(p), tooltip: `${p.name}: ${connectionDescription(p)}`,
         contextValue: p.open ? 'msSqlMcp.conn.open' : 'msSqlMcp.conn.closed', collapsible: true,
-        icon: p.open ? 'database' : 'circle-slash', resourceUri: connectionColorUri(p.name),
+        icon: p.open ? 'database' : 'eye-closed', resourceUri: connectionColorUri(p.name),
         ...(p.color && CONNECTION_COLORS[p.color] ? { iconColor: CONNECTION_COLORS[p.color].themeColor } : {}),
       };
     }

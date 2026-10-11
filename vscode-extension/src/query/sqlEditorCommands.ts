@@ -55,14 +55,14 @@ export function registerSqlEditorFeatures(context: vscode.ExtensionContext, deps
       }
     }));
 
-  /** The open profile a document is bound to, or undefined (with a message when `explain`). */
+  /** The profile a document is bound to, or undefined (with a message when `explain`). */
   const profileOf = (document: vscode.TextDocument, explain: boolean): ConnectionProfile | undefined => {
     const assoc = isNeverBound(document.uri.scheme) ? undefined : docs.get(document.uri);
     const profile = assoc ? findProfile(store.list(), assoc.connection) : undefined;
-    if (profile?.open) return profile;
+    if (profile) return profile;
     if (explain) {
       void vscode.window.showInformationMessage(assoc
-        ? `APoint-ms-sql: the connection '${assoc.connection}' is ${profile ? 'closed: open it first' : 'removed'}.`
+        ? `APoint-ms-sql: the connection '${assoc.connection}' was removed.`
         : 'APoint-ms-sql: this needs a SQL editor bound to a connection (New Query or Change Connection).');
     }
     return undefined;

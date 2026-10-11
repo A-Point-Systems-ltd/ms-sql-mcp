@@ -54,12 +54,12 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
   let loadingNote: vscode.Disposable | undefined;
   const setKey = contextSetter();
 
-  /** The open profile a document is bound to, or undefined (unbound, removed, closed, or IntelliSense off). */
+  /** The profile a document is bound to, or undefined (unbound, removed, or IntelliSense off). */
   const profileOf = (document: vscode.TextDocument): ConnectionProfile | undefined => {
     if (!enabled() || isNeverBound(document.uri.scheme)) return undefined;
     const assoc = docs.get(document.uri);
     const profile = assoc ? findProfile(store.list(), assoc.connection) : undefined;
-    return profile?.open ? profile : undefined;
+    return profile;
   };
 
   /** One language_service call; the token's cancellation aborts it (notifications/cancelled). */
@@ -88,7 +88,7 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
   };
 
   const warm = (profile: ConnectionProfile) => {
-    if (!enabled() || !profile.open || !warmed.shouldWarm(warmKey(profile), Date.now())) return;
+    if (!enabled() || !warmed.shouldWarm(warmKey(profile), Date.now())) return;
     void call(profile, { action: 'warm' })
       .catch(err => log.debug('intellisense', `warm failed: ${err instanceof Error ? err.message : String(err)}`));
   };
@@ -218,8 +218,8 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
       void vscode.window.showInformationMessage('APoint-ms-sql: open a SQL editor bound to a connection first (New Query or Change Connection).');
       return;
     }
-    if (!profile?.open) {
-      void vscode.window.showWarningMessage(`APoint-ms-sql: the connection '${assoc.connection}' is ${profile ? 'closed: open it first' : 'removed'}.`);
+    if (!profile) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: the connection '${assoc.connection}' was removed.`);
       return;
     }
     if (!enabled()) {

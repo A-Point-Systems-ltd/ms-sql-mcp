@@ -274,8 +274,8 @@ test('historyDocKeys: object docs and DDL docs of history connections with a his
     ['mssql-ddl:/on/Index/x', proc('on', { scriptType: 'Index' })],
     ['mssql-ddl:/off/Table/x', proc('off', { scriptType: 'Table' })],
   ];
-  // 'closed' has ddlHistory but is closed: no runner can serve it, so no button.
-  assert.deepEqual(historyDocKeys(objects, ddl, profiles), ['mssql-sql:/~sql/object/1/a', 'mssql-ddl:/on/Table/x']);
+  // 'closed' has ddlHistory and is closed: the runner still serves it (closed only hides it from the agent).
+  assert.deepEqual(historyDocKeys(objects, ddl, profiles), ['mssql-sql:/~sql/object/1/a', 'mssql-sql:/~sql/object/5/e', 'mssql-ddl:/on/Table/x']);
 });
 
 test('tree: object nodes of history connections get the .history contextValue suffix', () => {
