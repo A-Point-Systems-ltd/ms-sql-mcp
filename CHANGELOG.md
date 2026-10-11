@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2
+
+- No server changes; version kept in sync with the VS Code extension 1.2.2 (closed connections stay browsable in the extension).
+
 ## 1.2.1
 
 - Third-party notices now list Microsoft ScriptDom (MIT), which ships in `MssqlMcp.exe`. No functional changes.
