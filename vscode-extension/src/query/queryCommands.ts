@@ -235,14 +235,10 @@ export function registerQueryCommands(
       }
     }));
 
-  // From a connection node (arg = ConnectionNode) or the palette (pick an open connection).
+  // From a connection node (arg = ConnectionNode) or the palette (pick a connection, open or closed).
   reg('newQuery', async arg => {
-    const p = await pickProfile(store, arg, 'Connection for the new query', x => x.open);
+    const p = await pickProfile(store, arg, 'Connection for the new query');
     if (!p) return;
-    if (!p.open) {
-      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${p.name}' first.`);
-      return;
-    }
     // An empty mssql-sql: document titled "Query N - <server> - <database>" (not untitled: its tab shows the target).
     await lifecycle.createQuery(p);
   });
@@ -252,8 +248,8 @@ export function registerQueryCommands(
     const connection = typeof pick(arg, 'connection') === 'string' ? String(pick(arg, 'connection')) : '';
     const text = typeof pick(arg, 'text') === 'string' ? String(pick(arg, 'text')) : '';
     const p = findProfile(store.list(), connection);
-    if (!p?.open) {
-      void vscode.window.showWarningMessage(`APoint-ms-sql: open the connection '${connection}' first.`);
+    if (!p) {
+      void vscode.window.showWarningMessage(`APoint-ms-sql: connection '${connection}' was not found.`);
       return;
     }
     await lifecycle.createQuery(p, text);
@@ -275,7 +271,7 @@ export function registerQueryCommands(
       return;
     }
     const placeHolder = current ? `Connection for this editor (now '${current.connection}')` : 'Connection for this editor';
-    const p = await pickProfile(store, undefined, placeHolder, x => x.open);
+    const p = await pickProfile(store, undefined, placeHolder);
     if (!p) return;
     const changed = !current || current.connection.toLowerCase() !== p.name.toLowerCase();
     const next: QueryAssociation = current?.kind === 'object'
@@ -298,7 +294,7 @@ export function registerQueryCommands(
     let run = target ? tracker.contextOf(target.document) : undefined;
     // An unbound SQL editor (e.g. a .sql file opened from disk): pick its connection first, then run.
     if (target && run && !run.assoc && target.document.languageId === 'sql' && !isNeverBound(target.document.uri.scheme)) {
-      const p = await pickProfile(store, undefined, 'Run on which connection? (this editor is then bound to it)', x => x.open);
+      const p = await pickProfile(store, undefined, 'Run on which connection? (this editor is then bound to it)');
       if (!p) return;
       await docs.set(target.document.uri, { connection: p.name, kind: 'query' });
       run = tracker.contextOf(target.document);

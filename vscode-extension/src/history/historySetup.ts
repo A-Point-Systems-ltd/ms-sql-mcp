@@ -5,7 +5,7 @@ import type { ConnectionProfile } from '../connections/profile';
 import { errorMessage } from '../errorFormat';
 import { Logger } from '../logger';
 import {
-  CREATE_BUTTON, HISTORY_TOOL, NOT_SET_UP_MESSAGE, OPEN_FIRST_MESSAGE, disabledWarning, incompatibleWarning, installDecision,
+  CREATE_BUTTON, HISTORY_TOOL, NOT_SET_UP_MESSAGE, disabledWarning, incompatibleWarning, installDecision,
   LOGGING_SUPPRESSED_WARNING, installPrompt, parseHistoryStatus, readOnlyWarning, setUpMessage, statusTargetText, targetText,
 } from './historyModel';
 
@@ -18,10 +18,6 @@ import {
  */
 export async function setUpDdlHistory(runner: ServerProcessClient, profile: ConnectionProfile, log: Logger): Promise<void> {
   try {
-    if (!profile.open) {
-      void vscode.window.showInformationMessage(OPEN_FIRST_MESSAGE);
-      return;
-    }
     // Until the server answers, messages name the profile's target; afterwards the server's own @@SERVERNAME / DB_NAME().
     let where = targetText(profile);
     let status;

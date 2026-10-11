@@ -62,18 +62,16 @@ test('removed connection: connected but cannot run; tooltip says it was removed'
   assert.equal(editorRunState(object('gone'), undefined).blockedReadOnly, false);
 });
 
-test('closed connection: connected but cannot run; tooltip says to open it first', () => {
+test('closed connection: only hidden from the agent, so it runs like an open one', () => {
   const s = editorRunState(query(), profile({ open: false }));
   assert.equal(s.connected, true);
-  assert.equal(s.canRun, false);
+  assert.equal(s.canRun, true);
   assert.equal(s.blockedReadOnly, false);
-  assert.match(s.tooltip, /open the connection first/);
-  assert.match(s.reason, /open the connection first/);
-  // Closed wins over the read-only object block.
+  assert.equal(s.reason, undefined);
+  // The read-only object block still applies.
   const o = editorRunState(object(), profile({ open: false, readOnly: true }));
   assert.equal(o.canRun, false);
-  assert.equal(o.blockedReadOnly, false);
-  assert.match(o.tooltip, /open the connection first/);
+  assert.equal(o.blockedReadOnly, true);
 });
 
 test('raw profiles show "connection string" instead of server/database', () => {
@@ -103,7 +101,8 @@ test('runContextDocs lists runnable and read-only-blocked documents per uri', ()
   ];
   const profiles = [profile(), profile({ name: 'ro', readOnly: true }), profile({ name: 'closed', open: false })];
   assert.deepEqual(runContextDocs(entries, profiles), {
-    runnable: ['untitled:q', 'file:///o.sql', 'untitled:qro'],
+    // A closed connection is only hidden from the agent: its editors still run.
+    runnable: ['untitled:q', 'file:///o.sql', 'untitled:closed', 'untitled:qro'],
     blocked: ['file:///ro.sql'],
   });
   assert.deepEqual(runContextDocs([], profiles), { runnable: [], blocked: [] });

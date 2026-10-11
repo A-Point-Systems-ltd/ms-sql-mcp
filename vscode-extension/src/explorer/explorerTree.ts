@@ -7,7 +7,7 @@ import { CATEGORIES, parseObjectList } from './catalog';
 import { qualified } from './sqlText';
 import type { ExplorerClient } from './explorerClient';
 import {
-  CLOSED_MESSAGE, CategoryNode, ConnectionNode, EMPTY_MESSAGE, ExplorerNode, ItemSpec, ObjectChildren, ObjectNode,
+  CategoryNode, ConnectionNode, EMPTY_MESSAGE, ExplorerNode, ItemSpec, ObjectChildren, ObjectNode,
   categoryKey, childFolderNodes, childNodes, childrenKey, connectionPrefix, describeNode, errorNode, objectNodes, parseChildren,
   rootCategories, subCategories,
 } from './treeModel';
@@ -122,9 +122,8 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
       if (!node) return this.store.list().map(profile => this.intern({ kind: 'connection', profile }));
       switch (node.kind) {
         case 'connection':
-          return node.profile.open
-            ? rootCategories(node.profile.name).map(n => this.intern(n))
-            : [{ kind: 'message', text: CLOSED_MESSAGE, isError: false }];
+          // Closed only hides a connection from the agent; the user still browses it here.
+          return rootCategories(node.profile.name).map(n => this.intern(n));
         case 'category':
           return await this.categoryChildren(node);
         case 'object':

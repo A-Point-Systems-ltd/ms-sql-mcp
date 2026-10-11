@@ -10,6 +10,14 @@ test('only open profiles are exported and no default property exists', () => {
   assert.ok(json.every(x => !('default' in x)));
 });
 
+test('includeClosed exports closed profiles too (extension-private processes)', async () => {
+  const { missingPasswords } = await import('../out/connections/serverEnv.js');
+  const profiles = [p('a'), p('c', { open: false }), p('s', { auth: 'sql', user: 'u', open: false })];
+  assert.deepEqual(JSON.parse(buildServerConnections(profiles, new Map(), { includeClosed: true })).map(x => x.name), ['a', 'c']);
+  assert.deepEqual(missingPasswords(profiles, new Map()), []);
+  assert.deepEqual(missingPasswords(profiles, new Map(), true), ['s']);
+});
+
 test('flags are carried and can be forced for the explorer', () => {
   const [x] = JSON.parse(buildServerConnections([p('a', { readOnly: false, insights: true })], new Map(), { forceReadOnly: true, insights: false }));
   assert.equal(x.readOnly, true);

@@ -19,8 +19,8 @@ export interface ServerProcessOptions {
   /** Extra env for the process, e.g. `{ MSSQL_SCRIPT_RUNNER: 'true' }`. */
   extraEnv?: Record<string, string>;
   /**
-   * Start the process even when no connection is open (the runner: `format_sql` needs none, and the server accepts an
-   * empty connection set when MSSQL_SCRIPT_RUNNER is on). Bound calls still fail fast without an open connection.
+   * Start the process even when there is no connection (the runner: `format_sql` needs none, and the server accepts an
+   * empty connection set when MSSQL_SCRIPT_RUNNER is on). Bound calls still fail fast without a connection.
    */
   allowNoConnections?: boolean;
 }
@@ -36,7 +36,7 @@ export const RUNNER_OPTIONS: Readonly<ServerProcessOptions> = Object.freeze({
   allowNoConnections: true,
 });
 
-const NO_OPEN_CONNECTIONS = 'No open connections. Add or open a connection first.';
+const NO_CONNECTIONS = 'No connections. Add a connection first.';
 
 /** A start that was overtaken by reset()/dispose() while spawning. */
 class SupersededError extends Error {}
@@ -44,7 +44,8 @@ class SupersededError extends Error {}
 /**
  * A private MssqlMcp process of the extension (separate from the agent-facing one), e.g. the object tree's
  * read-only explorer or the query runner. Spawned lazily with a single-flight guard; every call carries
- * `connection`. Only OPEN profiles are served; the Insights layer is off.
+ * `connection`. Every profile is served, open or closed (open/closed only decides what the agent-facing server
+ * sees); the Insights layer is off.
  *
  * A restart (profile set or server path changed) never kills a running call: new calls go to a fresh process at
  * once, and the old one is retired when its last in-flight call ends. Only dispose() kills at once.
@@ -58,7 +59,7 @@ export class ServerProcessClient implements vscode.Disposable {
   /** Processes already disposed by this client (each one is disposed once only). */
   private readonly killed = new WeakSet<McpStdioClient>();
   private starting?: Promise<McpStdioClient>;
-  /** Per process: open profiles left out of it for a missing password (lower-case names), known at start. */
+  /** Per process: profiles left out of it for a missing password (lower-case names), known at start. */
   private readonly skippedNames = new WeakMap<McpStdioClient, ReadonlySet<string>>();
   private generation = 0;
   private timer?: NodeJS.Timeout;
@@ -97,7 +98,7 @@ export class ServerProcessClient implements vscode.Disposable {
   async callResult(connection: string, tool: string, args: Record<string, unknown>, opts?: CallToolOptions): Promise<unknown> {
     if (opts?.signal?.aborted) throw cancelledError();
     // The runner may run without this connection: say why here instead of a server "unknown connection" error.
-    if (this.options.allowNoConnections && !this.store.list().some(p => p.open)) throw new Error(NO_OPEN_CONNECTIONS);
+    if (this.options.allowNoConnections && !this.store.list().length) throw new Error(NO_CONNECTIONS);
     return this.invoke(tool, { ...args, connection }, `connection='${connection}'`, opts, connection);
   }
 
@@ -215,14 +216,13 @@ export class ServerProcessClient implements vscode.Disposable {
     if (!exe.ok) throw new Error(exe.reason);
     const profiles = this.store.list();
     const passwords = await this.store.passwords();
-    const open = profiles.filter(p => p.open);
-    const skipped = missingPasswords(profiles, passwords);
+    const skipped = missingPasswords(profiles, passwords, true);
     // The server exits (FATAL) on an empty config, so fail fast instead of spawning it.
-    if (open.length - skipped.length <= 0 && !this.options.allowNoConnections) {
-      throw new Error(skipped.length ? skipped.map(missingPasswordMessage).join(' ') : NO_OPEN_CONNECTIONS);
+    if (profiles.length - skipped.length <= 0 && !this.options.allowNoConnections) {
+      throw new Error(skipped.length ? skipped.map(missingPasswordMessage).join(' ') : NO_CONNECTIONS);
     }
     const client = new McpStdioClient(exe.path, explorerProcessEnv(
-      buildServerConnections(profiles, passwords, { forceReadOnly: this.options.forceReadOnly, insights: false }),
+      buildServerConnections(profiles, passwords, { forceReadOnly: this.options.forceReadOnly, insights: false, includeClosed: true }),
       { LOG_FILE_PATH: path.join(this.context.globalStorageUri.fsPath, 'logs') + path.sep, ...this.options.extraEnv },
     ), this.log, () => {
       if (this.client === client) this.client = undefined;

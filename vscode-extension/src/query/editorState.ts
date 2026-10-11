@@ -49,13 +49,6 @@ export function editorRunState(assoc: QueryAssociation | undefined, profile: Con
   const mode = profile.readOnly ? 'read-only' : 'read-write';
   const statusText = `$(database) ${profile.name}${profile.readOnly ? ' $(lock)' : ''}`;
   const head = `APoint-ms-sql: ${profile.name} - ${target} - ${mode}`;
-  if (!profile.open) {
-    return {
-      connected: true, canRun: false, blockedReadOnly: false, statusText,
-      tooltip: `${head}, closed: open the connection first. ${CLICK}`,
-      reason: `The connection '${profile.name}' is closed: open the connection first.`,
-    };
-  }
   if (assoc.kind === 'object' && profile.readOnly) {
     const reason = `'${profile.name}' is a read-only connection: object changes can only be applied on a read-write connection.`;
     return {

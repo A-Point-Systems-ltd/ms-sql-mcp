@@ -297,12 +297,12 @@
       "view/item/context": [
         {
           "command": "msSqlMcp.newQuery",
-          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.conn.open",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.conn\\./",
           "group": "inline@0"
         },
         {
           "command": "msSqlMcp.newQuery",
-          "when": "view == msSqlMcp.explorer && viewItem == msSqlMcp.conn.open",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.conn\\./",
           "group": "0@1"
         },
         {
@@ -342,7 +342,7 @@
         },
         {
           "command": "msSqlMcp.refresh",
-          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.(conn\\.open|category)/",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.(conn\\.|category)/",
           "group": "inline@3"
         },
         {

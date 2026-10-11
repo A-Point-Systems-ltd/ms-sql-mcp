@@ -295,13 +295,13 @@ export function replaceEnd(lineText: string, character: number, start: number): 
 }
 
 /**
- * Keys (`uri.toString()`) of the documents IntelliSense serves: bound to a connection that exists and is open
+ * Keys (`uri.toString()`) of the documents IntelliSense serves: bound to a connection that exists, open or closed
  * (the editor/title key `resource in msSqlMcp.intellisenseDocs`).
  */
 export function intellisenseDocs(
   entries: readonly (readonly [string, QueryAssociation])[], profiles: readonly ConnectionProfile[],
 ): string[] {
-  return entries.filter(([, assoc]) => findProfile(profiles, assoc.connection)?.open === true).map(([key]) => key);
+  return entries.filter(([, assoc]) => findProfile(profiles, assoc.connection) !== undefined).map(([key]) => key);
 }
 
 /** The `msSqlMcp.intellisense.enabled` value: only an explicit `false` turns IntelliSense off. */

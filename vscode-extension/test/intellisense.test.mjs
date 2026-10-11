@@ -197,7 +197,7 @@ test('replaceStart ignores [ inside string literals and -- comments', () => {
   assert.equal(replaceStart(esc, esc.length), 5);
 });
 
-test('intellisenseDocs lists bound documents whose connection exists and is open', () => {
+test('intellisenseDocs lists bound documents whose connection exists, open or closed', () => {
   const entries = [
     ['mssql-sql:/query/1', { connection: 'dev', kind: 'query' }],
     ['file:///o.sql', { connection: 'ro', kind: 'object' }],
@@ -205,7 +205,7 @@ test('intellisenseDocs lists bound documents whose connection exists and is open
     ['untitled:gone', { connection: 'gone', kind: 'query' }],
   ];
   const profiles = [profile(), profile({ name: 'ro', readOnly: true }), profile({ name: 'closed', open: false })];
-  assert.deepEqual(intellisenseDocs(entries, profiles), ['mssql-sql:/query/1', 'file:///o.sql']);
+  assert.deepEqual(intellisenseDocs(entries, profiles), ['mssql-sql:/query/1', 'file:///o.sql', 'untitled:closed']);
 });
 
 test('intellisenseEnabled defaults to true and is false only for false', () => {

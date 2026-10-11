@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { Logger } from '../logger';
 import { ConnectionProfile } from './profile';
 import { ConnectionStore } from './store';
-import { PROBE_TIMEOUT_MS, probeConnection } from './probe';
+import { PROBE_TIMEOUT_MS } from './probe';
 import { ConnectionFormManager } from './connectionForm';
 import { missingPasswordMessage, missingPasswords } from './serverEnv';
 import { describeServerInfo, withConnectionHint } from './serverInfo';
@@ -88,7 +88,7 @@ export function registerConnectionCommands(
     const p = await pickProfile(store, arg, 'Connection to test');
     if (!p) return;
     const passwords = await store.passwords();
-    if (missingPasswords([{ ...p, open: true }], passwords).length) {
+    if (missingPasswords([p], passwords, true).length) {
       void vscode.window.showWarningMessage(missingPasswordMessage(p.name));
       return;
     }
@@ -98,17 +98,15 @@ export function registerConnectionCommands(
       let onAbort: (() => void) | undefined;
       const sub = token.onCancellationRequested(() => ac.abort(new Error('Cancelled.')));
       try {
-        // Open profiles are served by the shared explorer process; closed ones need a one-off probe process.
-        const summary = p.open
-          ? await Promise.race([
-              explorer.call(p.name, 'get_server_info', {}).then(describeServerInfo),
-              new Promise<never>((_, reject) => {
-                if (ac.signal.aborted) { reject(ac.signal.reason); return; }
-                onAbort = () => reject(ac.signal.reason);
-                ac.signal.addEventListener('abort', onAbort, { once: true });
-              }),
-            ])
-          : await probeConnection(context.extensionUri, p, passwords, log, ac.signal);
+        // The shared explorer process serves every profile, open or closed.
+        const summary = await Promise.race([
+          explorer.call(p.name, 'get_server_info', {}).then(describeServerInfo),
+          new Promise<never>((_, reject) => {
+            if (ac.signal.aborted) { reject(ac.signal.reason); return; }
+            onAbort = () => reject(ac.signal.reason);
+            ac.signal.addEventListener('abort', onAbort, { once: true });
+          }),
+        ]);
         void vscode.window.showInformationMessage(`APoint-ms-sql '${p.name}': ${summary}`);
       } catch (err) {
         if (token.isCancellationRequested) return;
