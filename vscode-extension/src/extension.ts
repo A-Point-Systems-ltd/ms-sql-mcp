@@ -17,6 +17,7 @@ import { Logger } from './logger';
 import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, duplicateEntryAction, hasMsSqlEntry } from './cursorMcp';
 import { resolveExePath } from './exe';
 import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
+import { registerEditorOptions } from './options/editorOptions';
 import { registerIntelliSense } from './query/intellisenseProviders';
 import { registerQueryCommands } from './query/queryCommands';
 import { registerSqlEditorFeatures } from './query/sqlEditorCommands';
@@ -57,6 +58,8 @@ export function activate(context: vscode.ExtensionContext): void {
   registerIntelliSense(context, { runner, docs: queryDocs, store, log });
   // Formatter (Ctrl+F2), Enhanced Completions switch, snippets, column picker, * expansion, Ctrl+3, Ctrl+F12.
   registerSqlEditorFeatures(context, { runner, docs: queryDocs, store, log });
+  // SQL Editor Options form: completion, formatting and query-shortcut settings.
+  registerEditorOptions(context, log);
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
   updateHasConnections();

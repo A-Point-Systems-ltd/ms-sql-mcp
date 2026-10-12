@@ -81,6 +81,15 @@ export function orphanQueryIds(owned: readonly string[], open: ReadonlySet<strin
   return owned.filter(id => isValidDocId(id) && !open.has(id));
 }
 
+/**
+ * What Open SQL File does with a file it opens for `connection`: `bind` an unbound file, `keep` a file already bound to
+ * that connection, `ask` before rebinding a file bound to another one.
+ */
+export function openFileBinding(current: QueryAssociation | undefined, connection: string): 'bind' | 'keep' | 'ask' {
+  if (!current) return 'bind';
+  return current.connection.toLowerCase() === connection.toLowerCase() ? 'keep' : 'ask';
+}
+
 /** An open document that may be the source of a Save As: its key, text, binding and whether it is the active editor. */
 export interface SaveAsCandidate { key: string; text: string; assoc: QueryAssociation | undefined; active: boolean }
 

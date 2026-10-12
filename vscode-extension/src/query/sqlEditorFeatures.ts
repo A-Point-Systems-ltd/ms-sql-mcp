@@ -29,6 +29,20 @@ export function enhancedEnabled(value: unknown): boolean {
   return value !== false;
 }
 
+/** `msSqlMcp.completion.tableAliases`: generated aliases after FROM / JOIN and in JOIN suggestions. */
+export const TABLE_ALIASES_SETTING = 'completion.tableAliases';
+
+/** `msSqlMcp.completion.joinNameMatch`: same-named columns in JOIN / ON suggestions without a foreign key. */
+export const JOIN_NAME_MATCH_SETTING = 'completion.joinNameMatch';
+
+export type JoinNameMatch = 'off' | 'keyed' | 'any';
+
+/** The enhanced-completion options a completion request carries: aliases on unless false, name match `any` unless valid. */
+export function enhancedOptions(tableAliases: unknown, joinNameMatch: unknown): { tableAliases: boolean; joinNameMatch: JoinNameMatch } {
+  const match = joinNameMatch === 'off' || joinNameMatch === 'keyed' || joinNameMatch === 'any' ? joinNameMatch : 'any';
+  return { tableAliases: tableAliases !== false, joinNameMatch: match };
+}
+
 // ----- snippets -----
 
 export interface SqlSnippet {

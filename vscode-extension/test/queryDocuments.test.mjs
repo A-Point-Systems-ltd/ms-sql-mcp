@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { QUERY_DOCUMENTS_KEY, QueryDocuments } from '../out/query/queryDocuments.js';
+import { QUERY_DOCUMENTS_KEY, QueryDocuments, openFileBinding } from '../out/query/queryDocuments.js';
 
 /** In-memory stand-in for vscode.Memento. */
 function memento(initial = {}) {
@@ -162,4 +162,10 @@ test('Save As: the new document inherits the binding of the bound document it wa
   assert.equal(inheritedBinding('file:///a.sql', 'x', [c('u:1', 'x', q), c('u:2', 'x', obj)]), undefined, 'ambiguous');
   assert.deepEqual(inheritedBinding('file:///a.sql', 'x', [c('u:1', 'x', q), c('u:2', 'x', obj, true)]), { connection: 'prod', kind: 'query' }, 'the active one wins');
   assert.equal(inheritedBinding('file:///a.sql', 'x', [c('file:///a.sql', 'x', q)]), undefined, 'not itself');
+});
+
+test('Open SQL File binds an unbound file, keeps the same connection and asks before rebinding', () => {
+  assert.equal(openFileBinding(undefined, 'dev'), 'bind');
+  assert.equal(openFileBinding({ connection: 'DEV', kind: 'query' }, 'dev'), 'keep');
+  assert.equal(openFileBinding({ connection: 'prod', kind: 'query' }, 'dev'), 'ask');
 });
