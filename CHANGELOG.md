@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.3
 
 - `language_service` completion takes `tableAliases` and `joinNameMatch` (`off` / `keyed` / `any`). `any` also suggests JOIN / ON conditions on same-named columns of the same type family when a table has no primary key or no foreign key connects the tables, ranked after foreign keys and key matches. The defaults keep the earlier behaviour for other callers.
 
