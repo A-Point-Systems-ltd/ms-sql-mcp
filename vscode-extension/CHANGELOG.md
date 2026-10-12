@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.3
 
 - **Query shortcuts** on Ctrl+0…Ctrl+9 (`msSqlMcp.queryShortcuts`): SQL with an optional `{selection}` runs on the editor's connection. Ctrl+3 is now slot 3 with the default `select top (1000) * from {selection}` (results in the Results panel); Select Top Rows (Data View) stays in the right-click menu.
 - **SQL Editor Options…** form: enhanced completions, table aliases, JOIN name matching, formatter settings and query shortcuts.
