@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Query shortcuts** on Ctrl+0…Ctrl+9 (`msSqlMcp.queryShortcuts`): SQL with an optional `{selection}` runs on the editor's connection. Ctrl+3 is now slot 3 with the default `select top (1000) * from {selection}` (results in the Results panel); Select Top Rows (Data View) stays in the right-click menu.
+- **SQL Editor Options…** form: enhanced completions, table aliases, JOIN name matching, formatter settings and query shortcuts.
+- **JOIN / ON suggestions from same-named columns** also for tables without a primary key and non-key columns of the same type family (`msSqlMcp.completion.joinNameMatch`, default `any`); **table aliases** can be turned off (`msSqlMcp.completion.tableAliases`).
+- **Open SQL File…** next to New Query opens `.sql` files bound to that connection; **Connect Editor to… / Change Connection** in the SQL editor title and right-click menus.
+- A connection's **Refresh** moved from its inline buttons to its right-click menu.
+- **Upgrades no longer break Cursor chat**: entries written by Register with Cursor / Claude that run an older exe copy are moved to the new version on the next start, and old copies are deleted.
+
 ## 1.2.2
 
 - Closed connections stay usable in the extension: **Close (hide from MCP)** now only hides a connection from agents. The object explorer expands it (description `hidden from MCP`), and Show DDL, Data View, New Query, Run, IntelliSense, Rename and DDL history work on it. (Before: a closed connection could not be browsed or queried until it was opened, which also exposed it to agents.)

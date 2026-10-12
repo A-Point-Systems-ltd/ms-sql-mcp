@@ -17,13 +17,14 @@ import { Logger } from './logger';
 import { CursorMcpApi, CursorMcpRegistrar, cursorMcpApi, duplicateEntryAction, hasMsSqlEntry } from './cursorMcp';
 import { resolveExePath } from './exe';
 import { MssqlMcpServerProvider, agentSettings } from './mcpProvider';
+import { registerEditorOptions } from './options/editorOptions';
 import { registerIntelliSense } from './query/intellisenseProviders';
 import { registerQueryCommands } from './query/queryCommands';
 import { registerSqlEditorFeatures } from './query/sqlEditorCommands';
 import { SqlDocFileSystem } from './query/sqlDocFs';
 import { SQL_DOC_SCHEME } from './query/sqlDocNames';
 import { cursorConfigPath } from './register/clientPaths';
-import { registerClientCommand } from './register/registerClients';
+import { registerClientCommand, upgradeClientRegistrations } from './register/registerClients';
 import { installBundledSkill } from './register/skillInstall';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -57,6 +58,8 @@ export function activate(context: vscode.ExtensionContext): void {
   registerIntelliSense(context, { runner, docs: queryDocs, store, log });
   // Formatter (Ctrl+F2), Enhanced Completions switch, snippets, column picker, * expansion, Ctrl+3, Ctrl+F12.
   registerSqlEditorFeatures(context, { runner, docs: queryDocs, store, log });
+  // SQL Editor Options form: completion, formatting and query-shortcut settings.
+  registerEditorOptions(context, log);
   const ddlProvider = new DdlDocumentProvider(explorer, log);
   const updateHasConnections = () => void vscode.commands.executeCommand('setContext', 'msSqlMcp.hasConnections', store.list().length > 0);
   updateHasConnections();
@@ -78,6 +81,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);
+  // After an upgrade: move "Register with…" client entries off the old exe copy (no prompt) and delete old copies.
+  void upgradeClientRegistrations(context, log).catch(err => log.error('upgrade', 'Updating client registrations failed', err));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     // A reset never kills a running call: the old process is retired when its last call ends.
     if (e.affectsConfiguration('msSqlMcp.serverPath')) {

@@ -12,7 +12,7 @@ import {
   parseSignatureHelpResult, refreshedMessage, replaceEnd, replaceStart, requestDelayMs, warmKey,
 } from './intellisense';
 import { QueryDocuments, isNeverBound } from './queryDocuments';
-import { ENHANCED_SETTING, enhancedEnabled } from './sqlEditorFeatures';
+import { ENHANCED_SETTING, JOIN_NAME_MATCH_SETTING, TABLE_ALIASES_SETTING, enhancedEnabled, enhancedOptions } from './sqlEditorFeatures';
 import { contextSetter } from './queryCommands';
 
 /** Per-document key for the editor title's Refresh IntelliSense Cache button. */
@@ -110,8 +110,10 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
       if (!profile) return undefined;
       const since = lastEdit.has(document.uri.toString()) ? Date.now() - lastEdit.get(document.uri.toString())! : undefined;
       if (!(await delay(requestDelayMs(isExplicitCompletion(TRIGGERS[ctx.triggerKind] ?? 'invoke', since)), token))) return undefined;
-      const enhanced = enhancedEnabled(vscode.workspace.getConfiguration('msSqlMcp').get(ENHANCED_SETTING));
-      const payload = await call(profile, { ...buildPositionRequest('completion', document.getText(), position), enhanced }, token);
+      const config = vscode.workspace.getConfiguration('msSqlMcp');
+      const enhanced = enhancedEnabled(config.get(ENHANCED_SETTING));
+      const options = enhancedOptions(config.get(TABLE_ALIASES_SETTING), config.get(JOIN_NAME_MATCH_SETTING));
+      const payload = await call(profile, { ...buildPositionRequest('completion', document.getText(), position), enhanced, ...options }, token);
       const list = parseCompletionResult(payload);
       if (!list || token.isCancellationRequested) return undefined;
       if (list.cacheState === 'loading') showLoading(profile);

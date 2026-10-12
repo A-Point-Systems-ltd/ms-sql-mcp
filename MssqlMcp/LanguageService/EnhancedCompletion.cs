@@ -2,6 +2,33 @@ using System.Text;
 
 namespace Mssql.McpServer.LanguageService;
 
+/// <summary>Which same-named columns JOIN / ON suggestions use when no foreign key connects two tables.</summary>
+public enum JoinNameMatch
+{
+    /// <summary>Foreign keys only.</summary>
+    Off,
+
+    /// <summary>Also a single-column primary key and its same-named reference (see <see cref="EnhancedCompletion.NameMatchAllowed"/>).</summary>
+    Keyed,
+
+    /// <summary>Also any other same-named columns of the same type family (see <see cref="EnhancedCompletion.LooseNameMatchAllowed"/>), ranked last.</summary>
+    Any,
+}
+
+/// <summary>The editor's settings for the enhanced completions; the defaults are the behaviour before they existed.</summary>
+public sealed record EnhancedOptions(bool TableAliases = true, JoinNameMatch NameMatch = JoinNameMatch.Keyed)
+{
+    public static readonly EnhancedOptions Default = new();
+
+    /// <summary>off | keyed | any (any case); anything else is <see cref="JoinNameMatch.Keyed"/>.</summary>
+    public static JoinNameMatch ParseNameMatch(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "off" => JoinNameMatch.Off,
+        "any" => JoinNameMatch.Any,
+        _ => JoinNameMatch.Keyed,
+    };
+}
+
 /// <summary>
 /// The enhanced completions (the editor's "Enhanced Completions" switch): whole JOIN clauses and ON conditions from
 /// foreign keys or matching column names, generated table aliases, and the column-picker entry. Pure: works on a
@@ -12,16 +39,17 @@ public static class EnhancedCompletion
     /// <summary>At most this many JOIN or ON suggestions.</summary>
     internal const int MaxSuggestions = 40;
 
-    public static List<CompletionItemInfo> Create(SqlScopeInfo scope, CatalogSnapshot? catalog)
+    public static List<CompletionItemInfo> Create(SqlScopeInfo scope, CatalogSnapshot? catalog, EnhancedOptions? options = null)
     {
+        options ??= EnhancedOptions.Default;
         var items = new List<CompletionItemInfo>();
         switch (scope.Context)
         {
             case CaretContext.JoinTable when catalog is not null:
-                items.AddRange(JoinItems(scope, catalog));
+                items.AddRange(JoinItems(scope, catalog, options));
                 break;
             case CaretContext.OnCondition when catalog is not null && scope.JoinedTable is { } joined:
-                items.AddRange(OnItems(scope, joined, catalog));
+                items.AddRange(OnItems(scope, joined, catalog, options));
                 break;
             case CaretContext.SelectList when scope.Tables.Count > 0:
                 items.Add(new CompletionItemInfo("Pick columns…", CompletionKinds.Picker, "Choose columns of the statement's tables", string.Empty, "0000"));
@@ -32,9 +60,9 @@ public static class EnhancedCompletion
     }
 
     /// <summary>Appends a generated alias to table, view and function names offered after FROM or JOIN (none when one is already written).</summary>
-    public static List<CompletionItemInfo> WithAliases(IEnumerable<CompletionItemInfo> items, SqlScopeInfo scope)
+    public static List<CompletionItemInfo> WithAliases(IEnumerable<CompletionItemInfo> items, SqlScopeInfo scope, EnhancedOptions? options = null)
     {
-        if (scope.Context is not (CaretContext.FromTable or CaretContext.JoinTable) || scope.AliasFollows)
+        if (!(options ?? EnhancedOptions.Default).TableAliases || scope.Context is not (CaretContext.FromTable or CaretContext.JoinTable) || scope.AliasFollows)
         {
             return [.. items];
         }
@@ -48,7 +76,7 @@ public static class EnhancedCompletion
     private static HashSet<string> Taken(SqlScopeInfo scope) =>
         new(scope.Tables.Select(t => t.Qualifier), StringComparer.OrdinalIgnoreCase);
 
-    private static IEnumerable<CompletionItemInfo> JoinItems(SqlScopeInfo scope, CatalogSnapshot catalog)
+    private static IEnumerable<CompletionItemInfo> JoinItems(SqlScopeInfo scope, CatalogSnapshot catalog, EnhancedOptions options)
     {
         var taken = Taken(scope);
         var inScope = scope.Tables.Where(t => !t.IsVariable).Select(t => (Table: t, Object: catalog.Find(t.Schema, t.Name)))
@@ -67,7 +95,7 @@ public static class EnhancedCompletion
                     continue;
                 }
 
-                var alias = AliasGenerator.Create(other.Name, taken);
+                var alias = NewAlias(other);
                 var pairs = ReferenceEquals(key.Parent, obj)
                     ? key.Columns.Select(c => (New: c.Referenced, Existing: c.Parent))
                     : key.Columns.Select(c => (New: c.Parent, Existing: c.Referenced));
@@ -77,7 +105,7 @@ public static class EnhancedCompletion
 
         // Name matches anchored on a single-column key (see NameMatchAllowed). Indexed lookups, so the catalog's size
         // does not matter.
-        foreach (var (table, obj) in inScope)
+        foreach (var (table, obj) in options.NameMatch == JoinNameMatch.Off ? [] : inScope)
         {
             var objKey = obj.SingleKey;
             foreach (var column in obj.Columns.Where(c => !ReferenceEquals(c, objKey)))
@@ -86,7 +114,7 @@ public static class EnhancedCompletion
                 {
                     if (NameMatchAllowed(catalog, other, other.SingleKey!, obj, column))
                     {
-                        Add(SchemaRank(other, obj), other, AliasGenerator.Create(other.Name, taken), table, [(other.SingleKey!.Name, column.Name)], "same column name");
+                        Add(SchemaRank(other, obj), other, NewAlias(other), table, [(other.SingleKey!.Name, column.Name)], "same column name");
                     }
                 }
             }
@@ -98,7 +126,24 @@ public static class EnhancedCompletion
                     var match = other.Column(objKey.Name)!;
                     if (NameMatchAllowed(catalog, obj, objKey, other, match))
                     {
-                        Add(SchemaRank(other, obj), other, AliasGenerator.Create(other.Name, taken), table, [(match.Name, objKey.Name)], "same column name");
+                        Add(SchemaRank(other, obj), other, NewAlias(other), table, [(match.Name, objKey.Name)], "same column name");
+                    }
+                }
+            }
+        }
+
+        // Any other same-named columns (tables without a key, non-key = non-key), after every keyed match. A pair the
+        // keyed pass already offered has the same text, so it is not added twice.
+        foreach (var (table, obj) in options.NameMatch == JoinNameMatch.Any ? inScope : [])
+        {
+            foreach (var column in obj.Columns)
+            {
+                foreach (var other in catalog.TablesWithColumn(column.Name).Where(o => !scopeObjects.Contains(o)))
+                {
+                    var match = other.Column(column.Name)!;
+                    if (LooseNameMatchAllowed(other, match, obj, column))
+                    {
+                        Add(SchemaRank(other, obj) + 2, other, NewAlias(other), table, [(match.Name, column.Name)], "same column name (no key)");
                     }
                 }
             }
@@ -107,15 +152,21 @@ public static class EnhancedCompletion
         return results.OrderBy(r => r.Rank).ThenBy(r => r.Label, StringComparer.OrdinalIgnoreCase)
             .Take(MaxSuggestions).Select((r, n) => r.Item with { SortText = $"0{n:D3}" });
 
-        // Foreign keys rank 0; name matches in the same schema as the table in scope come before other schemas (one
-        // schema per tenant or an archive schema must not push the right partner out of the list).
+        // Foreign keys rank 0, keyed name matches 1-2, loose ones 3-4; name matches in the same schema as the table in
+        // scope come before other schemas (one schema per tenant or an archive schema must not push the right partner
+        // out of the list).
         static int SchemaRank(CatalogObject other, CatalogObject inScope) =>
             string.Equals(other.Schema, inScope.Schema, StringComparison.OrdinalIgnoreCase) ? 1 : 2;
 
-        void Add(int rank, CatalogObject other, string alias, ScopeTable existing, IEnumerable<(string New, string Existing)> pairs, string detail)
+        // Without table aliases the new table is qualified by its (schema-qualified when needed) name.
+        string? NewAlias(CatalogObject other) => options.TableAliases ? AliasGenerator.Create(other.Name, taken) : null;
+
+        void Add(int rank, CatalogObject other, string? alias, ScopeTable existing, IEnumerable<(string New, string Existing)> pairs, string detail)
         {
-            var condition = string.Join(" and ", pairs.Select(p => $"{QuoteName(alias)}.{QuoteName(p.New)} = {QuoteName(existing.Qualifier)}.{QuoteName(p.Existing)}"));
-            var text = $"{ObjectName(other, catalog)} {QuoteName(alias)} on {condition}";
+            var name = ObjectName(other, catalog);
+            var qualifier = alias is null ? name : QuoteName(alias);
+            var condition = string.Join(" and ", pairs.Select(p => $"{qualifier}.{QuoteName(p.New)} = {QuoteName(existing.Qualifier)}.{QuoteName(p.Existing)}"));
+            var text = alias is null ? $"{name} on {condition}" : $"{name} {qualifier} on {condition}";
             if (seen.Add(text))
             {
                 results.Add((rank, text, new CompletionItemInfo(text, CompletionKinds.Join, detail, text, "0")));
@@ -123,7 +174,7 @@ public static class EnhancedCompletion
         }
     }
 
-    private static IEnumerable<CompletionItemInfo> OnItems(SqlScopeInfo scope, ScopeTable joined, CatalogSnapshot catalog)
+    private static IEnumerable<CompletionItemInfo> OnItems(SqlScopeInfo scope, ScopeTable joined, CatalogSnapshot catalog, EnhancedOptions options)
     {
         var joinedObject = joined.IsVariable ? null : catalog.Find(joined.Schema, joined.Name);
         if (joinedObject is null)
@@ -153,11 +204,20 @@ public static class EnhancedCompletion
                 }
             }
 
-            foreach (var column in joinedObject.Columns)
+            foreach (var column in options.NameMatch == JoinNameMatch.Off ? [] : joinedObject.Columns)
             {
-                if (otherObject.Column(column.Name) is { } match && NameMatchAllowed(catalog, joinedObject, column, otherObject, match))
+                if (otherObject.Column(column.Name) is not { } match)
+                {
+                    continue;
+                }
+
+                if (NameMatchAllowed(catalog, joinedObject, column, otherObject, match))
                 {
                     Add(1, [(column.Name, match.Name)], other, "same column name");
+                }
+                else if (options.NameMatch == JoinNameMatch.Any && LooseNameMatchAllowed(joinedObject, column, otherObject, match))
+                {
+                    Add(2, [(column.Name, match.Name)], other, "same column name (no key)");
                 }
             }
         }
@@ -206,6 +266,32 @@ public static class EnhancedCompletion
 
         var (child, reference) = aParent ? (b, cb) : (a, ca);
         return !reference.IsIdentity && !child.IsLastKeyPart(reference);
+    }
+
+    /// <summary>
+    /// Whether two same-named columns are suggested as a join under <see cref="JoinNameMatch.Any"/> (tables without a
+    /// primary key, non-key = non-key, key = key). Never: generic names, an IDENTITY column on either side (each table's
+    /// own row number), the last part of a composite key, or columns of different type families (int Status vs
+    /// nvarchar Status).
+    /// </summary>
+    internal static bool LooseNameMatchAllowed(CatalogObject a, CatalogColumn ca, CatalogObject b, CatalogColumn cb) =>
+        !GenericNames.Contains(ca.Name) && !ca.IsIdentity && !cb.IsIdentity
+        && !a.IsLastKeyPart(ca) && !b.IsLastKeyPart(cb)
+        && TypeFamily(ca.Type) == TypeFamily(cb.Type);
+
+    /// <summary>The comparable family of a column type: varchar(20) and nvarchar(50) match, int and bigint match.</summary>
+    internal static string TypeFamily(string type)
+    {
+        var paren = type.IndexOf('(', StringComparison.Ordinal);
+        var name = (paren < 0 ? type : type[..paren]).Trim().ToLowerInvariant();
+        return name switch
+        {
+            "char" or "varchar" or "nchar" or "nvarchar" or "text" or "ntext" or "sysname" => "string",
+            "tinyint" or "smallint" or "int" or "bigint" => "integer",
+            "decimal" or "numeric" or "money" or "smallmoney" => "exact",
+            "date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset" => "date",
+            _ => name,
+        };
     }
 
     /// <summary>A schema-qualified name, without the schema when it is the default one.</summary>

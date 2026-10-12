@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ConnectionStore } from '../connections/store';
@@ -7,12 +8,13 @@ import { EXE_NAME, resolveExe } from '../exe';
 import { Logger } from '../logger';
 import { registerClaudeCode, powershellCommand } from './claudeCode';
 import { claudeDesktopConfigPaths, cursorConfigPath, managedConnectionsFilePath } from './clientPaths';
-import { atomicWriteFile, writeClientConfig } from './configWriter';
+import { atomicWriteFile, replaceClientConfig, writeClientConfig } from './configWriter';
 import { externalClientEnv } from '../connections/serverEnv';
 import { buildConnectionsFile, needsSecretDecision, refreshConnectionsFileOnDisk } from './connectionsFile';
 import { McpEntry } from './jsonMerge';
 import { LEGACY_SERVER_KEY, SERVER_KEY } from './naming';
 import { copyStableExe } from './stableExe';
+import { readEntry, upgradeRegistrations } from './upgradeRegistrations';
 
 const PASSWORDS_FLAG = 'msSqlMcp.connectionsFileHasPasswords';
 const FILE_NAME = 'connections.json';
@@ -169,4 +171,42 @@ async function run(context: vscode.ExtensionContext, store: ConnectionStore, log
   const buttons = copyCmd ? ['Copy PowerShell command'] : [];
   const pick = await vscode.window.showInformationMessage(`APoint-ms-sql: ${report.join('\n')}`, { modal: report.length > 2 }, ...buttons);
   if (pick && copyCmd) await vscode.env.clipboard.writeText(copyCmd);
+}
+
+const UPGRADE_SCOPE = 'upgrade';
+
+/**
+ * On every activation (Windows): client entries written by "Register with Cursor / Claude…" that still run an older
+ * version's exe copy are pointed at this version's copy, and old copies nothing uses are deleted. No prompt: an entry
+ * left on the old exe is what breaks the MCP tools in Cursor chat after an upgrade. Entries pointing anywhere else (a
+ * custom serverPath, a release folder) are never touched.
+ */
+export async function upgradeClientRegistrations(context: vscode.ExtensionContext, log: Logger): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const version = context.extension.packageJSON.version as string;
+  const updated = await upgradeRegistrations({
+    storageDir: context.globalStorageUri.fsPath,
+    version,
+    configFiles: [
+      { label: 'Cursor', path: cursorConfigPath() },
+      ...claudeDesktopConfigPaths().map(p => ({ label: 'Claude Desktop', path: p })),
+    ],
+    ensureExe: () => ensureStableExe(context),
+    writeConfig: (p, text) => { replaceClientConfig(p, text); },
+    claudeCode: {
+      // Claude Code keeps user-scope servers in ~/.claude.json; it is only read here, and changed through the claude CLI.
+      read: () => {
+        const file = path.join(os.homedir(), '.claude.json');
+        return fs.existsSync(file) ? readEntry(fs.readFileSync(file, 'utf8')) : undefined;
+      },
+      register: async entry => (await registerClaudeCode(entry)).status === 'registered',
+    },
+    log,
+  });
+  if (!updated.length) return;
+  const clients = [...new Set(updated)].join(', ');
+  log.info(UPGRADE_SCOPE, `Registrations moved to version ${version}: ${clients}.`);
+  void vscode.window.showInformationMessage(
+    `APoint-ms-sql ${version}: ${clients} now run${updated.length === 1 ? 's' : ''} the new server version. `
+    + 'Restart the APoint-ms-sql MCP server there (Cursor: Settings > MCP, or reload the window; Claude Desktop: restart it).');
 }

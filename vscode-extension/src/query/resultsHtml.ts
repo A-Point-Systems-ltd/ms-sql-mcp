@@ -11,7 +11,7 @@ import type { RunScriptMessage, RunScriptResult, RunScriptResultSet } from './ru
 export type ResultsState =
   | { kind: 'empty' }
   | { kind: 'running'; connection: string; startedAt: number }
-  | { kind: 'done'; connection: string; result: RunScriptResult; lineOffset: number; cancelled?: false }
+  | { kind: 'done'; connection: string; result: RunScriptResult; lineOffset: number | null; cancelled?: false }
   | { kind: 'failed'; connection: string; error: string }
   | { kind: 'cancelled'; connection: string };
 

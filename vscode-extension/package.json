@@ -172,6 +172,12 @@
         "icon": "$(new-file)"
       },
       {
+        "command": "msSqlMcp.openSqlFile",
+        "title": "Open SQL File…",
+        "category": "APoint-ms-sql",
+        "icon": "$(folder-opened)"
+      },
+      {
         "command": "msSqlMcp.openRecentQuery",
         "title": "Open Recent Query…",
         "category": "APoint-ms-sql",
@@ -182,6 +188,12 @@
         "title": "Change Connection",
         "category": "APoint-ms-sql",
         "icon": "$(database)"
+      },
+      {
+        "command": "msSqlMcp.connectEditor",
+        "title": "Connect Editor to…",
+        "category": "APoint-ms-sql",
+        "icon": "$(plug)"
       },
       {
         "command": "msSqlMcp.runQuery",
@@ -264,6 +276,62 @@
         "title": "Clear All Filters",
         "category": "APoint-ms-sql",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "msSqlMcp.editorOptions",
+        "title": "SQL Editor Options…",
+        "category": "APoint-ms-sql",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut0",
+        "title": "Run Query Shortcut Ctrl+0",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut1",
+        "title": "Run Query Shortcut Ctrl+1",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut2",
+        "title": "Run Query Shortcut Ctrl+2",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut3",
+        "title": "Run Query Shortcut Ctrl+3",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut4",
+        "title": "Run Query Shortcut Ctrl+4",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut5",
+        "title": "Run Query Shortcut Ctrl+5",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut6",
+        "title": "Run Query Shortcut Ctrl+6",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut7",
+        "title": "Run Query Shortcut Ctrl+7",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut8",
+        "title": "Run Query Shortcut Ctrl+8",
+        "category": "APoint-ms-sql"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut9",
+        "title": "Run Query Shortcut Ctrl+9",
+        "category": "APoint-ms-sql"
       }
     ],
     "menus": {
@@ -292,6 +360,11 @@
           "command": "msSqlMcp.openRecentQuery",
           "when": "view == msSqlMcp.explorer",
           "group": "navigation@4"
+        },
+        {
+          "command": "msSqlMcp.editorOptions",
+          "when": "view == msSqlMcp.explorer",
+          "group": "9_options@1"
         }
       ],
       "view/item/context": [
@@ -301,9 +374,19 @@
           "group": "inline@0"
         },
         {
+          "command": "msSqlMcp.openSqlFile",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.conn\\./",
+          "group": "inline@1"
+        },
+        {
           "command": "msSqlMcp.newQuery",
           "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.conn\\./",
           "group": "0@1"
+        },
+        {
+          "command": "msSqlMcp.openSqlFile",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.conn\\./",
+          "group": "0@2"
         },
         {
           "command": "msSqlMcp.dataView",
@@ -342,8 +425,13 @@
         },
         {
           "command": "msSqlMcp.refresh",
-          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.(conn\\.|category)/",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.category/",
           "group": "inline@3"
+        },
+        {
+          "command": "msSqlMcp.refresh",
+          "when": "view == msSqlMcp.explorer && viewItem =~ /^msSqlMcp\\.conn\\./",
+          "group": "1@0"
         },
         {
           "command": "msSqlMcp.testConnection",
@@ -427,6 +515,10 @@
           "when": "editorLangId == sql || msSqlMcp.editorConnected"
         },
         {
+          "command": "msSqlMcp.connectEditor",
+          "when": "false"
+        },
+        {
           "command": "msSqlMcp.runQuery",
           "when": "msSqlMcp.editorConnected || editorLangId == sql"
         },
@@ -489,9 +581,59 @@
         {
           "command": "msSqlMcp.clearAllFilters",
           "when": "msSqlMcp.filterActive"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut0",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.0"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut1",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.1"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut2",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.2"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut3",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.3"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut4",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.4"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut5",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.5"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut6",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.6"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut7",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.7"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut8",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.8"
+        },
+        {
+          "command": "msSqlMcp.queryShortcut9",
+          "when": "editorLangId == sql && msSqlMcp.shortcut.9"
         }
       ],
       "editor/title": [
+        {
+          "command": "msSqlMcp.changeConnection",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.editorBound",
+          "group": "navigation@0"
+        },
+        {
+          "command": "msSqlMcp.connectEditor",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && !msSqlMcp.editorBound",
+          "group": "navigation@0"
+        },
         {
           "command": "msSqlMcp.refresh",
           "when": "resourceScheme == mssql-ddl",
@@ -536,9 +678,24 @@
           "command": "msSqlMcp.enableEnhancedCompletions",
           "when": "editorLangId == sql && !msSqlMcp.enhancedCompletions",
           "group": "1_msSqlMcp@1"
+        },
+        {
+          "command": "msSqlMcp.editorOptions",
+          "when": "editorLangId == sql",
+          "group": "1_msSqlMcp@2"
         }
       ],
       "editor/context": [
+        {
+          "command": "msSqlMcp.changeConnection",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.editorBound",
+          "group": "msSqlMcp@0"
+        },
+        {
+          "command": "msSqlMcp.connectEditor",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && !msSqlMcp.editorBound",
+          "group": "msSqlMcp@0"
+        },
         {
           "command": "msSqlMcp.refreshIntelliSense",
           "when": "msSqlMcp.editorConnected",
@@ -567,6 +724,16 @@
       ],
       "editor/title/context": [
         {
+          "command": "msSqlMcp.changeConnection",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.editorBound",
+          "group": "1_msSqlMcp@0"
+        },
+        {
+          "command": "msSqlMcp.connectEditor",
+          "when": "editorLangId == sql && resourceScheme != mssql-ddl && !msSqlMcp.editorBound",
+          "group": "1_msSqlMcp@0"
+        },
+        {
           "command": "msSqlMcp.disableEnhancedCompletions",
           "when": "editorLangId == sql && msSqlMcp.enhancedCompletions",
           "group": "1_msSqlMcp@1"
@@ -575,6 +742,11 @@
           "command": "msSqlMcp.enableEnhancedCompletions",
           "when": "editorLangId == sql && !msSqlMcp.enhancedCompletions",
           "group": "1_msSqlMcp@1"
+        },
+        {
+          "command": "msSqlMcp.editorOptions",
+          "when": "editorLangId == sql",
+          "group": "1_msSqlMcp@2"
         }
       ]
     },
@@ -630,6 +802,26 @@
           "default": true,
           "description": "Enhanced completions in SQL editors: whole JOIN clauses and ON conditions from foreign keys, table aliases, the column picker, * expansion and quick snippets (ssf, then Tab). Also switched from the editor tab's ... menu."
         },
+        "msSqlMcp.completion.tableAliases": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enhanced completions: add a generated alias (e.g. Orders o) to tables, views and functions picked after FROM or JOIN."
+        },
+        "msSqlMcp.completion.joinNameMatch": {
+          "type": "string",
+          "enum": [
+            "off",
+            "keyed",
+            "any"
+          ],
+          "default": "any",
+          "enumDescriptions": [
+            "JOIN and ON suggestions come from foreign keys only.",
+            "Also same-named columns where one side is its table's single-column primary key.",
+            "Also any other same-named columns (tables without a primary key, non-key to non-key), listed after the keyed matches."
+          ],
+          "description": "Enhanced completions: JOIN and ON suggestions from same-named columns when no foreign key connects the tables. Generic names (Id, Name, Code, ...) never match."
+        },
         "msSqlMcp.format.keywordCase": {
           "type": "string",
           "enum": [
@@ -651,6 +843,19 @@
           "minimum": 1,
           "maximum": 50,
           "description": "Format SQL: most columns or values per row in SELECT, INSERT, VALUES, SET, GROUP BY and ORDER BY lists."
+        },
+        "msSqlMcp.queryShortcuts": {
+          "type": "object",
+          "default": {
+            "3": "select top (1000) * from {selection}"
+          },
+          "propertyNames": {
+            "pattern": "^[0-9]$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Query shortcuts on Ctrl+0 … Ctrl+9 in SQL editors: the key's digit maps to SQL that runs on the editor's connection (results in the Results panel; the editor text is not changed). `{selection}` is replaced by the selected text, or the name under the cursor when nothing is selected. An empty or missing slot leaves its key to VS Code. Example: `{ \"3\": \"select top (1000) * from {selection}\", \"5\": \"select * from globalVars where varName = 'dbVersion'\" }`."
         },
         "msSqlMcp.logLevel": {
           "type": "string",
@@ -701,10 +906,64 @@
         "when": "editorTextFocus && editorLangId == sql && msSqlMcp.editorConnected"
       },
       {
-        "command": "msSqlMcp.selectTopRows",
+        "command": "msSqlMcp.queryShortcut0",
+        "key": "ctrl+0",
+        "mac": "cmd+0",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.0"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut1",
+        "key": "ctrl+1",
+        "mac": "cmd+1",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.1"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut2",
+        "key": "ctrl+2",
+        "mac": "cmd+2",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.2"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut3",
         "key": "ctrl+3",
         "mac": "cmd+3",
-        "when": "editorTextFocus && editorLangId == sql && msSqlMcp.editorConnected"
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.3"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut4",
+        "key": "ctrl+4",
+        "mac": "cmd+4",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.4"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut5",
+        "key": "ctrl+5",
+        "mac": "cmd+5",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.5"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut6",
+        "key": "ctrl+6",
+        "mac": "cmd+6",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.6"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut7",
+        "key": "ctrl+7",
+        "mac": "cmd+7",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.7"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut8",
+        "key": "ctrl+8",
+        "mac": "cmd+8",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.8"
+      },
+      {
+        "command": "msSqlMcp.queryShortcut9",
+        "key": "ctrl+9",
+        "mac": "cmd+9",
+        "when": "editorTextFocus && editorLangId == sql && resourceScheme != mssql-ddl && msSqlMcp.shortcut.9"
       },
       {
         "command": "msSqlMcp.renameObject",

@@ -46,9 +46,12 @@ export function buildRunRequest(fullText: string, selection: { text: string; sta
   return { script: fullText, lineOffset: 0 };
 }
 
-/** The 0-based editor line of a 1-based script line, or undefined when the message has no usable line. */
-export function editorLine(messageLine: number | null, lineOffset: number): number | undefined {
-  if (messageLine === null || !Number.isInteger(messageLine) || messageLine < 1) return undefined;
+/**
+ * The 0-based editor line of a 1-based script line, or undefined when the message has no usable line or the script was
+ * not the editor's text (`lineOffset` null: a query shortcut).
+ */
+export function editorLine(messageLine: number | null, lineOffset: number | null): number | undefined {
+  if (lineOffset === null || messageLine === null || !Number.isInteger(messageLine) || messageLine < 1) return undefined;
   return lineOffset + messageLine - 1;
 }
 

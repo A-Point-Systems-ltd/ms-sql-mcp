@@ -158,7 +158,8 @@ test('package.json: the switch sits in the editor tab menus and the shortcuts ar
   const keys = Object.fromEntries(c.keybindings.filter(k => ['ctrl+f2', 'ctrl+f12', 'ctrl+3'].includes(k.key)).map(k => [k.key, k]));
   assert.equal(keys['ctrl+f2'].command, 'msSqlMcp.formatSql');
   assert.equal(keys['ctrl+f12'].command, 'msSqlMcp.goToObjectDefinition');
-  assert.equal(keys['ctrl+3'].command, 'msSqlMcp.selectTopRows');
+  // Ctrl+3 is query shortcut slot 3 (queryShortcuts.test.mjs); Select Top Rows stays in the editor context menu.
+  assert.equal(keys['ctrl+3'].command, 'msSqlMcp.queryShortcut3');
   for (const k of Object.values(keys)) assert.match(k.when, /editorLangId == sql/);
   const contextIds = c.menus['editor/context'].map(m => m.command);
   assert.ok(contextIds.includes('msSqlMcp.formatSql'));

@@ -6,7 +6,9 @@ import type { ConnectionProfile } from '../connections/profile';
 import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
 import { EditorRunState, editorRunState, findProfile, runContextDocs } from './editorState';
-import { QueryAssociation, QueryDocuments, defersRunCleanup, inheritedBinding, isNeverBound } from './queryDocuments';
+import { QueryAssociation, QueryDocuments, defersRunCleanup, inheritedBinding, isNeverBound, openFileBinding } from './queryDocuments';
+import { QUERY_SHORTCUTS_SETTING, SHORTCUT_SLOTS, expandShortcut, parseShortcuts, shortcutContextKey } from './queryShortcuts';
+import { objectNameAt } from './sqlEditorFeatures';
 import { SqlDocFileSystem, openDocumentKeys } from './sqlDocFs';
 import { REOPEN_GRACE_MS, SqlDocLifecycle } from './sqlDocLifecycle';
 import { SQL_DOC_SCHEME } from './sqlDocNames';
@@ -20,6 +22,9 @@ import { describeTarget, targetOf, wrongTargetPrompt } from './targetGuard';
 
 /** The active editor is bound to a connection (F5 keybinding, command palette). */
 const CONNECTED_KEY = 'msSqlMcp.editorConnected';
+
+/** The active SQL editor has a binding (open or closed connection): Change Connection instead of Connect. */
+const BOUND_KEY = 'msSqlMcp.editorBound';
 
 /** True while the active document's query runs (command palette Cancel). */
 const RUNNING_KEY = 'msSqlMcp.queryRunning';
@@ -123,6 +128,7 @@ export class QueryEditorTracker implements vscode.Disposable {
       this.item.hide();
     }
     this.setKey(CONNECTED_KEY, !!state?.connected);
+    this.setKey(BOUND_KEY, visible && !!active?.assoc);
     const { runnable, blocked } = runContextDocs(this.docs.all(), this.store.list());
     this.setKey(DOC_KEYS.runnable, runnable);
     this.setKey(DOC_KEYS.blocked, blocked);
@@ -258,8 +264,8 @@ export function registerQueryCommands(
   // Palette and the explorer title: kept query windows (closed with text), newest first.
   reg('openRecentQuery', () => lifecycle.openRecentQuery(store));
 
-  // The status bar item calls this without arguments (the active editor).
-  reg('changeConnection', async () => {
+  // The status bar item and the editor title / context menus call this without arguments (the active editor).
+  const bindActiveEditor = async () => {
     const editor = vscode.window.activeTextEditor;
     if (editor && isNeverBound(editor.document.uri.scheme)) {
       void vscode.window.showInformationMessage('APoint-ms-sql: a DDL view is read-only and is not bound to a connection. Use New Query to run SQL.');
@@ -286,10 +292,40 @@ export function registerQueryCommands(
       void vscode.window.showInformationMessage(`APoint-ms-sql: this script was generated from ${describeTarget(current.target)}. `
         + `The next run asks you to confirm before it is applied through '${p.name}' (${describeTarget(targetOf(p))}).`);
     }
+  };
+  reg('changeConnection', bindActiveEditor);
+  // The same command under the title the menus show while the editor is unbound.
+  reg('connectEditor', bindActiveEditor);
+
+  // From a connection node (arg = ConnectionNode) or the palette: open .sql files from disk bound to that connection.
+  reg('openSqlFile', async arg => {
+    const p = await pickProfile(store, arg, 'Connection for the opened files');
+    if (!p) return;
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true, openLabel: `Open on ${p.name}`, filters: { 'SQL files': ['sql'], 'All files': ['*'] },
+    });
+    for (const uri of uris ?? []) {
+      const current = docs.get(uri);
+      const action = openFileBinding(current, p.name);
+      if (action === 'ask') {
+        const name = uri.path.split('/').pop() ?? uri.fsPath;
+        const answer = await vscode.window.showWarningMessage(
+          `'${name}' is bound to '${current!.connection}'. Bind it to '${p.name}'?`, { modal: true }, 'Bind', 'Keep');
+        if (answer === undefined) return;
+        if (answer === 'Bind') await docs.set(uri, { connection: p.name, kind: 'query' });
+      } else if (action === 'bind') {
+        await docs.set(uri, { connection: p.name, kind: 'query' });
+      }
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, { preview: false });
+    }
   });
 
-  // F5 (the active editor) / the editor title's Run button (arg = that editor's uri, also in an inactive group).
-  reg('runQuery', async arg => {
+  /**
+   * Runs the editor's selection or whole text, or `script` (a query shortcut) through the editor's connection. A
+   * script override never saves, applies or rebases an object document: it only shows its results for that editor.
+   */
+  const runInEditor = async (arg: unknown, script?: string) => {
     const target = commandTarget(arg);
     let run = target ? tracker.contextOf(target.document) : undefined;
     // An unbound SQL editor (e.g. a .sql file opened from disk): pick its connection first, then run.
@@ -315,7 +351,8 @@ export function registerQueryCommands(
       return;
     }
     // Wrong-target guard: an object script generated from another server/database (or rebound) runs only when confirmed.
-    const prompt = wrongTargetPrompt(assoc, profile);
+    // (Not for a shortcut: it never applies the document.)
+    const prompt = script === undefined ? wrongTargetPrompt(assoc, profile) : undefined;
     if (prompt && (await vscode.window.showWarningMessage(prompt, { modal: true }, 'Run')) !== 'Run') return;
     if (document.isClosed) return;
     const token = running.start(key);
@@ -330,16 +367,18 @@ export function registerQueryCommands(
       results.set(key, state);
     };
     try {
-      if (assoc.kind === 'object' && document.isDirty && !(await document.save())) {
+      const applies = assoc.kind === 'object' && script === undefined;
+      if (applies && document.isDirty && !(await document.save())) {
         void vscode.window.showWarningMessage('APoint-ms-sql: the document was not saved, so it was not run.');
         return;
       }
       const selection = editor?.selection;
       const wholeDocument = !selection || selection.isEmpty;
       const fullText = document.getText();
-      const request = buildRunRequest(fullText, wholeDocument
-        ? undefined
-        : { text: document.getText(selection), startLine: selection.start.line });
+      // A shortcut's message lines are not editor lines (no jump to line).
+      const request = script !== undefined
+        ? { script, lineOffset: null }
+        : buildRunRequest(fullText, wholeDocument ? undefined : { text: document.getText(selection), startLine: selection.start.line });
       if (!request.script.trim()) {
         void vscode.window.showInformationMessage('APoint-ms-sql: nothing to run.');
         return;
@@ -356,7 +395,7 @@ export function registerQueryCommands(
         log.info('query', `run_script on '${connection}': ${result.resultSets.length} result set(s), `
           + `${result.messages.length} message(s), hadErrors=${result.hadErrors}, ${result.elapsedMs} ms`);
         // "Applied" only when a batch actually ran without errors (a comment-only script applies nothing).
-        if (assoc.kind === 'object' && appliedSuccessfully(result)) {
+        if (applies && appliedSuccessfully(result)) {
           void vscode.window.showInformationMessage(`Applied to '${connection}'.`);
           deps.refreshTree();
           // The applied text is the new base, so a reopen from the tree no longer asks about it. Only a whole-document
@@ -385,7 +424,42 @@ export function registerQueryCommands(
       }
       updateRunning();
     }
-  });
+  };
+
+  // F5 (the active editor) / the editor title's Run button (arg = that editor's uri, also in an inactive group).
+  reg('runQuery', arg => runInEditor(arg));
+
+  // Ctrl+0 … Ctrl+9: the msSqlMcp.queryShortcuts SQL on the active editor's connection. Only configured slots have a
+  // keybinding (context key per slot), so an empty slot keeps VS Code's own Ctrl+n.
+  const shortcuts = () => parseShortcuts(vscode.workspace.getConfiguration('msSqlMcp').get(QUERY_SHORTCUTS_SETTING));
+  const updateShortcutKeys = () => {
+    const configured = shortcuts();
+    for (const slot of SHORTCUT_SLOTS) setKey(shortcutContextKey(slot), configured.has(slot));
+  };
+  updateShortcutKeys();
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    if (e.affectsConfiguration(`msSqlMcp.${QUERY_SHORTCUTS_SETTING}`)) updateShortcutKeys();
+  }));
+  for (const slot of SHORTCUT_SLOTS) {
+    reg(`queryShortcut${slot}`, async () => {
+      const template = shortcuts().get(slot);
+      const editor = vscode.window.activeTextEditor;
+      if (!template || !editor) {
+        void vscode.window.showInformationMessage(`APoint-ms-sql: no query shortcut is set for Ctrl+${slot} (SQL Editor Options).`);
+        return;
+      }
+      const { document, selection } = editor;
+      const selected = selection.isEmpty ? undefined : document.getText(selection);
+      const name = objectNameAt(document.lineAt(selection.active.line).text, selection.active.character);
+      const expanded = expandShortcut(template, selected, name);
+      if ('error' in expanded) {
+        void vscode.window.showInformationMessage(`APoint-ms-sql: ${expanded.error}`);
+        return;
+      }
+      log.info('query', `Query shortcut Ctrl+${slot}`);
+      await runInEditor(undefined, expanded.sql);
+    });
+  }
 
   // Editor title (arg = the editor's uri) and the palette; the results view's Cancel button calls `cancel` directly.
   reg('cancelQuery', async arg => {
