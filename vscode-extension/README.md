@@ -8,7 +8,7 @@ SQL Server for AI agents in VS Code, Cursor and Claude. The extension bundles th
 - **Editing views, procedures and functions**: their DDL opens as an editable document bound to its connection; **Run** (F5) applies it to the database.
 - **Query windows**: New Query on a connection, run with F5 (the selection or the whole document) and cancel.
 - **IntelliSense**: SSMS-style completion, hover and signature help in SQL editors bound to a connection (Microsoft SqlParser, in the bundled server); **Ctrl+Shift+R** refreshes its cache.
-- **SQL editor tools**: whole JOIN clauses and ON conditions from foreign keys, table aliases, a column picker, `*` expansion, quick snippets (`ssf` then Tab), **Ctrl+3** Select Top Rows, **Ctrl+F12** Go to Object Definition, and **Ctrl+F2** Format SQL (team style, ScriptDom).
+- **SQL editor tools**: whole JOIN clauses and ON conditions from foreign keys, table aliases, a column picker, `*` expansion, quick snippets (`ssf` then Tab), query shortcuts on **Ctrl+0…Ctrl+9** (Ctrl+3 = `select top (1000) * from {selection}` by default), **Ctrl+F12** Go to Object Definition, and **Ctrl+F2** Format SQL (team style, ScriptDom). **SQL Editor Options…** sets them in one form.
 - **Results panel**: one grid per result set and a Messages tab, kept on your machine.
 - **Data grid** (Data View and Results): one-line rows, resizable and auto-fitting columns and rows, a copy button on every cell, and column sort.
 - **Agent server and registration**: VS Code agent mode and Cursor get the MCP server automatically; Cursor CLI, Claude Desktop and Claude Code with one command.
@@ -102,7 +102,7 @@ Agents never get `run_script`. That tool exists only for the extension's own que
 
 Run **Register with Cursor / Claude...** (the view's title bar, or the Command Palette) and pick the clients. The extension:
 
-- copies the server exe to a per-user folder, so the registration survives extension upgrades;
+- copies the server exe to a per-user folder (`bin\<version>\`). After an extension upgrade, the next start moves every entry that still points at an older copy to the new one (only the `command` changes; each file gets a timestamped `.bak`, Claude Code is re-registered through its CLI), deletes the old copies nothing uses (a copy still running is deleted on a later start), and tells you to restart the MCP server in those clients. Entries pointing anywhere else (for example `msSqlMcp.serverPath` or a release folder) are never changed;
 - writes your open connections to a per-user `connections.json` in the extension's storage folder;
 - merges an `APoint-ms-sql` entry into `~/.cursor/mcp.json` and `%APPDATA%\Claude\claude_desktop_config.json` (and the Microsoft Store copy of Claude Desktop, when present). Each file gets a timestamped `.bak` first, and a file with invalid JSON is never overwritten. The legacy `ms-sql` key of earlier versions is removed in the same write (the `.bak` keeps it), and for Claude Code `claude mcp remove --scope user ms-sql` runs first (a "not found" result is ignored);
 - registers Claude Code with `claude mcp add-json --scope user`. When `claude` is not on `PATH`, it offers a Windows PowerShell command to copy instead.
@@ -132,11 +132,13 @@ The object explorer never uses the agent's server process. It starts its own pri
 ## Query window
 
 - **New Query** (the new-file icon or the right-click menu of a connection, or the command palette) opens an empty SQL editor bound to that connection.
+- **Open SQL File…** (the folder icon next to New Query, or the connection's right-click menu) opens one or more `.sql` files from disk bound to that connection. They stay normal files (Ctrl+S writes to disk) and keep the binding when reopened. A file already bound to another connection asks before it is rebound.
+- **Refresh** of a connection is in its right-click menu (the view title's Refresh button refreshes everything; groups keep their inline Refresh).
 - **Tab title**: every query window and object script shows where it runs, exactly as `<objectName> - <server> - <database>`: `Query 1 - DC∖DEV - Sales` for a query window, `dbo.vOrders - DC∖DEV - Sales` for an object script (`<name>` alone when the object has no schema). Query numbers count up from 1 in each editor session and skip numbers already open. For a raw connection string the title uses its `Data Source` / `Initial Catalog`, or `connection string` / `default` when they cannot be read. A `/` in a name is shown as `∕` (U+2215) and control characters are left out; a backslash is shown as `∖` (U+2216, a look-alike that is not a path separator): Cursor builds the tab label from what follows the last `/` or backslash, so `dc\dev16` would show as `dev16`. Only the tab title uses `∖`; the status bar, tooltips and dialogs show the real backslash. These documents always open in SQL mode (as a side effect, files on disk inside a folder named `~sql` are also highlighted as SQL). The title follows the connection: after **Change Connection** on a query window, or an edit of its connection's server or database, the document is saved, its tab is closed and the same document reopens under the new title, in the same editor group and still bound (its undo history does not carry over). A window with unsaved edits is never closed for this: the status bar shows the new connection at once, an information message says "The tab title updates after you save.", and the rename happens after the next save. A window with a query still running is renamed when the run ends, and its Results and Messages move to the renamed tab. Object scripts are retitled the same way when their connection's server or database is edited; after Change Connection they keep the title of where they were scripted from (Run then asks before applying them elsewhere).
 - **Query windows are not files**: they are `mssql-sql:` documents kept in the extension's storage folder. **Ctrl+S** saves the text there. Closing a query window never loses saved text: the text is kept, and **Open Recent Query…** (command palette, or the history icon in the APoint-ms-sql view title) reopens it, newest first, for 30 days: query windows you keep open are not cleaned up; if a window stays closed everywhere for 30 days, its text is removed. Only an empty query window is deleted when you close it. Use **File > Save As...** for a real `.sql` file (the copy is a normal file and is not bound to a connection until you use Change Connection).
 - **Open Recent Query…** reopens the same query document, binds it to its connection again and titles it by the rules above (its own `Query N` unless an open tab has that number, and the connection's current server and database). Query windows closed more than 30 days ago, and empty ones, are cleaned up about 15 seconds after the editor starts. A kept query window whose text exists but whose entry was lost is listed again as "Recovered query <id>".
 - Two editor windows can open the same kept query window. They edit the same text: when both save, VS Code's usual save-conflict check (compare / overwrite) applies.
-- The status bar shows the connection of the active SQL editor (a lock marks a read-only connection). Click it, or run **Change Connection**, to bind the editor to another connection.
+- The status bar shows the connection of the active SQL editor (a lock marks a read-only connection). Click it, use the database icon in the editor title, or right-click the editor (or its tab) and choose **Connect Editor to…** (unbound) / **Change Connection** (bound), to bind any SQL editor, including a `.sql` file opened from disk, to a connection.
 - On a read-only connection a query window runs only read-only single-SELECT batches, inside a transaction that is always rolled back. Anything else is refused with an error message.
 - Every run opens a new session, outside the connection pool: `SET` options (including `SET TRANSACTION ISOLATION LEVEL`), `#temp` tables, `EXECUTE AS` and application roles do not carry over to the next run, and a transaction the script leaves open is rolled back at the end (with a warning). Use `COMMIT` inside the same run.
 - The row cap per result set is the `msSqlMcp.query.maxRows` setting (default 1000, max 10000); further rows are counted but not kept.
@@ -203,11 +205,16 @@ Turn on **DDL history (audit trigger)** in Add / Edit Connection (off by default
 
 ### Enhanced completions
 
-On by default; switch them off or on from the SQL editor tab's **...** menu (or the tab's right-click menu): **✓ Enhanced Completions** / **Enhanced Completions (off)**, or the setting `msSqlMcp.completion.enhanced`. They need an editor bound to a connection, except the snippets.
+On by default; switch them off or on from the SQL editor tab's **...** menu (or the tab's right-click menu): **✓ Enhanced Completions** / **Enhanced Completions (off)**, the setting `msSqlMcp.completion.enhanced`, or **SQL Editor Options…** (below). They need an editor bound to a connection, except the snippets.
 
-- **JOIN completion**: after `JOIN ` (or `APPLY `) the list starts with whole clauses for the tables already in the statement, from foreign keys in both directions and then from matching names (a single-column key and the column that references it, for example `Buildings b on b.BID = u.BID` or `OrderLines.OrderId`; generic names such as `Id`, `LineNo`, `Code` or `Name`, IDENTITY columns and the last part of a composite key join only through a foreign key). Tables already in the statement are not offered again.
+- **JOIN completion**: after `JOIN ` (or `APPLY `) the list starts with whole clauses for the tables already in the statement, from foreign keys in both directions and then from matching names, for databases where foreign keys are missing (`msSqlMcp.completion.joinNameMatch`):
+  - `keyed`: a single-column key and the column that references it, for example `Buildings b on b.BID = u.BID` or `OrderLines.OrderId`.
+  - `any` (default): also any other same-named columns of the same type family, such as tables without a primary key (`Meters m on m.MeterNo = r.MeterNo`), listed after the keyed matches with the detail "same column name (no key)".
+  - `off`: foreign keys only.
+
+  Generic names such as `Id`, `LineNo`, `Code` or `Name`, IDENTITY columns and the last part of a composite key join only through a foreign key. Tables already in the statement are not offered again.
 - **ON completion**: after a join's `ON ` the list starts with the conditions between the table just joined and the earlier ones.
-- **Table aliases**: a table or view completed after `FROM` or `JOIN` gets an alias: the lower-case initials of its name (`TableProblemsLastSub` → `tpls`, `CC_Meshulam_Buildings` → `cmb`), numbered when taken or reserved. Aliases you wrote are never changed.
+- **Table aliases**: a table or view completed after `FROM` or `JOIN` gets an alias: the lower-case initials of its name (`TableProblemsLastSub` → `tpls`, `CC_Meshulam_Buildings` → `cmb`), numbered when taken or reserved. Aliases you wrote are never changed. Turn off with `msSqlMcp.completion.tableAliases` (JOIN suggestions then qualify columns by the table name: `Buildings on Buildings.BID = u.BID`).
 - **Column picker**: in a SELECT list, the first entry is **Pick columns…**: a filterable checklist of the statement's columns (with type, key and nullability); Enter inserts the checked ones at the caret. Also in the editor's right-click menu.
 - **`*` expansion**: on a `*` or `alias.*` of a SELECT list, the light bulb (**Ctrl+.**) offers **Expand * to its columns**.
 - **Snippets**: type the prefix and press **Tab**; the list shows each one with a **⇥ Tab** hint and a preview. `ssf` → `select top(100) * from`, `scf` count, `sw` select-where, `ii` / `is` insert, `uu` update, `df` delete, `ij` / `lj` joins, `gb`, `ob`, `ex`, `bt` transaction (rolls back until you switch to commit), `tc` TRY/CATCH, `cp` / `cf` / `ctf` new procedure / scalar function / inline function (with `--with encryption` ready to enable; `CREATE OR ALTER` needs SQL Server 2016 SP1 or later), `dc` cursor loop.
@@ -219,10 +226,31 @@ The catalog behind JOIN / ON, the picker and `*` (tables, views, table-valued fu
 | Key | Command | Notes |
 |-----|---------|-------|
 | **Ctrl+F2** | Format SQL | The selection (widened to the statements it touches), or the whole document. Works without a connection. Replaces VS Code's *Change All Occurrences* in SQL editors. |
-| **Ctrl+3** | Select Top Rows | The selected or under-cursor table or view opens in Data View (`TOP` = `msSqlMcp.dataViewRows`, read-only). A table-valued function opens a new query with its parameters declared, not run. Replaces *Focus Third Editor Group* in SQL editors. |
+| **Ctrl+0 … Ctrl+9** | Query shortcuts | Runs the SQL set for that digit (below). Ctrl+3 is `select top (1000) * from {selection}` by default. |
 | **Ctrl+F12** | Go to Object Definition | The object's script in a new tab: views, procedures and functions editable, tables read-only. Synonyms are followed; names of another database (three- or four-part names, synonyms to them) are reported as not found. Replaces *Go to Implementations* in SQL editors. |
 
-The three keys replace VS Code's defaults only in SQL editors (Ctrl+F2 only when the editor is writable; Ctrl+3 and Ctrl+F12 only when it is bound to a connection). To keep a VS Code default, open **Keyboard Shortcuts** (Ctrl+K Ctrl+S), search for the APoint-ms-sql command and remove or change its key.
+These keys replace VS Code's defaults only in SQL editors (Ctrl+F2 only when the editor is writable; Ctrl+F12 only when it is bound to a connection; Ctrl+0…9 only for digits that have a query shortcut). To keep a VS Code default, open **Keyboard Shortcuts** (Ctrl+K Ctrl+S), search for the APoint-ms-sql command and remove or change its key.
+
+**Select Top Rows of Object Under Cursor** (Data View for a table or view, a declared query for a table-valued function) stays in the editor's right-click menu and the command palette.
+
+### Query shortcuts (Ctrl+0 … Ctrl+9)
+
+Like SSMS query shortcuts: each digit can hold SQL that runs on the editor's connection, with results in the Results panel; the editor text is not changed. `{selection}` is replaced by the selected text, or by the name under the cursor when nothing is selected. SQL without `{selection}` runs as written, for example `select * from globalVars where varName = 'dbVersion'`. An unbound editor asks for a connection first, as F5 does; read-only connections and the one-run-per-editor rule apply as for F5.
+
+Set them in **SQL Editor Options…** or in `settings.json`:
+
+```json
+"msSqlMcp.queryShortcuts": {
+  "3": "select top (1000) * from {selection}",
+  "5": "select * from globalVars where varName = 'dbVersion'"
+}
+```
+
+Ctrl+3's default comes from this setting. To free Ctrl+3, set `"3": ""`.
+
+### SQL Editor Options
+
+**SQL Editor Options…** (the APoint-ms-sql view's **...** menu, the SQL editor tab's **...** menu, or the command palette) is one form for the enhanced completions, table aliases, JOIN name matching, the formatter settings and the ten query shortcuts. **Save** writes the real `msSqlMcp.*` settings to your user settings, or to the workspace settings when a folder is open and you choose it. **Open settings.json** shows them.
 
 ### Format SQL
 
@@ -248,6 +276,9 @@ Right-click **Format Document** / **Format Selection** / **Format SQL**, or **Ct
 | `msSqlMcp.format.keywordCase` | `lower` | Format SQL: `lower`, `upper` or `preserve` for keywords, system types and built-in functions. |
 | `msSqlMcp.format.formatFiles` | `false` | Format Document / Selection and format-on-save also for `.sql` files and untitled editors (Ctrl+F2 works everywhere). |
 | `msSqlMcp.format.maxItemsPerRow` | `4` | Format SQL: most items per row of column and value lists (1-50). |
+| `msSqlMcp.completion.tableAliases` | `true` | Generated aliases after `FROM` / `JOIN` and in JOIN suggestions. |
+| `msSqlMcp.completion.joinNameMatch` | `any` | JOIN / ON suggestions from same-named columns when no foreign key connects the tables: `off`, `keyed` or `any`. |
+| `msSqlMcp.queryShortcuts` | `{"3": "select top (1000) * from {selection}"}` | SQL for Ctrl+0…Ctrl+9 in SQL editors (see [Query shortcuts](#query-shortcuts-ctrl0--ctrl9)). |
 | `msSqlMcp.serverPath` | bundled | Path to a different `MssqlMcp.exe`. |
 | `msSqlMcp.logLevel` | `error` (installed) | Output channel verbosity: `off`, `error`, `warn`, `info`, `debug`, `trace`. |
 
