@@ -27,6 +27,8 @@ public sealed partial class ScriptRunnerTools
         [Description("1-based caret line.")] int line = 1,
         [Description("1-based caret column.")] int column = 1,
         [Description("completion: add JOIN / ON suggestions, table aliases and the column-picker entry.")] bool enhanced = false,
+        [Description("completion (enhanced): add generated aliases to tables after FROM / JOIN and in JOIN suggestions.")] bool tableAliases = true,
+        [Description("completion (enhanced): same-named columns in JOIN / ON suggestions without a foreign key: off, keyed (one side is a single-column primary key) or any.")] string? joinNameMatch = null,
         [Description("objectInfo: the object name (may be schema-qualified or bracketed).")] string? name = null,
         [Description(Tools.ConnectionParamDescription)] string? connection = null,
         CancellationToken cancellationToken = default)
@@ -93,7 +95,7 @@ public sealed partial class ScriptRunnerTools
         {
             object? data = known switch
             {
-                "completion" => await languageService.CompleteAsync(profile, text, line, column, enhanced, cancellationToken).ConfigureAwait(false),
+                "completion" => await languageService.CompleteAsync(profile, text, line, column, enhanced, new EnhancedOptions(tableAliases, EnhancedOptions.ParseNameMatch(joinNameMatch)), cancellationToken).ConfigureAwait(false),
                 "scope" => await languageService.ScopeAsync(profile, text, line, column, cancellationToken).ConfigureAwait(false),
                 "hover" => await languageService.HoverAsync(profile, text, line, column, cancellationToken).ConfigureAwait(false),
                 _ => await languageService.SignatureHelpAsync(profile, text, line, column, cancellationToken).ConfigureAwait(false),

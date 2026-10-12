@@ -194,4 +194,77 @@ public sealed class EnhancedCompletionTests
         Assert.Null(catalog.Find("dbo", "Payments"));
         Assert.Equal(2, catalog.ForeignKeysOf(catalog.Find(null, "Units")!).Count);
     }
+    /// <summary>
+    /// No primary keys and no foreign keys: Readings(ReadingID identity, MeterNo, Status int, Value), Meters(MeterNo,
+    /// Status nvarchar, Name), MeterNotes(ReadingID identity); plus the keyed Buildings / Units of <see cref="Catalog"/>.
+    /// </summary>
+    private static CatalogSnapshot LegacyCatalog()
+    {
+        var readings = new CatalogObject("dbo", "Readings", "U", [
+            new CatalogColumn("ReadingID", "int", false, false, IsIdentity: true), new CatalogColumn("MeterNo", "nvarchar(20)", true, false),
+            new CatalogColumn("Status", "int", true, false), new CatalogColumn("Value", "decimal(18,2)", true, false)]);
+        var meters = new CatalogObject("dbo", "Meters", "U", [
+            new CatalogColumn("MeterNo", "nvarchar(30)", true, false), new CatalogColumn("Status", "nvarchar(10)", true, false),
+            new CatalogColumn("Name", "nvarchar(50)", true, false)]);
+        var notes = new CatalogObject("dbo", "MeterNotes", "U", [new CatalogColumn("ReadingID", "int", false, false, IsIdentity: true)]);
+        var buildings = new CatalogObject("dbo", "Buildings", "U", [Col("BID", true)]);
+        var units = new CatalogObject("dbo", "Units", "U", [Col("UID", true), Col("BID")]);
+        return new CatalogSnapshot([readings, meters, notes, buildings, units], []);
+    }
+
+    [Fact]
+    public void Any_name_match_joins_tables_without_keys_on_same_named_columns_of_the_same_type_family()
+    {
+        var items = EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Readings r JOIN |"), LegacyCatalog(), new EnhancedOptions(true, JoinNameMatch.Any));
+        var match = Assert.Single(items);
+        Assert.Equal("Meters m on m.MeterNo = r.MeterNo", match.InsertText);
+        Assert.Equal("same column name (no key)", match.Detail);
+        // Status is int in one table and nvarchar in the other; ReadingID is IDENTITY on both sides.
+        Assert.DoesNotContain(items, i => i.Label.Contains("Status", StringComparison.Ordinal) || i.Label.Contains("ReadingID", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Keyed_name_matching_does_not_join_tables_without_keys()
+    {
+        Assert.Empty(EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Readings r JOIN |"), LegacyCatalog(), new EnhancedOptions(true, JoinNameMatch.Keyed)));
+        Assert.Empty(EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Readings r JOIN |"), LegacyCatalog()));
+    }
+
+    [Fact]
+    public void Keyed_name_matches_come_before_loose_ones()
+    {
+        var units = new CatalogObject("dbo", "Units", "U", [Col("UID", true), Col("BID"), new CatalogColumn("Region", "nvarchar(10)", true, false)]);
+        var buildings = new CatalogObject("dbo", "Buildings", "U", [Col("BID", true)]);
+        var regions = new CatalogObject("dbo", "RegionStats", "U", [new CatalogColumn("Region", "varchar(10)", true, false)]);
+        var catalog = new CatalogSnapshot([units, buildings, regions], []);
+        var items = EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Units u JOIN |"), catalog, new EnhancedOptions(true, JoinNameMatch.Any));
+        Assert.Equal(["Buildings b on b.BID = u.BID", "RegionStats rs on rs.Region = u.Region"], items.Select(i => i.Label));
+        Assert.Equal("same column name", items[0].Detail);
+    }
+
+    [Fact]
+    public void Name_matching_off_leaves_only_foreign_keys()
+    {
+        var items = EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Contacts c JOIN |"), Catalog(), new EnhancedOptions(true, JoinNameMatch.Off));
+        Assert.All(items, i => Assert.StartsWith("FK ", i.Detail, StringComparison.Ordinal));
+        Assert.DoesNotContain(items, i => i.Label.StartsWith("billing.Payments", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void On_suggestions_include_loose_name_matches_after_keyed_ones()
+    {
+        var items = EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Readings r JOIN dbo.Meters m ON |"), LegacyCatalog(), new EnhancedOptions(true, JoinNameMatch.Any));
+        Assert.Equal("m.MeterNo = r.MeterNo", Assert.Single(items).Label);
+        Assert.Empty(EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Readings r JOIN dbo.Meters m ON |"), LegacyCatalog()));
+    }
+
+    [Fact]
+    public void Without_table_aliases_join_suggestions_qualify_by_the_table_name_and_table_completions_stay_bare()
+    {
+        var options = new EnhancedOptions(TableAliases: false, JoinNameMatch.Keyed);
+        var items = EnhancedCompletion.Create(Scope("SELECT * FROM dbo.Units u JOIN |"), Catalog(), options);
+        Assert.Contains("Buildings on Buildings.BID = u.BID", items.Select(i => i.Label));
+        var table = new[] { new CompletionItemInfo("Buildings", CompletionKinds.Table, null, "Buildings", "2") };
+        Assert.Equal("Buildings", EnhancedCompletion.WithAliases(table, Scope("SELECT * FROM |"), options)[0].InsertText);
+    }
 }

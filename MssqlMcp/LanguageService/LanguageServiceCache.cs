@@ -123,7 +123,11 @@ public sealed class LanguageServiceCache : IDisposable
     /// Completion at a 1-based line and column. <paramref name="enhanced"/> adds JOIN / ON suggestions, generated table
     /// aliases and the column-picker entry (the editor's Enhanced Completions switch).
     /// </summary>
-    public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, bool enhanced, CancellationToken cancellationToken)
+    public Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, bool enhanced, CancellationToken cancellationToken) =>
+        CompleteAsync(profile, text, line, column, enhanced, EnhancedOptions.Default, cancellationToken);
+
+    /// <summary>As above, with the editor's alias and name-match settings for the enhanced items.</summary>
+    public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, bool enhanced, EnhancedOptions options, CancellationToken cancellationToken)
     {
         if (!enhanced)
         {
@@ -152,8 +156,8 @@ public sealed class LanguageServiceCache : IDisposable
             return list;
         }
 
-        var extras = EnhancedCompletion.Create(scope, catalog);
-        return list with { Items = [.. extras, .. EnhancedCompletion.WithAliases(list.Items, scope)] };
+        var extras = EnhancedCompletion.Create(scope, catalog, options);
+        return list with { Items = [.. extras, .. EnhancedCompletion.WithAliases(list.Items, scope, options)] };
     }
 
     /// <summary>

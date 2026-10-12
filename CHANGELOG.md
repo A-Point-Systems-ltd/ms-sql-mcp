@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `language_service` completion takes `tableAliases` and `joinNameMatch` (`off` / `keyed` / `any`). `any` also suggests JOIN / ON conditions on same-named columns of the same type family when a table has no primary key or no foreign key connects the tables, ranked after foreign keys and key matches. The defaults keep the earlier behaviour for other callers.
+
 ## 1.2.2
 
 - No server changes; version kept in sync with the VS Code extension 1.2.2 (closed connections stay browsable in the extension).

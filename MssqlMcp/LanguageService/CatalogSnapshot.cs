@@ -43,6 +43,7 @@ public sealed class CatalogSnapshot
     private readonly Dictionary<CatalogObject, List<CatalogForeignKey>> _foreignKeys = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, List<CatalogObject>> _tablesBySingleKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<CatalogObject>> _tablesByNonKeyColumn = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<CatalogObject>> _tablesByColumn = new(StringComparer.OrdinalIgnoreCase);
 
     public CatalogSnapshot(IEnumerable<CatalogObject> objects, IEnumerable<(string Name, string ParentSchema, string Parent, string ReferencedSchema, string Referenced, string ParentColumn, string ReferencedColumn)> foreignKeyColumns, string defaultSchema = "dbo")
     {
@@ -71,6 +72,11 @@ public sealed class CatalogSnapshot
             foreach (var column in o.Columns.Where(c => !ReferenceEquals(c, single)))
             {
                 Index(_tablesByNonKeyColumn, column.Name, o);
+            }
+
+            foreach (var column in o.Columns)
+            {
+                Index(_tablesByColumn, column.Name, o);
             }
         }
 
@@ -150,6 +156,9 @@ public sealed class CatalogSnapshot
 
     /// <summary>Tables with a column named <paramref name="column"/> that is not their single-column primary key.</summary>
     public IReadOnlyList<CatalogObject> TablesWithNonKeyColumn(string column) => _tablesByNonKeyColumn.TryGetValue(column, out var list) ? list : [];
+
+    /// <summary>Tables with a column named <paramref name="column"/> (any column, key or not).</summary>
+    public IReadOnlyList<CatalogObject> TablesWithColumn(string column) => _tablesByColumn.TryGetValue(column, out var list) ? list : [];
 
     /// <summary>Foreign keys where the object is the referencing or the referenced table.</summary>
     public IReadOnlyList<CatalogForeignKey> ForeignKeysOf(CatalogObject o) => _foreignKeys.TryGetValue(o, out var list) ? list : [];
