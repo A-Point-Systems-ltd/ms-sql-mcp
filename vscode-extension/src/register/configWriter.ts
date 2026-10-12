@@ -27,18 +27,27 @@ export function writeClientConfig(configPath: string, key: string, entry: McpEnt
   const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : undefined;
   const merged = mergeMcpServer(existing, key, entry, legacyKey);
   const removedLegacy = !!legacyKey && legacyKey !== key && hasServerKey(existing, legacyKey);
-  let backup: string | undefined;
-  if (existing !== undefined) {
-    for (let attempt = 0; backup === undefined; attempt++) {
-      const candidate = backupPath(configPath, now, attempt);
-      try {
-        fs.copyFileSync(configPath, candidate, fs.constants.COPYFILE_EXCL);
-        backup = candidate;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 99) throw err;
-      }
-    }
-  }
+  const backup = existing !== undefined ? backupFile(configPath, now) : undefined;
   atomicWriteFile(configPath, merged);
   return { path: configPath, backup, removedLegacy };
+}
+
+/** Copies an existing file to `<path>.<yyyyMMddHHmmss>.bak` (a free name; kept) and returns the backup path. */
+export function backupFile(configPath: string, now: Date = new Date()): string {
+  for (let attempt = 0; ; attempt++) {
+    const candidate = backupPath(configPath, now, attempt);
+    try {
+      fs.copyFileSync(configPath, candidate, fs.constants.COPYFILE_EXCL);
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 99) throw err;
+    }
+  }
+}
+
+/** Replaces a client config with `text`, after a timestamped backup of the existing file. */
+export function replaceClientConfig(configPath: string, text: string, now: Date = new Date()): ClientWriteResult {
+  const backup = fs.existsSync(configPath) ? backupFile(configPath, now) : undefined;
+  atomicWriteFile(configPath, text);
+  return { path: configPath, backup };
 }

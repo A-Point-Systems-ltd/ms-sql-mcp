@@ -23,7 +23,7 @@ import { registerSqlEditorFeatures } from './query/sqlEditorCommands';
 import { SqlDocFileSystem } from './query/sqlDocFs';
 import { SQL_DOC_SCHEME } from './query/sqlDocNames';
 import { cursorConfigPath } from './register/clientPaths';
-import { registerClientCommand } from './register/registerClients';
+import { registerClientCommand, upgradeClientRegistrations } from './register/registerClients';
 import { installBundledSkill } from './register/skillInstall';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -78,6 +78,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Every command is registered before the MCP provider, so a host without (or with a failing) MCP API keeps them all.
   registerClientCommand(context, store, log);
+  // After an upgrade: move "Register with…" client entries off the old exe copy (no prompt) and delete old copies.
+  void upgradeClientRegistrations(context, log).catch(err => log.error('upgrade', 'Updating client registrations failed', err));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     // A reset never kills a running call: the old process is retired when its last call ends.
     if (e.affectsConfiguration('msSqlMcp.serverPath')) {
