@@ -4,8 +4,20 @@ name: Publish VS Code Extension
 # extension and publishes to the VS Code Marketplace and Open VSX. The same exe
 # is packed as the Claude Desktop extension (.mcpb); both files are uploaded as
 # build artifacts and attached to the GitHub release.
-# Required repo secrets (set by the owner): VSCE_PAT, OVSX_PAT (publisher "apoint").
 # Marketplace versions are irreversible: dryRun defaults to true (package only).
+#
+# Two jobs. `build` has no environment and no Entra trust; `publish` runs only on
+# main, in the `marketplace-publish` environment (deployment branches: main only).
+# VS Code Marketplace auth is Microsoft Entra ID via GitHub OIDC — no PAT: global
+# Azure DevOps PATs are retired on 1 Dec 2026 and vsce does not accept org-scoped
+# ones. App Registration `apoint-vsce-publisher` (no Azure RBAC roles) has a
+# federated credential for subject
+#   repo:A-Point-Systems-ltd/ms-sql-mcp:environment:marketplace-publish
+# and is a Contributor member of Marketplace publisher `apoint`.
+#   vars.VSCE_AZURE_CLIENT_ID - environment variable on marketplace-publish
+# Required repo secret: OVSX_PAT (Open VSX namespace "apoint").
+# A dry run on main still logs in and runs `vsce verify-pat`, which checks the
+# Marketplace auth end to end without publishing.
 
 on:
   workflow_dispatch:
@@ -17,11 +29,14 @@ on:
         type: boolean
 
 jobs:
-  publish:
+  build:
     runs-on: windows-latest
-    # contents: write is used only by the final "Create GitHub release" step.
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      vsix: ${{ steps.ver.outputs.vsix }}
+      mcpb: ${{ steps.ver.outputs.mcpb }}
     defaults:
       run:
         working-directory: vscode-extension
@@ -125,18 +140,73 @@ jobs:
           name: ms-sql-mcp-vsix
           path: vscode-extension/${{ steps.ver.outputs.vsix }}
 
+  publish:
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: windows-latest
+    # The Entra federated credential's subject is bound to this environment, which
+    # allows deployments from main only — this repo is public, so no fork or PR
+    # branch can obtain the Marketplace identity.
+    environment: marketplace-publish
+    permissions:
+      contents: write # "Create GitHub release"
+      id-token: write # GitHub OIDC token for the Entra (Marketplace) login
+    defaults:
+      run:
+        working-directory: vscode-extension
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VSIX: ${{ needs.build.outputs.vsix }}
+      MCPB: ${{ needs.build.outputs.mcpb }}
+    steps:
+      # Checkout + npm ci so vsce and ovsx come from the lockfile.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: ms-sql-mcp-vsix
+          path: vscode-extension
+
+      - name: Download .mcpb
+        uses: actions/download-artifact@v4
+        with:
+          name: apoint-ms-sql-mcpb
+          path: ${{ runner.temp }}/mcpb
+
+      # allow-no-subscriptions: the identity deliberately has no Azure role; vsce
+      # only needs an Azure DevOps token, requested through this Azure CLI session.
+      - name: Azure login (OIDC) for the Marketplace
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID || 'ac1d1e04-438d-414b-a9dc-bcf081cfd12e' }}
+          client-id: ${{ vars.VSCE_AZURE_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      # Runs on dry runs too: fails here, with nothing shipped, if the identity is
+      # not (or no longer) a member of the publisher.
+      - name: Verify Marketplace publish rights
+        run: npx vsce verify-pat --azure-credential apoint
+
       - name: Publish to VS Code Marketplace
         if: ${{ inputs.dryRun == false }}
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx vsce publish --packagePath "${{ steps.ver.outputs.vsix }}"
+        run: npx vsce publish --azure-credential --packagePath "$env:VSIX"
 
       - name: Publish to Open VSX
         if: ${{ inputs.dryRun == false }}
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx ovsx publish "${{ steps.ver.outputs.vsix }}"
+        run: npx ovsx publish "$env:VSIX"
 
       - name: Create GitHub release
         if: ${{ inputs.dryRun == false }}
-        run: gh release create "ext-v${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.vsix }}" "${{ runner.temp }}/mcpb/${{ steps.ver.outputs.mcpb }}" --title "Extension v${{ steps.ver.outputs.version }}" --target ${{ github.sha }} --generate-notes
+        run: gh release create "ext-v${{ needs.build.outputs.version }}" "$env:VSIX" "${{ runner.temp }}/mcpb/$env:MCPB" --title "Extension v${{ needs.build.outputs.version }}" --target ${{ github.sha }} --generate-notes
