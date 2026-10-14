@@ -58,6 +58,8 @@
     <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" Version="181.37.1" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.117.0" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <!-- Pinned above Microsoft.Data.SqlClient's transitive 9.0.13: CVE-2026-84008, CVE-2026-70162. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
 

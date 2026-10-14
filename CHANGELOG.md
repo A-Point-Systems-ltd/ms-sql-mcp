@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Security: `System.Security.Cryptography.Pkcs` pinned to 10.0.13 (was 9.0.13 through Microsoft.Data.SqlClient 7.0.2), fixing CVE-2026-84008 and CVE-2026-70162 (denial of service).
+
 ## 1.2.4
 
 - No server changes; version kept in sync with the VS Code extension 1.2.4.
