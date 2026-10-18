@@ -4,6 +4,7 @@
 
 - **The Tables and Views filter also searches sub-objects**: indexes, foreign keys and table triggers. A table or view is listed when its name or one of its children's names contains the text; one listed for a child shows `has matches for '<text>'` and, when expanded, only the matching folders and objects. The server's `list_objects` gains `Index` and `ForeignKey` (each row names its parent table or view).
 - Security: the bundled server pins `System.Security.Cryptography.Pkcs` to 10.0.13 (was 9.0.13 through Microsoft.Data.SqlClient 7.0.2), fixing CVE-2026-84008 and CVE-2026-70162 (denial of service).
+- **Change Connection renames the tab at once**: a query window with unsaved edits is now saved (into the extension's storage) and reopened under the new connection's title and breadcrumb right away, instead of keeping the old title until the next save. Its undo history does not carry over. Object scripts with unsaved edits still wait for the next save.
 
 ## 1.2.4
 
