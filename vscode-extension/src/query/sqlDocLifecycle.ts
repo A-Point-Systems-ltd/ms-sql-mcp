@@ -379,6 +379,12 @@ export class SqlDocLifecycle implements vscode.Disposable {
       if (!doc.isClosed) this.pendingTitles.set(oldKey, title);
       return;
     }
+    if (saveFirst && this.docs.get(doc.uri)?.connection !== assoc.connection) {
+      // Bound elsewhere while it saved: `title` and `assoc` are stale, so start over from the current binding.
+      this.retitling.delete(address.id);
+      this.refreshTitle(doc);
+      return;
+    }
     try {
       const newUri = SqlDocFileSystem.uriWithTitle(address.kind, address.id, title);
       await this.docs.set(newUri, assoc);
