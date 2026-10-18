@@ -126,28 +126,31 @@ public sealed class LanguageServiceCache : IDisposable
     public Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, bool enhanced, CancellationToken cancellationToken) =>
         CompleteAsync(profile, text, line, column, enhanced, EnhancedOptions.Default, cancellationToken);
 
-    /// <summary>As above, with the editor's alias and name-match settings for the enhanced items.</summary>
+    /// <summary>
+    /// As above, with the editor's alias and name-match settings for the enhanced items. With or without
+    /// <paramref name="enhanced"/>, an unqualified name typed where a table goes also gets the matching objects of the
+    /// other schemas (<see cref="OtherSchemaObjects"/>); their catalog is never waited for here.
+    /// </summary>
     public async Task<CompletionList> CompleteAsync(ConnectionProfile profile, string text, int line, int column, bool enhanced, EnhancedOptions options, CancellationToken cancellationToken)
     {
-        if (!enhanced)
-        {
-            return await CompleteBaseAsync(profile, text, line, column, cancellationToken).ConfigureAwait(false);
-        }
-
         var completion = CompleteBaseAsync(profile, text, line, column, cancellationToken);
         SqlScopeInfo? scope = null;
         CatalogSnapshot? catalog = null;
         try
         {
             scope = SqlScope.Analyze(text, line, column);
-            if (scope.Context is CaretContext.JoinTable or CaretContext.OnCondition)
+            if (enhanced && scope.Context is CaretContext.JoinTable or CaretContext.OnCondition)
             {
                 catalog = await TryCatalogAsync(profile, CompletionTimeout, cancellationToken).ConfigureAwait(false);
+            }
+            else if (scope.ObjectPrefix is not null)
+            {
+                catalog = await TryCatalogAsync(profile, TimeSpan.Zero, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug("language_service enhanced completion skipped: {Error}", ex.GetType().Name + ": " + ex.Message);
+            _logger.LogDebug("language_service scope analysis skipped: {Error}", ex.GetType().Name + ": " + ex.Message);
         }
 
         var list = await completion.ConfigureAwait(false);
@@ -156,8 +159,11 @@ public sealed class LanguageServiceCache : IDisposable
             return list;
         }
 
-        var extras = EnhancedCompletion.Create(scope, catalog, options);
-        return list with { Items = [.. extras, .. EnhancedCompletion.WithAliases(list.Items, scope, options)] };
+        var others = OtherSchemaObjects.Create(scope, catalog, enhanced && options.TableAliases);
+        IEnumerable<CompletionItemInfo> items = enhanced
+            ? [.. EnhancedCompletion.Create(scope, catalog, options), .. EnhancedCompletion.WithAliases(list.Items, scope, options)]
+            : list.Items;
+        return list with { Items = [.. items, .. others.Items], IsIncomplete = list.IsIncomplete || others.Incomplete };
     }
 
     /// <summary>

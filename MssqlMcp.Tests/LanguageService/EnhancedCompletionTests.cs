@@ -48,6 +48,78 @@ public sealed class EnhancedCompletionTests
     public void The_caret_context_is_recognised(string text, CaretContext expected) =>
         Assert.Equal(expected, Scope(text).Context);
 
+    [Theory]
+    [InlineData("SELECT * FROM |", "")]
+    [InlineData("SELECT * FROM Pay|", "Pay")]
+    [InlineData("SELECT * FROM dbo.Units u JOIN bil|", "bil")]
+    [InlineData("SELECT * FROM dbo.Units u CROSS APPLY fn|", "fn")]
+    [InlineData("UPDATE Pay|", "Pay")]
+    [InlineData("INSERT INTO Pay|", "Pay")]
+    [InlineData("DELETE FROM Pay|", "Pay")]
+    [InlineData("DELETE Pay|", "Pay")]
+    [InlineData("SELECT * FROM billing.Pay|", null)]
+    [InlineData("SELECT * FROM billing.|", null)]
+    [InlineData("SELECT * FROM [Pay|", null)]
+    [InlineData("SELECT Pay| FROM dbo.Units", null)]
+    [InlineData("SELECT * FROM dbo.Units WHERE Pay|", null)]
+    [InlineData("-- SELECT * FROM Pay|\n", null)]
+    public void The_unqualified_object_name_being_typed_is_read_where_a_table_goes(string text, string? expected) =>
+        Assert.Equal(expected, Scope(text).ObjectPrefix);
+
+    [Fact]
+    public void Other_schema_objects_match_by_name_or_schema_and_are_inserted_qualified()
+    {
+        var catalog = Catalog();
+
+        var byName = OtherSchemaObjects.Create(Scope("SELECT * FROM Pay|"), catalog, tableAliases: false);
+        var item = Assert.Single(byName.Items);
+        Assert.Equal(("billing.Payments", "table", "billing.Payments", "Payments"), (item.Label, item.Kind, item.InsertText, item.FilterText));
+        Assert.False(byName.Incomplete);
+
+        var bySchema = Assert.Single(OtherSchemaObjects.Create(Scope("SELECT * FROM bil|"), catalog, tableAliases: false).Items);
+        Assert.Equal("billing.Payments", bySchema.FilterText);
+
+        // Default-schema objects come from the parser already; nothing else starts with Bu.
+        Assert.Empty(OtherSchemaObjects.Create(Scope("SELECT * FROM Bu|"), catalog, tableAliases: false).Items);
+    }
+
+    [Fact]
+    public void Other_schema_objects_get_an_alias_after_FROM_and_JOIN_only_when_aliases_are_on()
+    {
+        var catalog = Catalog();
+        Assert.Equal("billing.Payments p", Assert.Single(OtherSchemaObjects.Create(Scope("SELECT * FROM Pay|"), catalog, tableAliases: true).Items).InsertText);
+        Assert.Equal("billing.Payments", Assert.Single(OtherSchemaObjects.Create(Scope("SELECT * FROM Pay| x"), catalog, tableAliases: true).Items).InsertText);
+        Assert.Equal("billing.Payments", Assert.Single(OtherSchemaObjects.Create(Scope("UPDATE Pay|"), catalog, tableAliases: true).Items).InsertText);
+    }
+
+    [Fact]
+    public void Nothing_typed_or_no_catalog_yet_adds_nothing_but_asks_again()
+    {
+        var empty = OtherSchemaObjects.Create(Scope("SELECT * FROM |"), Catalog(), tableAliases: false);
+        Assert.Empty(empty.Items);
+        Assert.True(empty.Incomplete);
+
+        var loading = OtherSchemaObjects.Create(Scope("SELECT * FROM Pay|"), catalog: null, tableAliases: false);
+        Assert.Empty(loading.Items);
+        Assert.True(loading.Incomplete);
+
+        // Only default-schema objects: nothing to ask again for.
+        var dboOnly = new CatalogSnapshot([new CatalogObject("dbo", "T", "U", [Col("a")])], []);
+        Assert.False(OtherSchemaObjects.Create(Scope("SELECT * FROM |"), dboOnly, tableAliases: false).Incomplete);
+
+        // Not a table position: untouched.
+        Assert.Same(OtherSchemaItems.None, OtherSchemaObjects.Create(Scope("SELECT Pay| FROM dbo.Units"), Catalog(), tableAliases: false));
+    }
+
+    [Fact]
+    public void More_matches_than_the_cap_mark_the_list_incomplete()
+    {
+        var many = Enumerable.Range(0, OtherSchemaObjects.MaxItems + 5).Select(i => new CatalogObject("sales", $"T{i:D3}", "U", [Col("a")]));
+        var result = OtherSchemaObjects.Create(Scope("SELECT * FROM T|"), new CatalogSnapshot(many, []), tableAliases: false);
+        Assert.Equal(OtherSchemaObjects.MaxItems, result.Items.Count);
+        Assert.True(result.Incomplete);
+    }
+
     [Fact]
     public void Table_sources_with_aliases_are_read_from_the_statement_around_the_caret()
     {

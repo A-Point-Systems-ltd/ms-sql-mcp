@@ -29,7 +29,8 @@ public static class CacheStates
     public const string Loading = "loading";
 }
 
-public sealed record CompletionItemInfo(string Label, string Kind, string? Detail, string InsertText, string SortText);
+/// <summary><paramref name="FilterText"/>: what the client matches the typed word against, when not <paramref name="InsertText"/>.</summary>
+public sealed record CompletionItemInfo(string Label, string Kind, string? Detail, string InsertText, string SortText, string? FilterText = null);
 
 /// <summary>
 /// <paramref name="IsIncomplete"/> is true when binding timed out and only keywords were returned; the client should ask again.

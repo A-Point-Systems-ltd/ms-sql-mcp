@@ -122,6 +122,8 @@ export interface LsCompletionItem {
   detail?: string;
   insertText: string;
   sortText?: string;
+  /** What the typed word is matched against when not `insertText` (objects of other schemas: `Orders` for `sales.Orders`). */
+  filterText?: string;
 }
 
 export interface LsCompletionList {
@@ -137,12 +139,14 @@ function completionItem(raw: unknown): LsCompletionItem | undefined {
   const label = nonEmpty(pick(raw, 'label'));
   if (!label) return undefined;
   const kind = optString(pick(raw, 'kind'));
+  const filterText = nonEmpty(pick(raw, 'filterText'));
   return {
     label,
     kind: kind && Object.prototype.hasOwnProperty.call(KIND_NAMES, kind.toLowerCase()) ? kind.toLowerCase() : 'other',
     detail: optString(pick(raw, 'detail')),
     insertText: nonEmpty(pick(raw, 'insertText')) ?? label,
     sortText: optString(pick(raw, 'sortText')),
+    ...(filterText ? { filterText } : {}),
   };
 }
 

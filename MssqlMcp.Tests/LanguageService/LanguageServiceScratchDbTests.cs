@@ -142,6 +142,76 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
         Assert.DoesNotContain(list.Items, i => i.Label == "T");
     }
 
+    /// <summary>Completion once the catalog snapshot is loaded (its first request only starts the load).</summary>
+    private static async Task<CompletionList> CompleteWithCatalogAsync(LanguageServiceCache cache, ConnectionProfile profile, string text, int column, bool enhanced = false)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (await cache.TryCatalogAsync(profile, TimeSpan.FromSeconds(5), CancellationToken.None) is null)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "the catalog snapshot did not load");
+        }
+
+        var result = await cache.CompleteAsync(profile, text, 1, column, enhanced, CancellationToken.None);
+        Assert.True(result.CacheState == "warm", "cacheState " + result.CacheState + "; cache warnings: " + string.Join(" | ", Log.Warnings));
+        return result;
+    }
+
+    [SkippableTheory]
+    [InlineData("SELECT * FROM Ord", "Orders")]
+    [InlineData("SELECT * FROM sal", "sales.Orders")]
+    [InlineData("UPDATE Ord", "Orders")]
+    public async Task An_unqualified_name_also_offers_tables_of_other_schemas_qualified(string text, string filterText)
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+
+        var list = await CompleteWithCatalogAsync(cache, main, text, text.Length + 1);
+
+        var orders = Item(list, "sales.Orders", "table");
+        Assert.Equal("sales.Orders", orders.InsertText);
+        Assert.Equal(filterText, orders.FilterText);
+        // The parser's own items stay: the schema to qualify with, and the default schema's tables.
+        Item(list, "sales", "schema");
+        Item(list, "T", "table");
+    }
+
+    [SkippableFact]
+    public async Task Enhanced_completion_gives_other_schema_tables_an_alias()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+
+        var list = await CompleteWithCatalogAsync(cache, main, "SELECT * FROM Ord", 18, enhanced: true);
+
+        Assert.Equal("sales.Orders o", Item(list, "sales.Orders", "table").InsertText);
+    }
+
+    [SkippableTheory]
+    [InlineData("SELECT * FROM sales.O", 22)]
+    [InlineData("SELECT Ord", 11)]
+    public async Task Qualified_names_and_non_table_positions_get_no_other_schema_items(string text, int column)
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+
+        var list = await CompleteWithCatalogAsync(cache, main, text, column);
+
+        Assert.DoesNotContain(list.Items, i => i.Label == "sales.Orders");
+    }
+
+    [SkippableFact]
+    public async Task Nothing_typed_after_FROM_asks_again_instead_of_listing_every_schema()
+    {
+        var (cache, _, main) = Create();
+        using var _ = cache;
+
+        var list = await CompleteWithCatalogAsync(cache, main, "SELECT * FROM ", 15);
+
+        Assert.DoesNotContain(list.Items, i => i.Label == "sales.Orders");
+        Assert.True(list.IsIncomplete);
+        Item(list, "T", "table");
+    }
+
     [SkippableFact]
     public async Task Cte_and_derived_table_columns_are_offered()
     {
@@ -272,9 +342,11 @@ public sealed class LanguageServiceScratchDbTests(LanguageServiceDatabase db) : 
 
         // The background build keeps going; once it is done a later call is warm.
         cache.CompletionTimeout = TimeSpan.FromSeconds(60);
-        var warm = await CompleteAsync(cache, main, "SELECT * FROM ", 1, 15);
+        Item(await CompleteAsync(cache, main, "SELECT * FROM ", 1, 15), "T", "table");
+        // Not a table position, so no other-schema items that could still ask again: complete once bound.
+        var warm = await CompleteAsync(cache, main, "SELECT t. FROM dbo.T t", 1, 10);
         Assert.False(warm.IsIncomplete);
-        Item(warm, "T", "table");
+        Item(warm, "a", "column");
     }
 
     [SkippableFact]

@@ -27,8 +27,12 @@ public sealed record ScopeTable(string? Schema, string Name, string? Alias, bool
     public string Qualifier => Alias ?? Name;
 }
 
-/// <summary>The caret context, the statement's table sources, and for ON the table just joined.</summary>
-public sealed record SqlScopeInfo(CaretContext Context, IReadOnlyList<ScopeTable> Tables, ScopeTable? JoinedTable, bool AliasFollows);
+/// <summary>
+/// The caret context, the statement's table sources, and for ON the table just joined. <paramref name="ObjectPrefix"/>
+/// is the unqualified, unquoted name being typed where a table or view goes (after FROM, JOIN, APPLY, UPDATE, INTO,
+/// DELETE): empty when nothing is typed yet, null when the name is schema-qualified or quoted, or elsewhere.
+/// </summary>
+public sealed record SqlScopeInfo(CaretContext Context, IReadOnlyList<ScopeTable> Tables, ScopeTable? JoinedTable, bool AliasFollows, string? ObjectPrefix = null);
 
 /// <summary>
 /// A tokenizer-only reading of the statement around the caret (ScriptDom's lexer: it works on unfinished SQL, unlike the
@@ -94,7 +98,13 @@ public static partial class SqlScope
         }
 
         var info = Analyze(tokens, caret);
-        return inCommentOrString ? info with { Context = CaretContext.Other } : info;
+        if (inCommentOrString)
+        {
+            return info with { Context = CaretContext.Other, ObjectPrefix = null };
+        }
+
+        // Nothing typed only right after whitespace: an unclosed [Pay yields no token, JOIN| is the keyword itself.
+        return info.ObjectPrefix == string.Empty && caret > 0 && !char.IsWhiteSpace(text[caret - 1]) ? info with { ObjectPrefix = null } : info;
     }
 
     /// <summary>Most characters read on each side of the caret.</summary>
@@ -326,7 +336,29 @@ public static partial class SqlScope
         }
 
         var aliasFollows = next is not null && (next.TokenType == TSqlTokenType.As || (IsNamePart(next) && !NotAliases.Contains(next.Text)));
-        return new SqlScopeInfo(context, tables, joined, aliasFollows);
+        return new SqlScopeInfo(context, tables, joined, aliasFollows, ObjectPrefixOf(tokens, typed, before, prev));
+    }
+
+    /// <summary>
+    /// The unqualified name typed at tokens[typed..before) when <paramref name="prev"/> starts a table position; null
+    /// for a qualified (sales.O) or quoted ([O) name and for any other position.
+    /// </summary>
+    private static string? ObjectPrefixOf(List<TSqlParserToken> tokens, int typed, int before, TSqlParserToken? prev)
+    {
+        var tablePosition = prev is not null
+            && (prev.TokenType is TSqlTokenType.From or TSqlTokenType.Join or TSqlTokenType.Update or TSqlTokenType.Into or TSqlTokenType.Delete
+                || Is(prev, "apply"));
+        if (!tablePosition)
+        {
+            return null;
+        }
+
+        return (before - typed) switch
+        {
+            0 => string.Empty,
+            1 when tokens[typed].TokenType == TSqlTokenType.Identifier => tokens[typed].Text,
+            _ => null,
+        };
     }
 
     private static int End(TSqlParserToken t) => t.Offset + t.Text.Length;
