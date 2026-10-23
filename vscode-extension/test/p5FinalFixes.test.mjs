@@ -41,11 +41,19 @@ test('titleAction: an up-to-date title, no binding, a removed profile or a non-Q
   assert.deepEqual(titleAction({ address: queryAddr('Recovered query aaaabbbb'), assoc: { connection: 'dev', kind: 'query' }, profile: profile('dev', { server: 'X' }), isDirty: false }), { kind: 'none' });
 });
 
-test('titleAction: a dirty (or running) document is never closed: the rename waits for the next save', () => {
+test('titleAction: a dirty query doc is saved and retitled at once; a running one waits for its run to end', () => {
   const addr = queryAddr('Query 1 - DC∖DEV - Sales');
   const input = { address: addr, assoc: { connection: 'p', kind: 'query' }, profile: profile('p', { server: 'S2' }) };
-  assert.deepEqual(titleAction({ ...input, isDirty: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
+  assert.deepEqual(titleAction({ ...input, isDirty: true }), { kind: 'retitle', title: 'Query 1 - S2 - Sales', save: true });
   assert.deepEqual(titleAction({ ...input, isDirty: false, running: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
+  assert.deepEqual(titleAction({ ...input, isDirty: true, running: true }), { kind: 'defer', title: 'Query 1 - S2 - Sales' });
+});
+
+test('titleAction: a dirty object doc is never saved for a title: the rename waits for the next save', () => {
+  const addr = objectAddr('dbo.vOrders - DC∖DEV - Sales');
+  const assoc = { connection: 'dev', kind: 'object', object: ref, target: { server: 'DC\\DEV', database: 'Sales' } };
+  assert.deepEqual(titleAction({ address: addr, assoc, profile: profile('dev', { server: 'DC\\NEW' }), isDirty: true }),
+    { kind: 'defer', title: 'dbo.vOrders - DC∖NEW - Sales' });
   assert.equal(TITLE_AFTER_SAVE_MESSAGE, 'The tab title updates after you save.');
 });
 

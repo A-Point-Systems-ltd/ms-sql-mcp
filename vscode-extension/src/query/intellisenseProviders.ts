@@ -140,7 +140,7 @@ export function registerIntelliSense(context: vscode.ExtensionContext, deps: Int
         item.sortText = i.sortText;
         item.insertText = i.insertText;
         // Matched against what is typed in the range, which includes a leading @ or [.
-        item.filterText = i.insertText;
+        item.filterText = i.filterText ?? i.insertText;
         item.range = range;
         return item;
       });

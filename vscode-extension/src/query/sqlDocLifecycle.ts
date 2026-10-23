@@ -59,7 +59,8 @@ class OwnedQueryIds {
  * - closes (after the reopen grace: a blank query document is deleted, any other is kept and marked closed);
  * - renamed files;
  * - tab titles: an open document whose connection (Change Connection) or profile server/database changed is saved,
- *   closed and reopened under the new title with the same id and binding; a dirty one only after its next save;
+ *   closed and reopened under the new title with the same id and binding (a dirty query document is saved first; a
+ *   dirty object document only after its next save, a running one after its run);
  * - the deferred activation prune: the legacy `edits/` folder, stale associations, query documents closed more than
  *   30 days ago and blank orphans. Object backing files are never pruned (an unapplied edit must not be lost).
  * A backing file or index that cannot be read (other than "does not exist") is left alone.
@@ -355,21 +356,35 @@ export class SqlDocLifecycle implements vscode.Disposable {
       return;
     }
     this.pendingTitles.delete(key);
-    void this.retitle(doc, address, action.title)
+    void this.retitle(doc, address, action.title, action.save === true)
       .catch(err => this.log.warn('sqldocs', `Updating a tab title failed: ${err instanceof Error ? err.message : String(err)}`));
   }
 
   /**
    * Saves a clean document through the provider (same id, so the same backing file; the query index gets the new
    * title), opens the same id under `title` in the same editor group with the binding kept, then closes the old tab.
-   * Its undo history does not carry over. A document that became dirty meanwhile is left as it is (renamed after its
-   * next save). Never a programmatic text edit.
+   * With `saveFirst` (a dirty query document) it is saved through the provider first. Its undo history does not carry
+   * over. A document that is still or again dirty is left as it is (renamed after its next save). Never a programmatic
+   * text edit.
    */
-  private async retitle(doc: vscode.TextDocument, address: SqlDocAddress, title: string): Promise<void> {
+  private async retitle(doc: vscode.TextDocument, address: SqlDocAddress, title: string, saveFirst = false): Promise<void> {
     const oldKey = doc.uri.toString();
     const assoc = this.docs.get(doc.uri);
-    if (!assoc || doc.isDirty || doc.isClosed) return;
+    if (!assoc || doc.isClosed || (doc.isDirty && !saveFirst)) return;
+    // Before the save: its own events (index write, onDidSave) must not start a second retitle of this id.
     this.retitling.add(address.id);
+    if (doc.isDirty && !(await doc.save().then(ok => ok, () => false))) {
+      // Not saved (nothing was closed or reopened): the next save renames it.
+      this.retitling.delete(address.id);
+      if (!doc.isClosed) this.pendingTitles.set(oldKey, title);
+      return;
+    }
+    if (saveFirst && this.docs.get(doc.uri)?.connection !== assoc.connection) {
+      // Bound elsewhere while it saved: `title` and `assoc` are stale, so start over from the current binding.
+      this.retitling.delete(address.id);
+      this.refreshTitle(doc);
+      return;
+    }
     try {
       const newUri = SqlDocFileSystem.uriWithTitle(address.kind, address.id, title);
       await this.docs.set(newUri, assoc);

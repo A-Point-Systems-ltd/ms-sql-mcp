@@ -115,6 +115,17 @@ test('parseCompletionResult: defaults and malformed envelopes', () => {
   assert.equal(parseCompletionResult({ success: true, data: { items: [], cacheState: 'weird' } }).cacheState, 'warm');
 });
 
+test('parseCompletionResult keeps a filterText (other-schema objects), and omits a null or empty one', () => {
+  const list = parseCompletionResult({ data: { items: [
+    { label: 'sales.Orders', kind: 'table', insertText: 'sales.Orders o', sortText: '2_sales.orders', filterText: 'Orders' },
+    { label: 'T', kind: 'table', insertText: 'T', filterText: null },
+    { label: 'U', kind: 'table', insertText: 'U', filterText: '' },
+  ] } });
+  assert.equal(list.items[0].filterText, 'Orders');
+  assert.equal('filterText' in list.items[1], false);
+  assert.equal('filterText' in list.items[2], false);
+});
+
 test('parseHoverResult keeps contents and a valid 1-based range only', () => {
   assert.deepEqual(parseHoverResult({ data: { contents: 'column a(int, null)', range: { startLine: 1, startColumn: 8, endLine: 1, endColumn: 9 } } }),
     { contents: 'column a(int, null)', range: { startLine: 1, startColumn: 8, endLine: 1, endColumn: 9 } });

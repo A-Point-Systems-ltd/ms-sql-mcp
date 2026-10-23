@@ -4,18 +4,23 @@ import type { ConnectionProfile } from '../connections/profile';
 import type { QueryAssociation } from './queryDocuments';
 import { SqlDocAddress, docTitle, objectDisplayName, profileTarget, queryNumberOf, queryObjectName } from './sqlDocNames';
 
-/** The info message for a dirty document whose title is out of date: it is renamed after the next save. */
+/** The info message for a dirty object document whose title is out of date: it is renamed after the next save. */
 export const TITLE_AFTER_SAVE_MESSAGE = 'The tab title updates after you save.';
 
 /**
  * What to do with one open document's title:
  * - `none`: the title is right, or there is nothing to compute it from (no binding, a removed profile, an object
  *   document rebound with Change Connection, a title that is not `Query N - ...`);
- * - `defer`: the title is out of date, but the document has unsaved edits (or a run): only the status bar changes now,
- *   and the rename happens after the next save;
- * - `retitle`: save, close the tab and reopen the same id under `title`, with the binding kept.
+ * - `defer`: the title is out of date, but the document runs a query, or is an object document with unsaved edits
+ *   (saving one records an unapplied edit): only the status bar changes now, the rename waits for the run to end or
+ *   the next save;
+ * - `retitle`: close the tab and reopen the same id under `title`, with the binding kept. `save` (a dirty query
+ *   document): save it through the provider first; that only writes the extension's own backing file.
  */
-export type TitleAction = { kind: 'none' } | { kind: 'defer'; title: string } | { kind: 'retitle'; title: string };
+export type TitleAction =
+  | { kind: 'none' }
+  | { kind: 'defer'; title: string }
+  | { kind: 'retitle'; title: string; save?: true };
 
 export interface TitleInput {
   address: SqlDocAddress;
@@ -47,7 +52,9 @@ export function expectedTitle(input: Pick<TitleInput, 'address' | 'assoc' | 'pro
 export function titleAction(input: TitleInput): TitleAction {
   const title = expectedTitle(input);
   if (title === undefined || title === input.address.title) return { kind: 'none' };
-  return input.isDirty || input.running ? { kind: 'defer', title } : { kind: 'retitle', title };
+  if (input.running) return { kind: 'defer', title };
+  if (!input.isDirty) return { kind: 'retitle', title };
+  return input.address.kind === 'query' ? { kind: 'retitle', title, save: true } : { kind: 'defer', title };
 }
 
 /**

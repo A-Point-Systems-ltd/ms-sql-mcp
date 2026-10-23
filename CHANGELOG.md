@@ -4,6 +4,7 @@
 
 - `list_objects` supports `Index` (schema, parent table or view, `parentType`, name, type) and `ForeignKey` (schema, parent table, name, `isDisabled`) across the database; `partialName` matches the index or key name.
 - Security: `System.Security.Cryptography.Pkcs` pinned to 10.0.13 (was 9.0.13 through Microsoft.Data.SqlClient 7.0.2), fixing CVE-2026-84008 and CVE-2026-70162 (denial of service).
+- `language_service` completion: an unqualified name typed where a table goes (after FROM, JOIN, APPLY, UPDATE, INTO, DELETE) also offers the catalog's tables, views and table-valued functions of the other schemas whose name or schema starts with it, inserted schema-qualified (`sales.Orders`). SqlParser offers only the default schema's objects unqualified. Items carry a new optional `filterText`. With nothing typed yet the list is marked incomplete instead (the client asks again on the first character); at most 200 such items per request. The catalog snapshot is never waited for here.
 
 ## 1.2.4
 
