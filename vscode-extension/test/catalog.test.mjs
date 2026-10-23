@@ -13,6 +13,24 @@ test('list parser accepts "schema.name" strings (tables) and objects (views, sec
   assert.deepEqual(parseObjectList(['dot.in.name'], cat('tables')), [{ schema: 'dot', name: 'in.name' }]);
 });
 
+test('table triggers list every table trigger with its table, events and disabled flag', () => {
+  const rows = [
+    { schema: 'dbo', table_name: 'Orders', name: 'trOrdersAudit', is_disabled: false, trigger_events: 'INSERT, UPDATE' },
+    { schema: 'sales', table_name: 'Lines', name: 'trLinesDel', is_disabled: true, trigger_events: 'DELETE' },
+  ];
+  assert.deepEqual(parseObjectList(rows, cat('tableTriggers')), [
+    { schema: 'dbo', name: 'trOrdersAudit', detail: 'on dbo.Orders · INSERT, UPDATE', table: 'dbo.Orders' },
+    { schema: 'sales', name: 'trLinesDel', detail: 'on sales.Lines · DELETE · disabled', table: 'sales.Lines' },
+  ]);
+  assert.deepEqual(parseObjectList([{ name: 'tr' }], cat('tableTriggers')), [{ name: 'tr' }]);
+  assert.deepEqual(cat('tableTriggers'), { id: 'tableTriggers', label: 'Table Triggers', icon: 'zap', listType: 'TableTrigger', scriptType: 'TableTrigger' });
+});
+
+test('disabled flag is read in camelCase and snake_case', () => {
+  assert.deepEqual(parseObjectList([{ name: 'ddl', is_disabled: true }], cat('dbTriggers')), [{ name: 'ddl', detail: 'disabled' }]);
+  assert.deepEqual(parseObjectList([{ name: 'ddl', isDisabled: true }], cat('dbTriggers')), [{ name: 'ddl', detail: 'disabled' }]);
+});
+
 test('table children include PK/UQ constraints as indexes, fks and triggers', () => {
   const d = {
     constraints: [{ name: 'PK_T', type: 'PRIMARY_KEY_CONSTRAINT', keys: 'Id' }],

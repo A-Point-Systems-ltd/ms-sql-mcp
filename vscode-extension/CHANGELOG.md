@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Table Triggers** group in the object explorer lists the triggers of every table in one place, like SSMS's trigger search: each shows its table, events and a `disabled` tag. **Filter Group by Name…** on it matches the trigger or the table name. Triggers stay under each table as well.
 - Security: the bundled server pins `System.Security.Cryptography.Pkcs` to 10.0.13 (was 9.0.13 through Microsoft.Data.SqlClient 7.0.2), fixing CVE-2026-84008 and CVE-2026-70162 (denial of service).
 
 ## 1.2.4

@@ -31,6 +31,7 @@ The **APoint-ms-sql** view in the activity bar lists your connections. Each conn
 ├─ Stored Procedures
 ├─ Table-Valued Functions
 ├─ Scalar Functions
+├─ Table Triggers   ─ every table's triggers, with table, events and "disabled"
 ├─ Database Triggers
 ├─ Types
 └─ Security

@@ -27,7 +27,7 @@ test('connection item: description, contextValue, collapsible by open state', ()
 });
 
 test('root categories exclude security sub-categories; security has 4', () => {
-  assert.deepEqual(rootCategories('dev').map(n => n.def.id), ['tables', 'views', 'procedures', 'tvfs', 'scalars', 'dbTriggers', 'types', 'security']);
+  assert.deepEqual(rootCategories('dev').map(n => n.def.id), ['tables', 'views', 'procedures', 'tvfs', 'scalars', 'tableTriggers', 'dbTriggers', 'types', 'security']);
   assert.deepEqual(subCategories('dev', cat('security')).map(n => n.def.label), ['Logins', 'Server Roles', 'Database Users', 'Database Roles']);
   const item = describeNode(rootCategories('dev')[0]);
   // Listing groups are filterable one by one; Security (sub-groups only) is not.
@@ -65,6 +65,22 @@ test('filter applies to object labels (schema.name, case-insensitive)', () => {
   assert.equal(r.total, 3);
   assert.deepEqual(r.nodes.map(n => n.ref.name), ['Orders', 'OrderLines']);
   assert.deepEqual(objectNodes('dev', cat('tables'), rows, 'sales.').nodes.map(n => n.ref.name), ['Lines']);
+});
+
+test('table triggers are filtered by trigger or table name and open DDL', () => {
+  const rows = [
+    { schema: 'dbo', name: 'trAudit', detail: 'on dbo.Orders · INSERT', table: 'dbo.Orders' },
+    { schema: 'dbo', name: 'trLines', detail: 'on sales.Lines · DELETE', table: 'sales.Lines' },
+  ];
+  assert.deepEqual(objectNodes('dev', cat('tableTriggers'), rows, 'orders').nodes.map(n => n.ref.name), ['trAudit']);
+  assert.deepEqual(objectNodes('dev', cat('tableTriggers'), rows, 'trLi').nodes.map(n => n.ref.name), ['trLines']);
+  const [node] = objectNodes('dev', cat('tableTriggers'), rows, '').nodes;
+  assert.deepEqual(node.ref, { connection: 'dev', scriptType: 'TableTrigger', schema: 'dbo', name: 'trAudit' });
+  const item = describeNode(node);
+  assert.equal(item.description, 'on dbo.Orders · INSERT');
+  assert.equal(item.contextValue, 'msSqlMcp.obj.TableTrigger');
+  assert.equal(item.command, 'msSqlMcp.showDdl');
+  assert.deepEqual(scriptArgs(node.ref), { objectType: 'TableTrigger', name: '[dbo].[trAudit]' });
 });
 
 test('child folders per category; child nodes open DDL', () => {

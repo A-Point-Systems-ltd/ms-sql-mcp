@@ -4,7 +4,7 @@ import { pick } from '../client/parse';
 import { CONNECTION_COLORS, ConnectionProfile } from '../connections/profile';
 import { supportsHistory } from '../history/historyModel';
 import { matchesFilter } from '../tree/filter';
-import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
+import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, ObjectRow, parseTableChildren, parseViewIndexes } from './catalog';
 import { DataViewOrder, dataViewSql } from '../grid/gridModel';
 import { qualified } from './sqlText';
 
@@ -89,10 +89,10 @@ export function subCategories(connection: string, parent: CategoryDef): Category
   return CATEGORIES.filter(d => d.parent === parent.id).map(def => ({ kind: 'category', connection, def }));
 }
 
-/** Object nodes of one category after the name filter; `total` is the unfiltered count. */
-export function objectNodes(connection: string, def: CategoryDef, rows: { schema?: string; name: string; detail?: string }[], term: string): { nodes: ObjectNode[]; total: number } {
+/** Object nodes of one category after the name filter (also on a trigger's table); `total` is the unfiltered count. */
+export function objectNodes(connection: string, def: CategoryDef, rows: ObjectRow[], term: string): { nodes: ObjectNode[]; total: number } {
   const nodes = rows
-    .filter(r => matchesFilter(display(r), term))
+    .filter(r => matchesFilter(display(r), term) || (r.table !== undefined && matchesFilter(r.table, term)))
     .map((r): ObjectNode => ({
       kind: 'object',
       def,

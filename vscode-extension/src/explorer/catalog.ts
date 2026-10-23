@@ -2,7 +2,7 @@
 // No 'vscode' import — unit-testable with plain Node. Shapes verified against MssqlMcp/Tools/*.cs.
 import { pick } from '../client/parse';
 
-export type CategoryId = 'tables' | 'views' | 'procedures' | 'tvfs' | 'scalars' | 'dbTriggers' | 'types' | 'security' | 'logins' | 'serverRoles' | 'users' | 'roles';
+export type CategoryId = 'tables' | 'views' | 'procedures' | 'tvfs' | 'scalars' | 'tableTriggers' | 'dbTriggers' | 'types' | 'security' | 'logins' | 'serverRoles' | 'users' | 'roles';
 export type ChildFolderId = 'indexes' | 'foreignKeys' | 'triggers';
 
 export interface CategoryDef {
@@ -25,6 +25,7 @@ export const CATEGORIES: CategoryDef[] = [
   { id: 'procedures', label: 'Stored Procedures', icon: 'symbol-method', listType: 'StoredProcedure', scriptType: 'StoredProcedure' },
   { id: 'tvfs', label: 'Table-Valued Functions', icon: 'symbol-array', listType: 'TableFunction', scriptType: 'TableFunction' },
   { id: 'scalars', label: 'Scalar Functions', icon: 'symbol-numeric', listType: 'ScalarFunction', scriptType: 'ScalarFunction' },
+  { id: 'tableTriggers', label: 'Table Triggers', icon: 'zap', listType: 'TableTrigger', scriptType: 'TableTrigger' },
   { id: 'dbTriggers', label: 'Database Triggers', icon: 'zap', listType: 'DatabaseTrigger', scriptType: 'DatabaseTrigger' },
   { id: 'types', label: 'Types', icon: 'symbol-class', listType: 'Type', scriptType: 'Type' },
   { id: 'security', label: 'Security', icon: 'shield' },
@@ -39,8 +40,13 @@ const asArray = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v
 const named = (v: unknown): Record<string, unknown>[] => asArray(v).filter(r => !!str(pick(r, 'name')));
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length ? v : undefined);
 
+/** One list_objects row. `table` (table triggers only) is the parent table, which the name filter also matches. */
+export interface ObjectRow { schema?: string; name: string; detail?: string; table?: string }
+
+const disabled = (r: Record<string, unknown>): string | undefined => (pick(r, 'isDisabled', 'is_disabled') === true ? 'disabled' : undefined);
+
 /** Rows of a list_objects `data` array. Tables are "schema.name" strings; everything else is objects. */
-export function parseObjectList(data: unknown, def: CategoryDef): { schema?: string; name: string; detail?: string }[] {
+export function parseObjectList(data: unknown, def: CategoryDef): ObjectRow[] {
   const rows = Array.isArray(data) ? data : [];
   return rows.flatMap(row => {
     if (typeof row === 'string') {
@@ -52,8 +58,15 @@ export function parseObjectList(data: unknown, def: CategoryDef): { schema?: str
     const name = str(pick(r, 'name'));
     if (!name) return [];
     const schema = str(pick(r, 'schema'));
+    if (def.id === 'tableTriggers') {
+      // ListTableTriggers: table_name, trigger_events ('INSERT, UPDATE'), is_disabled.
+      const tableName = str(pick(r, 'table_name'));
+      const table = tableName && schema ? `${schema}.${tableName}` : tableName;
+      const detail = [table ? `on ${table}` : undefined, str(pick(r, 'trigger_events')), disabled(r)].filter(Boolean).join(' · ') || undefined;
+      return [{ ...(schema ? { schema } : {}), name, ...(detail ? { detail } : {}), ...(table ? { table } : {}) }];
+    }
     const detail = def.parent === 'security' || def.id === 'types' || def.id === 'dbTriggers'
-      ? [str(pick(r, 'type')) ?? str(pick(r, 'kind')), pick(r, 'isDisabled') === true ? 'disabled' : undefined].filter(Boolean).join(' · ') || undefined
+      ? [str(pick(r, 'type')) ?? str(pick(r, 'kind')), disabled(r)].filter(Boolean).join(' · ') || undefined
       : undefined;
     return [{ ...(schema ? { schema } : {}), name, ...(detail ? { detail } : {}) }];
   });
