@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Security: the bundled server pins `System.Security.Cryptography.Pkcs` to 10.0.13 (was 9.0.13 through Microsoft.Data.SqlClient 7.0.2), fixing CVE-2026-84008 and CVE-2026-70162 (denial of service).
+
 ## 1.2.4
 
 - No functional changes. Marketplace publishing now signs in with Microsoft Entra ID instead of a personal access token.
