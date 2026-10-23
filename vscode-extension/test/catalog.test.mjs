@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CATEGORIES, parseObjectList, parseTableChildren, parseViewIndexes } from '../out/explorer/catalog.js';
+import { CATEGORIES, parseChildRows, parseObjectList, parseTableChildren, parseViewIndexes } from '../out/explorer/catalog.js';
 
 const cat = id => CATEGORIES.find(c => c.id === id);
 
@@ -11,6 +11,24 @@ test('list parser accepts "schema.name" strings (tables) and objects (views, sec
   assert.deepEqual(parseObjectList([{ schema: 'dbo', name: 'T1', kind: 'Alias', baseType: 'int' }], cat('types')), [{ schema: 'dbo', name: 'T1', detail: 'Alias' }]);
   assert.deepEqual(parseObjectList(undefined, cat('tables')), []);
   assert.deepEqual(parseObjectList(['dot.in.name'], cat('tables')), [{ schema: 'dot', name: 'in.name' }]);
+});
+
+test('child rows of list_objects Index / ForeignKey / TableTrigger keep their parent table or view', () => {
+  const indexes = [
+    { schema: 'dbo', parent: 'Orders', parentType: 'Table', name: 'PK_Orders', type: 'CLUSTERED' },
+    { schema: 'dbo', parent: 'vOrders', parentType: 'View', name: 'IXV_Orders', type: 'CLUSTERED' },
+  ];
+  assert.deepEqual(parseChildRows(indexes, 'Table'), [{ parent: 'dbo.Orders', name: 'PK_Orders' }]);
+  assert.deepEqual(parseChildRows(indexes, 'View'), [{ parent: 'dbo.vOrders', name: 'IXV_Orders' }]);
+  assert.deepEqual(parseChildRows([{ schema: 'sales', parent: 'Lines', name: 'FK_Lines_Orders', isDisabled: false }], 'Table'),
+    [{ parent: 'sales.Lines', name: 'FK_Lines_Orders' }]);
+  assert.deepEqual(parseChildRows([{ schema: 'dbo', table_name: 'Orders', name: 'trAudit', is_disabled: false }], 'Table'),
+    [{ parent: 'dbo.Orders', name: 'trAudit' }]);
+  assert.deepEqual(parseChildRows([{ schema: 'dbo', table_name: 'Orders', name: 'trAudit' }], 'View'), []);
+  assert.deepEqual(parseChildRows([null, { schema: 'dbo', parent: 'T' }, { name: 'x' }], 'Table'), []);
+  assert.deepEqual(parseChildRows(undefined, 'Table'), []);
+  assert.deepEqual(cat('tables').childTypes, ['Index', 'ForeignKey', 'TableTrigger']);
+  assert.deepEqual(cat('views').childTypes, ['Index']);
 });
 
 test('table children include PK/UQ constraints as indexes, fks and triggers', () => {

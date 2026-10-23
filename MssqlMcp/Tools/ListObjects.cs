@@ -14,9 +14,9 @@ public partial class Tools
         ReadOnly = true,
         Idempotent = true,
         Destructive = false),
-        Description("Lists database objects by logical type via one tool. Supported objectType values: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject, DatabaseTrigger, Type (user-defined alias/table types), Login, ServerRole, DatabaseUser, DatabaseRole. Security types return principal names (which may identify people) and role membership - never passwords. Optional partialName filters with a LIKE search on object name and schema.name. For objectType='SysObject', optional sysObjectType filters by sys.objects type code (e.g., 'U','V','P','FN')." + MultiConnectionNote)]
+        Description("Lists database objects by logical type via one tool. Supported objectType values: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, Index, ForeignKey, SysObject, DatabaseTrigger, Type (user-defined alias/table types), Login, ServerRole, DatabaseUser, DatabaseRole. Security types return principal names (which may identify people) and role membership - never passwords. Index and ForeignKey rows carry their parent table or view (schema, parent, parentType for indexes). Optional partialName filters with a LIKE search on object name and schema.name. For objectType='SysObject', optional sysObjectType filters by sys.objects type code (e.g., 'U','V','P','FN')." + MultiConnectionNote)]
     public async Task<DbOperationResult> ListObjects(
-        [Description("Logical object type to list: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject, DatabaseTrigger, Type, Login, ServerRole, DatabaseUser, or DatabaseRole.")] string objectType,
+        [Description("Logical object type to list: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, Index, ForeignKey, SysObject, DatabaseTrigger, Type, Login, ServerRole, DatabaseUser, or DatabaseRole.")] string objectType,
         [Description("Optional partial name filter (substring match). Matches object name and qualified schema.name (e.g. 'Doc' matches dbo.Documents). Pass null for no filter.")] string? partialName = null,
         [Description("Optional sys.objects type code used only when objectType='SysObject' (e.g., 'U','V','P','FN','IF','TF','TR'). Pass null to list all user-defined sys.objects.")] string? sysObjectType = null,
         [Description(ToonParamDescription)] bool? toon = null,
@@ -38,6 +38,8 @@ public partial class Tools
             "scalarfunction" => await ListScalarFunctions(partialName, cancellationToken).ConfigureAwait(false),
             "function" => await ListAllFunctions(partialName, cancellationToken).ConfigureAwait(false),
             "tabletrigger" => await ListTableTriggers(partialName, cancellationToken).ConfigureAwait(false),
+            "index" => await ListIndexes(partialName, cancellationToken).ConfigureAwait(false),
+            "foreignkey" => await ListForeignKeys(partialName, cancellationToken).ConfigureAwait(false),
             "databasetrigger" => await ListDatabaseTriggers(partialName, cancellationToken).ConfigureAwait(false),
             "type" => await ListUserDefinedTypes(partialName, cancellationToken).ConfigureAwait(false),
             "login" => await ListLogins(partialName, cancellationToken).ConfigureAwait(false),
@@ -47,7 +49,7 @@ public partial class Tools
             "sysobject" => await ListSysObjects(sysObjectType, partialName, cancellationToken).ConfigureAwait(false),
             _ => new DbOperationResult(
                 success: false,
-                error: "Unsupported objectType. Use one of: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, SysObject, DatabaseTrigger, Type, Login, ServerRole, DatabaseUser, DatabaseRole.")
+                error: "Unsupported objectType. Use one of: Table, View, StoredProcedure, TableFunction, ScalarFunction, Function, TableTrigger, Index, ForeignKey, SysObject, DatabaseTrigger, Type, Login, ServerRole, DatabaseUser, DatabaseRole.")
         };
     }
 
@@ -70,6 +72,8 @@ public partial class Tools
             "functions" => "function",
             "tabletriggers" => "tabletrigger",
             "triggers" => "tabletrigger",
+            "indexes" => "index",
+            "foreignkeys" or "fk" or "fks" => "foreignkey",
             "dbtrigger" or "databasetriggers" => "databasetrigger",
             "types" or "userdefinedtype" or "userdefinedtypes" => "type",
             "logins" => "login",
