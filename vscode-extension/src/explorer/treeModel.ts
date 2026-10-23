@@ -4,14 +4,15 @@ import { pick } from '../client/parse';
 import { CONNECTION_COLORS, ConnectionProfile } from '../connections/profile';
 import { supportsHistory } from '../history/historyModel';
 import { matchesFilter } from '../tree/filter';
-import { CATEGORIES, CategoryDef, ChildFolderId, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
+import { CATEGORIES, CategoryDef, ChildFolderId, ChildRow, ObjectRef, parseTableChildren, parseViewIndexes } from './catalog';
 import { DataViewOrder, dataViewSql } from '../grid/gridModel';
 import { qualified } from './sqlText';
 
 export interface ConnectionNode { kind: 'connection'; profile: ConnectionProfile }
 export interface CategoryNode { kind: 'category'; connection: string; def: CategoryDef }
-export interface ObjectNode { kind: 'object'; ref: ObjectRef; def: CategoryDef; detail?: string }
-export interface ChildFolderNode { kind: 'childFolder'; connection: string; folder: ChildFolderId; parentRef: ObjectRef }
+/** `childFilter`: the object is listed only because child names match this filter term, so only those children show. */
+export interface ObjectNode { kind: 'object'; ref: ObjectRef; def: CategoryDef; detail?: string; childFilter?: string }
+export interface ChildFolderNode { kind: 'childFolder'; connection: string; folder: ChildFolderId; parentRef: ObjectRef; filter?: string }
 export interface ChildNode { kind: 'child'; ref: ObjectRef }
 export interface MessageNode { kind: 'message'; text: string; isError: boolean; tooltip?: string }
 export type ExplorerNode = ConnectionNode | CategoryNode | ObjectNode | ChildFolderNode | ChildNode | MessageNode;
@@ -89,21 +90,34 @@ export function subCategories(connection: string, parent: CategoryDef): Category
   return CATEGORIES.filter(d => d.parent === parent.id).map(def => ({ kind: 'category', connection, def }));
 }
 
-/** Object nodes of one category after the name filter; `total` is the unfiltered count. */
-export function objectNodes(connection: string, def: CategoryDef, rows: { schema?: string; name: string; detail?: string }[], term: string): { nodes: ObjectNode[]; total: number } {
-  const nodes = rows
-    .filter(r => matchesFilter(display(r), term))
-    .map((r): ObjectNode => ({
+/**
+ * Object nodes of one category after the name filter; `total` is the unfiltered count. An object whose own name does
+ * not match is still listed when one of `children` (its indexes, foreign keys, triggers) matches, marked `childFilter`.
+ */
+export function objectNodes(
+  connection: string, def: CategoryDef, rows: { schema?: string; name: string; detail?: string }[], term: string, children: ChildRow[] = [],
+): { nodes: ObjectNode[]; total: number } {
+  const parents = new Set(term ? children.filter(c => matchesFilter(c.name, term)).map(c => c.parent) : []);
+  const nodes = rows.flatMap((r): ObjectNode[] => {
+    const own = matchesFilter(display(r), term);
+    if (!own && !parents.has(display(r))) return [];
+    return [{
       kind: 'object',
       def,
       ref: { connection, scriptType: def.scriptType ?? '', ...(r.schema ? { schema: r.schema } : {}), name: r.name },
       ...(r.detail ? { detail: r.detail } : {}),
-    }));
+      ...(own ? {} : { childFilter: term }),
+    }];
+  });
   return { nodes, total: rows.length };
 }
 
-export function childFolderNodes(node: ObjectNode): ChildFolderNode[] {
-  return (node.def.childFolders ?? []).map(folder => ({ kind: 'childFolder', connection: node.ref.connection, folder, parentRef: node.ref }));
+/** Child folders of a table/view; under a `childFilter` only the folders holding a matching child of `children`. */
+export function childFolderNodes(node: ObjectNode, children?: ObjectChildren): ChildFolderNode[] {
+  const filter = node.childFilter;
+  return (node.def.childFolders ?? [])
+    .filter(folder => !filter || !children || children[folder].some(c => matchesFilter(c.name, filter)))
+    .map(folder => ({ kind: 'childFolder', connection: node.ref.connection, folder, parentRef: node.ref, ...(filter ? { filter } : {}) }));
 }
 
 /**
@@ -122,8 +136,8 @@ export function parseChildren(def: CategoryDef, data: unknown, schema: string, n
   };
 }
 
-export function childNodes(connection: string, folder: ChildFolderId, children: ObjectChildren): ChildNode[] {
-  return children[folder].map(ref => ({ kind: 'child', ref: { connection, ...ref } }));
+export function childNodes(connection: string, folder: ChildFolderId, children: ObjectChildren, filter = ''): ChildNode[] {
+  return children[folder].filter(ref => matchesFilter(ref.name, filter)).map(ref => ({ kind: 'child', ref: { connection, ...ref } }));
 }
 
 /**
@@ -157,6 +171,16 @@ export function errorNode(err: unknown): MessageNode {
   if (TRANSIENT.test(full)) return { kind: 'message', text: 'The explorer restarted - click Refresh to retry.', isError: true, tooltip: full };
   const first = full.split(/\r?\n/)[0].trim() || 'Unknown error.';
   return { kind: 'message', text: first.length > 200 ? `${first.slice(0, 199)}…` : first, isError: true, tooltip: full };
+}
+
+const CHILD_TYPE_NAMES: Record<string, string> = { Index: 'index', ForeignKey: 'foreign key', TableTrigger: 'trigger' };
+
+/** ', or index, foreign key or trigger names' for a group whose filter also searches child objects; '' otherwise. */
+function childTypesText(def: CategoryDef): string {
+  const names = (def.childTypes ?? []).map(t => CHILD_TYPE_NAMES[t] ?? t);
+  if (!names.length) return '';
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0];
+  return `, or ${list} names,`;
 }
 
 /** Stable tree id (keeps expansion state across refreshes). Message nodes have none. */
@@ -206,7 +230,7 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
       const parts = [term ? `filter: ${term}` : '', counts ? `${counts.shown} of ${counts.total}` : ''].filter(Boolean);
       return {
         id, label: node.def.label, ...(parts.length ? { description: parts.join(' · ') } : {}),
-        ...(term ? { tooltip: `${node.def.label}: showing names containing '${term}'` } : {}),
+        ...(term ? { tooltip: `${node.def.label}: showing names${childTypesText(node.def)} containing '${term}'` } : {}),
         contextValue: node.def.listType ? (term ? 'msSqlMcp.category.list.filtered' : 'msSqlMcp.category.list') : 'msSqlMcp.category',
         collapsible: true, icon: node.def.icon,
       };
@@ -214,8 +238,9 @@ export function describeNode(node: ExplorerNode, counts?: { shown: number; total
     case 'object': {
       const hasChildren = !!node.def.childFolders?.length;
       const label = display(node.ref);
+      const description = node.childFilter ? `has matches for '${node.childFilter}'` : node.detail;
       return {
-        id, label, ...(node.detail ? { description: node.detail } : {}), tooltip: `${node.def.label}: ${label}`,
+        id, label, ...(description ? { description } : {}), tooltip: `${node.def.label}: ${label}`,
         contextValue: (node.def.id === 'tables' ? 'msSqlMcp.obj.table' : node.def.id === 'views' ? 'msSqlMcp.obj.view' : `msSqlMcp.obj.${node.ref.scriptType}`)
           + historySuffix(node.ref),
         collapsible: hasChildren, icon: node.def.icon, ...(hasChildren ? {} : { command: SHOW_DDL }),

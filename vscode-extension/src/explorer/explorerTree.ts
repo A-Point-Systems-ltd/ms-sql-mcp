@@ -3,7 +3,7 @@ import { ConnectionStore } from '../connections/store';
 import { Logger } from '../logger';
 import { findProfile } from '../query/editorState';
 import { CategoryFilters } from '../tree/categoryFilters';
-import { CATEGORIES, parseObjectList } from './catalog';
+import { CATEGORIES, CategoryDef, ChildRow, parseChildRows, parseObjectList } from './catalog';
 import { qualified } from './sqlText';
 import type { ExplorerClient } from './explorerClient';
 import {
@@ -33,8 +33,11 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
    */
   private readonly lists = new Map<string, Promise<ObjectRows>>();
   private readonly children = new Map<string, Promise<ObjectChildren>>();
+  /** `${connection}|${categoryId}|sub` -> every child object of the group (searched by its name filter). */
+  private readonly subLists = new Map<string, Promise<ChildRow[]>>();
   /** Resolved lists, for the synchronous "n of m" in getTreeItem. */
   private readonly loaded = new WeakMap<Promise<ObjectRows>, ObjectRows>();
+  private readonly loadedSub = new WeakMap<Promise<ChildRow[]>, ChildRow[]>();
   /** Connection/category node instances, kept so onDidChangeTreeData(node) targets the element the view knows. */
   private readonly nodes = new Map<string, ConnectionNode | CategoryNode>();
   /** Name filters per (connection, group), kept in globalState across restarts. */
@@ -97,12 +100,16 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     if (!node) {
       this.lists.clear();
       this.children.clear();
+      this.subLists.clear();
       this.nodes.clear();
     } else if (node.kind === 'connection') {
       this.clearPrefix(node.profile.name);
     } else if (node.kind === 'category') {
       const ids = [node.def.id, ...CATEGORIES.filter(c => c.parent === node.def.id).map(c => c.id)];
-      for (const id of ids) this.lists.delete(categoryKey(node.connection, id));
+      for (const id of ids) {
+        this.lists.delete(categoryKey(node.connection, id));
+        this.subLists.delete(subKey(node.connection, id));
+      }
       if (node.def.childFolders) this.clearPrefix(node.connection, this.children);
     } else if (node.kind === 'object') {
       this.children.delete(childrenKey(node.ref.connection, node.ref.schema, node.ref.name));
@@ -128,11 +135,10 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
           return await this.categoryChildren(node);
         case 'object':
           // Fetch once here so every folder below reads the same cached describe_* result.
-          await this.objectChildren(node);
-          return childFolderNodes(node);
+          return childFolderNodes(node, await this.objectChildren(node));
         case 'childFolder': {
           const parent: ObjectNode = { kind: 'object', ref: node.parentRef, def: node.parentRef.scriptType === 'View' ? byId('views') : byId('tables') };
-          const kids = childNodes(node.connection, node.folder, await this.objectChildren(parent));
+          const kids = childNodes(node.connection, node.folder, await this.objectChildren(parent), node.filter);
           return kids.length ? kids : [{ kind: 'message', text: EMPTY_MESSAGE, isError: false }];
         }
         default:
@@ -155,14 +161,39 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     const hadList = this.lists.has(key);
     const pending = this.cached(this.lists, key, async () =>
       parseObjectList(await this.explorer.call(node.connection, 'list_objects', { objectType: node.def.listType }), node.def));
-    const rows = await pending;
+    const term = this.filters.get(node.connection, node.def.id);
+    const subKeyOf = subKey(node.connection, node.def.id);
+    const hadSub = this.subLists.has(subKeyOf);
+    const [rows, children] = await Promise.all([pending, term ? this.childRows(node.connection, node.def) : []]);
     this.loaded.set(pending, rows);
     // The category's "n of m" is only known now: re-render it once after a fresh load.
-    const term = this.filters.get(node.connection, node.def.id);
-    if (!hadList && term) setTimeout(() => this.emitter.fire(node), 0);
-    const { nodes, total } = objectNodes(node.connection, node.def, rows, term);
+    // A failed child list is not cached, so it does not count as fresh (re-rendering would retry it in a loop).
+    const freshSub = !hadSub && this.subLists.has(subKeyOf);
+    if ((!hadList || freshSub) && term) setTimeout(() => this.emitter.fire(node), 0);
+    const { nodes, total } = objectNodes(node.connection, node.def, rows, term, children);
     if (nodes.length) return nodes;
     return [{ kind: 'message', text: total ? `No matches for '${term}'` : EMPTY_MESSAGE, isError: false }];
+  }
+
+  /**
+   * Every index / foreign key / trigger of the group's tables or views (one list_objects call per type, cached until
+   * Refresh), so its name filter can also match children. A failure only logs: the filter then matches names alone.
+   */
+  private async childRows(connection: string, def: CategoryDef): Promise<ChildRow[]> {
+    if (!def.childTypes?.length) return [];
+    const parentType = def.id === 'views' ? 'View' : 'Table';
+    const pending = this.cached(this.subLists, subKey(connection, def.id), async () => {
+      const lists = await Promise.all(def.childTypes!.map(objectType => this.explorer.call(connection, 'list_objects', { objectType })));
+      return lists.flatMap(data => parseChildRows(data, parentType));
+    });
+    try {
+      const rows = await pending;
+      this.loadedSub.set(pending, rows);
+      return rows;
+    } catch (err) {
+      this.log.warn('explorer', `Listing child objects of ${def.label} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   private objectChildren(node: ObjectNode): Promise<ObjectChildren> {
@@ -179,7 +210,9 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
     const entry = this.lists.get(categoryKey(node.connection, node.def.id));
     const rows = entry && this.loaded.get(entry);
     if (!rows) return undefined;
-    return { shown: objectNodes(node.connection, node.def, rows, term).nodes.length, total: rows.length };
+    const sub = this.subLists.get(subKey(node.connection, node.def.id));
+    const children = (sub && this.loadedSub.get(sub)) ?? [];
+    return { shown: objectNodes(node.connection, node.def, rows, term, children).nodes.length, total: rows.length };
   }
 
   private cached<T>(map: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
@@ -196,7 +229,7 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
 
   private clearPrefix(connection: string, only?: Map<string, unknown>): void {
     const prefix = connectionPrefix(connection);
-    for (const map of only ? [only] : [this.lists, this.children]) {
+    for (const map of only ? [only] : [this.lists, this.children, this.subLists]) {
       for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key);
     }
     if (!only) for (const key of [...this.nodes.keys()]) if (key.startsWith(`cat|${prefix}`)) this.nodes.delete(key);
@@ -216,6 +249,7 @@ export class ExplorerTreeProvider implements vscode.TreeDataProvider<ExplorerNod
 }
 
 const byId = (id: string) => CATEGORIES.find(c => c.id === id)!;
+const subKey = (connection: string, categoryId: string): string => `${categoryKey(connection, categoryId)}|sub`;
 
 function toTreeItem(node: ExplorerNode, spec: ItemSpec): vscode.TreeItem {
   const item = new vscode.TreeItem(spec.label, spec.collapsible ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);

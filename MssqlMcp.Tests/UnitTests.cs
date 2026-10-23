@@ -44,6 +44,8 @@ namespace MssqlMcp.Tests
 
         [Theory]
         [InlineData("DatabaseTrigger")]
+        [InlineData("Index")]
+        [InlineData("ForeignKey")]
         [InlineData("Type")]
         [InlineData("Login")]
         [InlineData("ServerRole")]
@@ -211,6 +213,25 @@ namespace MssqlMcp.Tests
 
             var tables = Assert.IsAssignableFrom<IEnumerable<string>>(result.Data);
             Assert.Contains(tables, t => t.EndsWith(_tableName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public async Task ListObjects_Index_and_ForeignKey_carry_their_parent_table()
+        {
+            var createResult = await _tools.CreateTable(
+                $"CREATE TABLE {_tableName} (Id INT CONSTRAINT PK_{_tableName} PRIMARY KEY, ParentId INT CONSTRAINT FK_{_tableName} REFERENCES {_tableName}(Id), INDEX IX_{_tableName} (ParentId))");
+            Assert.True(createResult.Success, createResult.Error);
+
+            var indexes = await _tools.ListObjects("Index", partialName: _tableName);
+            Assert.True(indexes.Success, indexes.Error);
+            var indexRows = Assert.IsAssignableFrom<IEnumerable<Dictionary<string, object?>>>(indexes.Data).ToList();
+            Assert.Equal(new[] { $"IX_{_tableName}", $"PK_{_tableName}" }, indexRows.Select(r => (string)r["name"]!).Order().ToArray());
+            Assert.All(indexRows, r => Assert.Equal(("dbo", _tableName, "Table"), ((string)r["schema"]!, (string)r["parent"]!, (string)r["parentType"]!)));
+
+            var keys = await _tools.ListObjects("ForeignKey", partialName: $"FK_{_tableName}");
+            Assert.True(keys.Success, keys.Error);
+            var key = Assert.Single(Assert.IsAssignableFrom<IEnumerable<Dictionary<string, object?>>>(keys.Data));
+            Assert.Equal(("dbo", _tableName, false), ((string)key["schema"]!, (string)key["parent"]!, (bool)key["isDisabled"]!));
         }
 
         [Fact]

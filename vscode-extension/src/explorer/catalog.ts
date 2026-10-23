@@ -14,14 +14,16 @@ export interface CategoryDef {
   parent?: CategoryId;
   hasData?: boolean;
   childFolders?: ChildFolderId[];
+  /** list_objects types of the child objects the group's name filter also searches. */
+  childTypes?: string[];
 }
 
 export interface ObjectRef { connection: string; scriptType: string; schema?: string; name: string; parent?: string }
 type Ref = Omit<ObjectRef, 'connection'>;
 
 export const CATEGORIES: CategoryDef[] = [
-  { id: 'tables', label: 'Tables', icon: 'table', listType: 'Table', scriptType: 'Table', hasData: true, childFolders: ['indexes', 'foreignKeys', 'triggers'] },
-  { id: 'views', label: 'Views', icon: 'eye', listType: 'View', scriptType: 'View', hasData: true, childFolders: ['indexes'] },
+  { id: 'tables', label: 'Tables', icon: 'table', listType: 'Table', scriptType: 'Table', hasData: true, childFolders: ['indexes', 'foreignKeys', 'triggers'], childTypes: ['Index', 'ForeignKey', 'TableTrigger'] },
+  { id: 'views', label: 'Views', icon: 'eye', listType: 'View', scriptType: 'View', hasData: true, childFolders: ['indexes'], childTypes: ['Index'] },
   { id: 'procedures', label: 'Stored Procedures', icon: 'symbol-method', listType: 'StoredProcedure', scriptType: 'StoredProcedure' },
   { id: 'tvfs', label: 'Table-Valued Functions', icon: 'symbol-array', listType: 'TableFunction', scriptType: 'TableFunction' },
   { id: 'scalars', label: 'Scalar Functions', icon: 'symbol-numeric', listType: 'ScalarFunction', scriptType: 'ScalarFunction' },
@@ -56,6 +58,24 @@ export function parseObjectList(data: unknown, def: CategoryDef): { schema?: str
       ? [str(pick(r, 'type')) ?? str(pick(r, 'kind')), pick(r, 'isDisabled') === true ? 'disabled' : undefined].filter(Boolean).join(' · ') || undefined
       : undefined;
     return [{ ...(schema ? { schema } : {}), name, ...(detail ? { detail } : {}) }];
+  });
+}
+
+/** One child object of a table or view: `parent` is 'schema.name' of the table/view. */
+export interface ChildRow { parent: string; name: string }
+
+/**
+ * list_objects Index / ForeignKey / TableTrigger rows -> child rows. Indexes name their parent in `parent` and its kind
+ * in `parentType` ('Table' | 'View'), kept only when it is `parentType`; foreign keys (`parent`) and triggers
+ * (`table_name`) always belong to tables.
+ */
+export function parseChildRows(data: unknown, parentType: 'Table' | 'View'): ChildRow[] {
+  return asArray(data).flatMap(r => {
+    const schema = str(pick(r, 'schema'));
+    const parent = str(pick(r, 'parent', 'table_name'));
+    const name = str(pick(r, 'name'));
+    const kind = str(pick(r, 'parentType')) ?? 'Table';
+    return schema && parent && name && kind === parentType ? [{ parent: `${schema}.${parent}`, name }] : [];
   });
 }
 

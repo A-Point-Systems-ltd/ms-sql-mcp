@@ -67,6 +67,40 @@ test('filter applies to object labels (schema.name, case-insensitive)', () => {
   assert.deepEqual(objectNodes('dev', cat('tables'), rows, 'sales.').nodes.map(n => n.ref.name), ['Lines']);
 });
 
+test('filter also matches child names: the parent is listed and shows only the matching children', () => {
+  const rows = [{ schema: 'dbo', name: 'Orders' }, { schema: 'sales', name: 'Lines' }, { schema: 'dbo', name: 'Customers' }];
+  const children = [
+    { parent: 'dbo.Orders', name: 'trOrdersAudit' },
+    { parent: 'sales.Lines', name: 'IX_Lines_Order' },
+    { parent: 'dbo.Customers', name: 'PK_Customers' },
+  ];
+  const r = objectNodes('dev', cat('tables'), rows, 'order', children);
+  assert.equal(r.total, 3);
+  assert.deepEqual(r.nodes.map(n => [n.ref.name, n.childFilter]), [['Orders', undefined], ['Lines', 'order']]);
+  assert.equal(describeNode(r.nodes[1]).description, "has matches for 'order'");
+  assert.equal(describeNode(r.nodes[0]).description, undefined);
+  // Without a term, children change nothing.
+  assert.deepEqual(objectNodes('dev', cat('tables'), rows, '', children).nodes.map(n => n.childFilter), [undefined, undefined, undefined]);
+
+  const kids = { indexes: [{ scriptType: 'Index', name: 'PK_Lines' }, { scriptType: 'Index', name: 'IX_Lines_Order' }], foreignKeys: [{ scriptType: 'ForeignKey', schema: 'sales', name: 'FK_Lines_Product' }], triggers: [] };
+  const folders = childFolderNodes(r.nodes[1], kids);
+  assert.deepEqual(folders.map(f => [f.folder, f.filter]), [['indexes', 'order']]);
+  assert.deepEqual(childNodes('dev', 'indexes', kids, folders[0].filter).map(c => c.ref.name), ['IX_Lines_Order']);
+  // A table that matches by its own name keeps all folders and children.
+  assert.deepEqual(childFolderNodes(r.nodes[0], kids).map(f => f.folder), ['indexes', 'foreignKeys', 'triggers']);
+  assert.deepEqual(childNodes('dev', 'indexes', kids).map(c => c.ref.name), ['PK_Lines', 'IX_Lines_Order']);
+  assert.equal(nodeId(folders[0]), nodeId({ ...folders[0], filter: undefined }));
+});
+
+test('filtered Tables / Views tooltips say child names are searched too', () => {
+  const tables = rootCategories('dev').find(n => n.def.id === 'tables');
+  assert.equal(describeNode(tables, undefined, { filter: 'x' }).tooltip, "Tables: showing names, or index, foreign key or trigger names, containing 'x'");
+  const views = rootCategories('dev').find(n => n.def.id === 'views');
+  assert.equal(describeNode(views, undefined, { filter: 'x' }).tooltip, "Views: showing names, or index names, containing 'x'");
+  const procs = rootCategories('dev').find(n => n.def.id === 'procedures');
+  assert.equal(describeNode(procs, undefined, { filter: 'x' }).tooltip, "Stored Procedures: showing names containing 'x'");
+});
+
 test('child folders per category; child nodes open DDL', () => {
   const [table] = objectNodes('dev', cat('tables'), [{ schema: 'dbo', name: 'T' }], '').nodes;
   const folders = childFolderNodes(table);
@@ -154,6 +188,6 @@ test('a filtered group shows its term and n of m, and gets its own contextValue'
   const item = describeNode(tables, { shown: 2, total: 10 }, { filter: 'Order' });
   assert.equal(item.description, 'filter: Order · 2 of 10');
   assert.equal(item.contextValue, 'msSqlMcp.category.list.filtered');
-  assert.match(item.tooltip, /names containing 'Order'/);
+  assert.match(item.tooltip, /names, containing 'Order'/);
   assert.equal(describeNode(tables, undefined, { filter: '' }).contextValue, 'msSqlMcp.category.list');
 });
