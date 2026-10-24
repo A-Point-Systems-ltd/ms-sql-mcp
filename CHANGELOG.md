@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.5
 
 - `list_objects` supports `Index` (schema, parent table or view, `parentType`, name, type) and `ForeignKey` (schema, parent table, name, `isDisabled`) across the database; `partialName` matches the index or key name.
 - Security: `System.Security.Cryptography.Pkcs` pinned to 10.0.13 (was 9.0.13 through Microsoft.Data.SqlClient 7.0.2), fixing CVE-2026-84008 and CVE-2026-70162 (denial of service).
