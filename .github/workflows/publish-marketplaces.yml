@@ -1,0 +1,88 @@
+name: Publish to marketplaces
+
+# Publishes the VSIX attached to a release of this repo to the VS Code Marketplace and Open VSX. Nothing is built
+# here: the release (exe, .mcpb, .vsix, SHA256SUMS.txt) is built, tested and uploaded from the private source repo by
+# publish-release.ps1 -PublishPublic. Publishing the release starts this workflow.
+# Manual run (e.g. to check the Marketplace sign-in): Actions > Publish to marketplaces > Run workflow, with the tag;
+# dryRun (default) signs in and runs `vsce verify-pat` without publishing.
+#
+# Marketplace auth is Microsoft Entra ID via GitHub OIDC, no PAT. App Registration `apoint-vsce-publisher` (no Azure
+# RBAC roles) has a federated credential for subject
+#   repo:A-Point-Systems-ltd/ms-sql-mcp:environment:marketplace-publish
+# and is a Contributor member of Marketplace publisher `apoint`. Environment `marketplace-publish` allows branch main
+# and tags ext-v* only, and holds:
+#   vars.VSCE_AZURE_CLIENT_ID, secrets.OVSX_PAT (Open VSX namespace "apoint").
+# Marketplace versions are irreversible; a version that is already published is skipped, not an error.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. ext-v1.2.5"
+        required: true
+        type: string
+      dryRun:
+        description: "Sign in and verify only - do not publish."
+        required: false
+        default: true
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: publish-marketplaces
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'ext-v') }}
+    runs-on: ubuntu-latest
+    environment: marketplace-publish
+    permissions:
+      contents: read  # download the release assets
+      id-token: write # GitHub OIDC token for the Entra (Marketplace) login
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      DRY_RUN: ${{ inputs.dryRun == true }}
+      VSCE: "@vscode/vsce@3.9.2"
+      OVSX: "ovsx@0.10.12"
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download the VSIX and check its SHA-256
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.vsix' --pattern 'SHA256SUMS.txt' --dir rel
+          cd rel
+          vsix=$(ls *.vsix)
+          [ "$(echo "$vsix" | wc -l)" = "1" ] || { echo "::error::Expected one .vsix in $TAG, found: $vsix"; exit 1; }
+          grep -F "  $vsix" SHA256SUMS.txt | sha256sum -c -
+          echo "VSIX=$PWD/$vsix" >> "$GITHUB_ENV"
+
+      # allow-no-subscriptions: the identity deliberately has no Azure role; vsce only needs an Azure DevOps token,
+      # requested through this Azure CLI session.
+      - name: Azure login (OIDC) for the Marketplace
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ vars.AZURE_TENANT_ID || 'ac1d1e04-438d-414b-a9dc-bcf081cfd12e' }}
+          client-id: ${{ vars.VSCE_AZURE_CLIENT_ID }}
+          allow-no-subscriptions: true
+
+      # Runs on dry runs too: fails here, with nothing shipped, if the identity is not (or no longer) a member of the
+      # publisher.
+      - name: Verify Marketplace publish rights
+        run: npx --yes "$VSCE" verify-pat --azure-credential apoint
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: npx --yes "$VSCE" publish --azure-credential --packagePath "$VSIX" --skip-duplicate
+
+      - name: Publish to Open VSX
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --yes "$OVSX" publish "$VSIX" --skip-duplicate
