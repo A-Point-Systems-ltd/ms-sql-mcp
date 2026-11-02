@@ -1,0 +1,17 @@
+{
+  "name": "ms-sql-mcp",
+  "version": "1.2.5",
+  "description": "Microsoft SQL Server MCP server for Claude Code on Windows, with the mssql-insights-ops skill. On first start it downloads MssqlMcp.exe from this repository's release and checks its SHA-256.",
+  "author": {
+    "name": "A Point Systems"
+  },
+  "homepage": "https://github.com/A-Point-Systems-ltd/ms-sql-mcp",
+  "repository": "https://github.com/A-Point-Systems-ltd/ms-sql-mcp",
+  "license": "MIT",
+  "keywords": [
+    "sql-server",
+    "mssql",
+    "azure-sql",
+    "mcp"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ms-sql": {
+      "type": "stdio",
+      "command": "cmd.exe",
+      "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\start.cmd"]
+    }
+  }
+}

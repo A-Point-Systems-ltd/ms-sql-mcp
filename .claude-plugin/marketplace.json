@@ -1,0 +1,14 @@
+{
+  "name": "apoint",
+  "owner": {
+    "name": "A Point Systems"
+  },
+  "plugins": [
+    {
+      "name": "ms-sql-mcp",
+      "source": "./plugins/ms-sql-mcp",
+      "description": "Microsoft SQL Server MCP server for Claude Code on Windows, with the mssql-insights-ops skill.",
+      "version": "1.2.5"
+    }
+  ]
+}

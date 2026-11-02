@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "MSSQL-MCP": {
+      "type": "stdio",
+      "command": "C:\\Tools\\MssqlMcp\\MssqlMcp.exe",
+      "env": {
+        "CONNECTION_STRING": "Server=localhost;Database=YourDatabase;Trusted_Connection=True;TrustServerCertificate=True",
+        "USE_INSIGHTS_LAYER": "true",
+        "INSIGHTS_AUTOPOPULATE": "true",
+        "LOG_FILE_PATH": "C:\\Tools\\MssqlMcp\\log\\mssql_mcp_log.txt"
+      },
+      "disabled": false
+    },
+    "MSSQL-MCP-multi": {
+      "type": "stdio",
+      "command": "C:\\Tools\\MssqlMcp\\MssqlMcp.exe",
+      "env": {
+        "MSSQL_CONNECTIONS": "[{\"name\":\"dev\",\"connectionString\":\"Server=localhost;Database=YourDatabase;Trusted_Connection=True;TrustServerCertificate=True\"},{\"name\":\"reports\",\"connectionString\":\"Server=localhost;Database=master;Trusted_Connection=True;TrustServerCertificate=True\",\"readOnly\":true}]",
+        "MSSQL_ALLOW_ADHOC_CONNECTIONS": "false",
+        "USE_INSIGHTS_LAYER": "true",
+        "INSIGHTS_AUTOPOPULATE": "true",
+        "LOG_FILE_PATH": "C:\\Tools\\MssqlMcp\\log\\mssql_mcp_log_multi.txt"
+      },
+      "disabled": true
+    }
+  }
+}
