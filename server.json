@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.A-Point-Systems-ltd/ms-sql-mcp",
+  "title": "APoint MS SQL",
+  "description": "Microsoft SQL Server for AI agents: schema introspection, safe queries and an AI Insights cache.",
+  "repository": {
+    "url": "https://github.com/A-Point-Systems-ltd/ms-sql-mcp",
+    "source": "github"
+  },
+  "version": "1.2.5",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/A-Point-Systems-ltd/ms-sql-mcp/releases/download/ext-v1.2.5/apoint-ms-sql-1.2.5.mcpb",
+      "fileSha256": "6558a29e83e4e392edbb6700cc208b0930db5aa66ea6bf2698c05999071c4603",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
